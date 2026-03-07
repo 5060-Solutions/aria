@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS-arm64
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            name: macOS-x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: Linux-x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows-x64
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout rtp-engine
+        uses: actions/checkout@v4
+        with:
+          repository: 5060-Solutions/rtp-engine
+          path: rtp-engine
+
+      - name: Link rtp-engine to expected path
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp -r "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
+          else
+            ln -s "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
+          fi
+        shell: bash
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            patchelf
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Aria ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install Aria.'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  build-macos-universal:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout rtp-engine
+        uses: actions/checkout@v4
+        with:
+          repository: 5060-Solutions/rtp-engine
+          path: rtp-engine
+
+      - name: Link rtp-engine to expected path
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp -r "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
+          else
+            ln -s "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
+          fi
+        shell: bash
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build Tauri app (universal binary)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Aria ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install Aria.'
+          releaseDraft: true
+          prerelease: false
+          args: --target universal-apple-darwin
