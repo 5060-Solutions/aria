@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-22.04, windows-latest]
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout rtp-engine
+        uses: actions/checkout@v4
+        with:
+          repository: 5060-Solutions/rtp-engine
+          path: rtp-engine
+
+      - name: Link rtp-engine to expected path
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp -r "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
+          else
+            ln -s "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
+          fi
+        shell: bash
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libssl-dev \
+            libgtk-3-dev
+
+      - name: Lint frontend
+        run: pnpm lint
+
+      - name: Type check frontend
+        run: pnpm tsc --noEmit
+
+      - name: Check Rust
+        working-directory: src-tauri
+        run: cargo check
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy -- -D warnings
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+      - name: Test Rust
+        working-directory: src-tauri
+        run: cargo test
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"

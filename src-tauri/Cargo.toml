@@ -1,0 +1,61 @@
+[package]
+name = "aria"
+version = "0.1.0"
+description = "Aria - A modern SIP softphone by 5060 Solutions"
+authors = ["5060 Solutions"]
+license = "LicenseRef-Proprietary"
+edition = "2021"
+
+[features]
+default = []
+# Use insecure file-based credential storage instead of OS keychain (dev only!)
+dev-insecure = []
+
+[lib]
+name = "aria_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
+rsip = "0.4.0"
+md-5 = "0.10.6"
+sha2 = "0.10.9"
+rand = "0.8"
+hex = "0.4.3"
+tokio-util = "0.7.18"
+bytes = "1.11.1"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std"] }
+rustls-pki-types = "1"
+
+# RTP media engine (local path for development, switch to git for release)
+rtp-engine = { path = "../../rtp-engine", features = ["device", "srtp", "opus"] }
+
+# Filesystem utilities (for recordings directory)
+dirs = "6"
+
+# HTTP client for Google People API
+reqwest = { version = "0.12", features = ["json"] }
+
+# Secure credential storage - platform-specific keychain backends
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["linux-native"] }
