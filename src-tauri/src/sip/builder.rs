@@ -43,7 +43,7 @@ pub fn build_register(
          Contact: <sip:{user}@{local_ip}:{local_port};transport={tp}>\r\n\
          Expires: {expires}\r\n\
          Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO\r\n\
-         User-Agent: Aria/0.1.0\r\n",
+         User-Agent: Aria/0.2.0\r\n",
         registrar = registrar,
         transport = transport_param.to_uppercase(),
         local_ip = local_addr.ip(),
@@ -132,7 +132,7 @@ pub fn build_invite_with_public_ip(
          Contact: <sip:{user}@{local_ip}:{local_port};transport={tp}>\r\n\
          Content-Type: application/sdp\r\n\
          Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO\r\n\
-         User-Agent: Aria/0.1.0\r\n",
+         User-Agent: Aria/0.2.0\r\n",
         target_uri = target_uri,
         transport = transport_param.to_uppercase(),
         local_ip = local_addr.ip(),
@@ -323,7 +323,7 @@ pub fn build_200_ok_invite_with_public_ip(
          CSeq: {cseq}\r\n\
          Contact: <{contact}>\r\n\
          Content-Type: application/sdp\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: {len}\r\n\r\n{sdp}",
         via = via,
         from = from,
@@ -750,7 +750,7 @@ pub fn build_refer(
          CSeq: {cseq} REFER\r\n\
          Refer-To: <{refer_to}>\r\n\
          Referred-By: <sip:user@{local_ip}:{local_port}>\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
         from_tag = from_tag,
         target_uri = target_uri,
@@ -810,7 +810,7 @@ pub fn build_refer_with_replaces(
          CSeq: {cseq} REFER\r\n\
          Refer-To: <{refer_to_uri}>\r\n\
          Referred-By: <sip:user@{local_ip}:{local_port}>\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
         from_tag = from_tag,
         target_uri = target_uri,
@@ -846,7 +846,7 @@ pub fn build_202_accepted(request: &str, to_tag: &str) -> Option<String> {
          To: {to}\r\n\
          Call-ID: {call_id}\r\n\
          CSeq: {cseq}\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
     ))
 }
@@ -878,7 +878,7 @@ pub fn build_notify_refer(
          Event: refer\r\n\
          Subscription-State: {subscription_state}\r\n\
          Content-Type: message/sipfrag;version=2.0\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: {len}\r\n\r\n{body}",
         target_uri = target_uri,
         transport = transport.to_uppercase(),
@@ -937,7 +937,7 @@ pub fn build_invite_with_replaces(
          Replaces: {replaces_call_id};to-tag={replaces_to_tag};from-tag={replaces_from_tag}\r\n\
          Content-Type: application/sdp\r\n\
          Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO\r\n\
-         User-Agent: Aria/0.1.0\r\n",
+         User-Agent: Aria/0.2.0\r\n",
         target_uri = target_uri,
         transport = transport_param.to_uppercase(),
         local_ip = local_addr.ip(),
@@ -1039,7 +1039,7 @@ pub fn build_options(
          Call-ID: {call_id}\r\n\
          CSeq: {cseq} OPTIONS\r\n\
          Accept: application/sdp\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
         domain = domain,
         transport = transport.to_uppercase(),
@@ -1082,7 +1082,7 @@ pub fn build_subscribe(
          Accept: {accept}\r\n\
          Expires: {expires}\r\n\
          Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, SUBSCRIBE, REFER, INFO\r\n\
-         User-Agent: Aria/0.1.0\r\n",
+         User-Agent: Aria/0.2.0\r\n",
         target_uri = target_uri,
         transport = transport_param.to_uppercase(),
         local_ip = local_addr.ip(),
@@ -1130,7 +1130,7 @@ pub fn build_200_ok_subscribe(request_raw: &str, expires: u32) -> Option<String>
          Call-ID: {call_id}\r\n\
          CSeq: {cseq}\r\n\
          Expires: {expires}\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
         via = via,
         from = from,
@@ -1156,7 +1156,7 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
          To: {}\r\n\
          Call-ID: {}\r\n\
          CSeq: {}\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
         code, reason, via, from, to, call_id, cseq,
     ))

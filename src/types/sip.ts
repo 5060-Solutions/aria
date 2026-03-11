@@ -68,6 +68,8 @@ export interface SipAccount {
   registrar?: string;
   outboundProxy?: string;
   authUsername?: string;
+  /** Override realm for digest auth — needed for FreeSwitch deployments */
+  authRealm?: string;
   enabled: boolean;
   autoRecord?: boolean;
   /** SRTP mode - disabled, optional (offer but accept plain), or required */
@@ -87,6 +89,7 @@ export interface StoredAccount {
   registrar?: string;
   outboundProxy?: string;
   authUsername?: string;
+  authRealm?: string;
   enabled: boolean;
   autoRecord?: boolean;
   srtpMode?: SrtpMode;

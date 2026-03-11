@@ -106,7 +106,7 @@
     "signOutAll": "Sign out all accounts",
     "developerDiagnostics": "Developer diagnostics",
     "sipTraceRtp": "SIP trace, RTP stats",
-    "about": "Aria v0.1.0",
+    "about": "Aria v0.2.0",
     "aboutDescription": "A modern softphone by 5060 Solutions.",
     "aboutLicense": "Free for non-commercial use.",
     "language": "Language",
@@ -138,6 +138,9 @@
     "displayNamePlaceholder": "John Doe",
     "authUsername": "Auth Username",
     "authUsernamePlaceholder": "Same as username if blank",
+    "authRealm": "Auth Realm",
+    "authRealmPlaceholder": "Override server realm",
+    "authRealmHelper": "Override digest auth realm (for FreeSwitch)",
     "transport": "Transport",
     "transportUdp": "UDP",
     "transportTcp": "TCP",
@@ -159,7 +162,7 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "version": "Aria v0.1.0",
+    "version": "Aria v0.2.0",
     "connection": "Connection",
     "registered": "Registered",
     "registering": "Registering...",
@@ -206,7 +209,9 @@
     "jsonFiles": "JSON Files",
     "noAccounts": "No accounts configured",
     "tx": "TX",
-    "rx": "RX"
+    "rx": "RX",
+    "messageView": "Message list",
+    "ladderView": "Call flow diagram"
   },
   "common": {
     "cancel": "Cancel",

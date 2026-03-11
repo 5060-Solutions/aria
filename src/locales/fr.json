@@ -101,7 +101,7 @@
     "signOutAll": "Déconnecter tous les comptes",
     "developerDiagnostics": "Diagnostics développeur",
     "sipTraceRtp": "Trace SIP, statistiques RTP",
-    "about": "Aria v0.1.0",
+    "about": "Aria v0.2.0",
     "aboutDescription": "Un softphone moderne par 5060 Solutions.",
     "aboutLicense": "Gratuit pour usage non commercial.",
     "language": "Langue",
@@ -126,6 +126,9 @@
     "displayNamePlaceholder": "Jean Dupont",
     "authUsername": "Nom d'authentification",
     "authUsernamePlaceholder": "Identique au nom d'utilisateur si vide",
+    "authRealm": "Realm d'authentification",
+    "authRealmPlaceholder": "Remplacer le realm du serveur",
+    "authRealmHelper": "Remplacer le realm d'authentification digest (pour FreeSwitch)",
     "transport": "Transport",
     "transportUdp": "UDP",
     "transportTcp": "TCP",
@@ -147,7 +150,7 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "version": "Aria v0.1.0",
+    "version": "Aria v0.2.0",
     "connection": "Connexion",
     "registered": "Enregistré",
     "registering": "Enregistrement...",
@@ -194,7 +197,9 @@
     "jsonFiles": "Fichiers JSON",
     "noAccounts": "Aucun compte configuré",
     "tx": "TX",
-    "rx": "RX"
+    "rx": "RX",
+    "messageView": "Liste des messages",
+    "ladderView": "Diagramme de flux d'appel"
   },
   "common": {
     "cancel": "Annuler",

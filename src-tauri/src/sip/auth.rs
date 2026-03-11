@@ -16,6 +16,7 @@ pub struct DigestAuth {
 }
 
 impl DigestAuth {
+    #[allow(dead_code)]
     pub fn from_challenge(
         www_auth: &str,
         username: &str,
@@ -23,7 +24,25 @@ impl DigestAuth {
         uri: &str,
         method: &str,
     ) -> Option<Self> {
-        let realm = extract_param(www_auth, "realm")?;
+        Self::from_challenge_with_realm(www_auth, username, password, uri, method, None)
+    }
+
+    /// Create digest auth from a challenge, optionally overriding the realm.
+    /// When `realm_override` is Some, it is used instead of the realm from the
+    /// server's challenge header. This is needed for FreeSwitch deployments
+    /// where the challenge realm doesn't match the realm used for verification.
+    pub fn from_challenge_with_realm(
+        www_auth: &str,
+        username: &str,
+        password: &str,
+        uri: &str,
+        method: &str,
+        realm_override: Option<&str>,
+    ) -> Option<Self> {
+        let realm = match realm_override {
+            Some(r) if !r.is_empty() => r.to_string(),
+            _ => extract_param(www_auth, "realm")?,
+        };
         let nonce = extract_param(www_auth, "nonce")?;
         let algorithm = extract_param(www_auth, "algorithm").unwrap_or_else(|| "MD5".to_string());
         let qop = extract_param(www_auth, "qop");

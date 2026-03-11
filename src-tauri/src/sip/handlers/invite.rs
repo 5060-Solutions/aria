@@ -319,12 +319,13 @@ pub async fn handle_invite_response(
                 _ => return,
             };
 
-            let auth = DigestAuth::from_challenge(
+            let auth = DigestAuth::from_challenge_with_realm(
                 &proxy_auth,
                 account_config.effective_auth_username(),
                 &account_config.password,
                 &remote_uri,
                 "INVITE",
+                account_config.auth_realm.as_deref(),
             );
 
             let auth_header = match auth {

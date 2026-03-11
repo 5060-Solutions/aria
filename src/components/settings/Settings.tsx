@@ -92,6 +92,7 @@ interface AccountFormData {
   password: string;
   displayName: string;
   authUsername: string;
+  authRealm: string;
   transport: TransportType;
   port: number;
   registrar: string;
@@ -107,6 +108,7 @@ const emptyForm: AccountFormData = {
   password: "",
   displayName: "",
   authUsername: "",
+  authRealm: "",
   transport: "udp",
   port: 5060,
   registrar: "",
@@ -189,6 +191,7 @@ export function Settings() {
           password: password ?? "",
           displayName: editingAccount.displayName || "",
           authUsername: editingAccount.authUsername || "",
+          authRealm: editingAccount.authRealm || "",
           transport: editingAccount.transport || "udp",
           port: editingAccount.port || 5060,
           registrar: editingAccount.registrar || "",
@@ -288,6 +291,7 @@ export function Settings() {
       registrar: form.registrar || undefined,
       outboundProxy: form.outboundProxy || undefined,
       authUsername: form.authUsername || undefined,
+      authRealm: form.authRealm || undefined,
       enabled: editingAccount?.enabled ?? true,
       autoRecord: form.autoRecord,
       srtpMode: form.srtpMode,
@@ -1145,6 +1149,15 @@ export function Settings() {
                   value={form.authUsername}
                   onChange={(e) => update("authUsername", e.target.value)}
                   placeholder={t("wizard.authUsernamePlaceholder")}
+                  sx={inputSx}
+                />
+                <TextField
+                  label={t("wizard.authRealm")}
+                  size="small"
+                  value={form.authRealm}
+                  onChange={(e) => update("authRealm", e.target.value)}
+                  placeholder={t("wizard.authRealmPlaceholder")}
+                  helperText={t("wizard.authRealmHelper")}
                   sx={inputSx}
                 />
                 <Box sx={{ display: "flex", gap: 1.5 }}>

@@ -66,6 +66,11 @@ pub struct AccountConfig {
     #[allow(dead_code)]
     pub outbound_proxy: Option<String>,
     pub auth_username: Option<String>,
+    /// Override realm for digest authentication.
+    /// When set, this realm is used instead of the one from the server's challenge.
+    /// Required for some FreeSwitch deployments where the challenge realm
+    /// doesn't match the realm used for credential verification.
+    pub auth_realm: Option<String>,
     #[allow(dead_code)]
     pub enabled: bool,
     /// Whether to automatically record calls for this account

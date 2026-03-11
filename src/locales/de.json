@@ -101,7 +101,7 @@
     "signOutAll": "Alle Konten abmelden",
     "developerDiagnostics": "Entwickler-Diagnose",
     "sipTraceRtp": "SIP-Trace, RTP-Statistiken",
-    "about": "Aria v0.1.0",
+    "about": "Aria v0.2.0",
     "aboutDescription": "Ein modernes Softphone von 5060 Solutions.",
     "aboutLicense": "Kostenlos für nicht-kommerzielle Nutzung.",
     "language": "Sprache",
@@ -126,6 +126,9 @@
     "displayNamePlaceholder": "Max Mustermann",
     "authUsername": "Auth-Benutzername",
     "authUsernamePlaceholder": "Gleich wie Benutzername wenn leer",
+    "authRealm": "Auth-Realm",
+    "authRealmPlaceholder": "Server-Realm überschreiben",
+    "authRealmHelper": "Digest-Auth-Realm überschreiben (für FreeSwitch)",
     "transport": "Transport",
     "transportUdp": "UDP",
     "transportTcp": "TCP",
@@ -147,7 +150,7 @@
   },
   "diagnostics": {
     "title": "Diagnose",
-    "version": "Aria v0.1.0",
+    "version": "Aria v0.2.0",
     "connection": "Verbindung",
     "registered": "Registriert",
     "registering": "Registriere...",
@@ -194,7 +197,9 @@
     "jsonFiles": "JSON-Dateien",
     "noAccounts": "Keine Konten konfiguriert",
     "tx": "TX",
-    "rx": "RX"
+    "rx": "RX",
+    "messageView": "Nachrichtenliste",
+    "ladderView": "Anrufflussdiagramm"
   },
   "common": {
     "cancel": "Abbrechen",

@@ -105,12 +105,13 @@ pub async fn handle_subscribe_response(
 
             let (target_uri, sub_call_id, cseq, from_tag, event_type, expires) = sub_info;
 
-            let auth = DigestAuth::from_challenge(
+            let auth = DigestAuth::from_challenge_with_realm(
                 &www_auth,
                 account_config.effective_auth_username(),
                 &account_config.password,
                 &target_uri,
                 "SUBSCRIBE",
+                account_config.auth_realm.as_deref(),
             );
 
             let auth_header = match auth {

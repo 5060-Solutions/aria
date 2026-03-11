@@ -227,7 +227,7 @@ pub fn build_ringing_response(request: &str, to_tag: &str) -> Option<String> {
          To: {to}\r\n\
          Call-ID: {call_id}\r\n\
          CSeq: {cseq}\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
     ))
 }
@@ -247,7 +247,7 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
          To: {}\r\n\
          Call-ID: {}\r\n\
          CSeq: {}\r\n\
-         User-Agent: Aria/0.1.0\r\n\
+         User-Agent: Aria/0.2.0\r\n\
          Content-Length: 0\r\n\r\n",
         code, reason, via, from, to, call_id, cseq,
     ))

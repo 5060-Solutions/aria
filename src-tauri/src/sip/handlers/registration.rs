@@ -140,12 +140,13 @@ pub async fn handle_register_response(
             let registrar = account_config.registrar.as_deref().unwrap_or(&account_config.domain);
             let uri = format!("sip:{}", registrar);
 
-            let auth = DigestAuth::from_challenge(
+            let auth = DigestAuth::from_challenge_with_realm(
                 &www_auth,
                 account_config.effective_auth_username(),
                 &account_config.password,
                 &uri,
                 "REGISTER",
+                account_config.auth_realm.as_deref(),
             );
 
             let auth_header = match auth {

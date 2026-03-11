@@ -343,12 +343,13 @@ impl RegistrationFSM {
                 let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
                 let uri = format!("sip:{}", registrar);
 
-                let auth = crate::sip::auth::DigestAuth::from_challenge(
+                let auth = crate::sip::auth::DigestAuth::from_challenge_with_realm(
                     challenge,
                     account.effective_auth_username(),
                     &account.password,
                     &uri,
                     "REGISTER",
+                    account.auth_realm.as_deref(),
                 );
 
                 match auth {

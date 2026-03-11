@@ -101,7 +101,7 @@
     "signOutAll": "Cerrar todas las sesiones",
     "developerDiagnostics": "Diagnósticos de desarrollador",
     "sipTraceRtp": "Traza SIP, estadísticas RTP",
-    "about": "Aria v0.1.0",
+    "about": "Aria v0.2.0",
     "aboutDescription": "Un softphone moderno de 5060 Solutions.",
     "aboutLicense": "Gratis para uso no comercial.",
     "language": "Idioma",
@@ -126,6 +126,9 @@
     "displayNamePlaceholder": "Juan Pérez",
     "authUsername": "Usuario de autenticación",
     "authUsernamePlaceholder": "Igual que usuario si está vacío",
+    "authRealm": "Realm de autenticación",
+    "authRealmPlaceholder": "Sobreescribir realm del servidor",
+    "authRealmHelper": "Sobreescribir realm de autenticación digest (para FreeSwitch)",
     "transport": "Transporte",
     "transportUdp": "UDP",
     "transportTcp": "TCP",
@@ -147,7 +150,7 @@
   },
   "diagnostics": {
     "title": "Diagnósticos",
-    "version": "Aria v0.1.0",
+    "version": "Aria v0.2.0",
     "connection": "Conexión",
     "registered": "Registrado",
     "registering": "Registrando...",
@@ -194,7 +197,9 @@
     "jsonFiles": "Archivos JSON",
     "noAccounts": "Sin cuentas configuradas",
     "tx": "TX",
-    "rx": "RX"
+    "rx": "RX",
+    "messageView": "Lista de mensajes",
+    "ladderView": "Diagrama de flujo de llamada"
   },
   "common": {
     "cancel": "Cancelar",

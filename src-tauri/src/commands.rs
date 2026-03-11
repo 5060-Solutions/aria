@@ -104,6 +104,7 @@ pub struct SipAccountConfig {
     pub registrar: Option<String>,
     pub outbound_proxy: Option<String>,
     pub auth_username: Option<String>,
+    pub auth_realm: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default = "default_auto_record")]
@@ -185,6 +186,7 @@ pub async fn sip_register(
         registrar: config.registrar,
         outbound_proxy: config.outbound_proxy,
         auth_username: config.auth_username,
+        auth_realm: config.auth_realm,
         enabled: config.enabled,
         auto_record: config.auto_record,
         srtp_mode,
@@ -842,7 +844,7 @@ pub async fn export_diagnostic_report(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0),
-        "version": "0.1.0",
+        "version": "0.2.0",
         "systemStatus": system_status,
         "sipMessageCount": sip_logs.len(),
         "callHistory": call_history,
