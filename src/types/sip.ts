@@ -68,7 +68,7 @@ export interface SipAccount {
   registrar?: string;
   outboundProxy?: string;
   authUsername?: string;
-  /** Override realm for digest auth — needed for FreeSwitch deployments */
+  /** Override realm used for authentication */
   authRealm?: string;
   enabled: boolean;
   autoRecord?: boolean;
