@@ -63,6 +63,12 @@ pub struct AccountState {
     pub blf_states: HashMap<String, BlfEntry>,
     /// Active conferences (conference_id -> list of call_ids)
     pub conferences: HashMap<String, Vec<String>>,
+    /// Realm fallback for 403 retry: when auth fails with 403, retry with
+    /// the server IP as realm (common FreeSwitch misconfiguration).
+    /// None = no fallback tried, Some(realm) = currently trying this realm.
+    pub realm_fallback: Option<String>,
+    /// Whether we've exhausted realm fallback attempts
+    pub realm_fallback_exhausted: bool,
 }
 
 impl AccountState {
@@ -80,6 +86,8 @@ impl AccountState {
             subscriptions: Vec::new(),
             blf_states: HashMap::new(),
             conferences: HashMap::new(),
+            realm_fallback: None,
+            realm_fallback_exhausted: false,
         }
     }
 }

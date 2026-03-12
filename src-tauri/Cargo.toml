@@ -30,11 +30,11 @@ tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
+# Shared SIP protocol utilities
+aria-sip-core = { path = "../../aria-sip-core" }
+
 rsip = "0.4.0"
-md-5 = "0.10.6"
-sha2 = "0.10.9"
 rand = "0.8"
-hex = "0.4.3"
 tokio-util = "0.7.18"
 bytes = "1.11.1"
 tokio-rustls = "0.26"

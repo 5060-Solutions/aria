@@ -134,13 +134,12 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 name = "aria"
 version = "0.2.0"
 dependencies = [
+ "aria-sip-core",
  "bytes",
  "dirs",
  "env_logger",
- "hex",
  "keyring",
  "log",
- "md-5 0.10.6",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "rsip",
@@ -149,7 +148,6 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tauri",
  "tauri-build",
  "tauri-plugin-deep-link",
@@ -159,6 +157,18 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "uuid 1.22.0",
+]
+
+[[package]]
+name = "aria-sip-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "log",
+ "md-5 0.10.6",
+ "rand 0.8.5",
+ "sha2 0.10.9",
  "uuid 1.22.0",
 ]
 

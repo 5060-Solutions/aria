@@ -2,20 +2,13 @@ use crate::sip::account::{AccountConfig, SrtpMode};
 use crate::sip::presence::EventType;
 use std::net::SocketAddr;
 
-/// Generate a unique branch parameter for Via headers
-pub fn generate_branch() -> String {
-    format!("z9hG4bK-{}", uuid::Uuid::new_v4().as_simple())
-}
-
-/// Generate a unique tag for From/To headers
-pub fn generate_tag() -> String {
-    format!("{:08x}", rand::random::<u32>())
-}
-
-/// Generate a unique Call-ID
-pub fn generate_call_id() -> String {
-    format!("{}", uuid::Uuid::new_v4().as_simple())
-}
+// Re-export shared utilities so existing callers keep working
+pub use aria_sip_core::{generate_branch, generate_call_id, generate_tag};
+pub use aria_sip_core::parser::{
+    extract_all_headers, extract_from_tag, extract_header, extract_method, extract_to_tag,
+    extract_via_branch, extract_via_received, is_request, parse_replaces_header,
+    parse_sdp_connection, parse_sipfrag_status, parse_status_code,
+};
 
 /// Build a REGISTER request
 #[allow(clippy::too_many_arguments)]
@@ -545,132 +538,6 @@ pub fn build_sdp_offer_with_codecs(
     sdp
 }
 
-/// Extract a header value from raw SIP message
-pub fn extract_header(msg: &str, name: &str) -> Option<String> {
-    for line in msg.lines() {
-        // Case-insensitive header match
-        let lower = line.to_lowercase();
-        let search = format!("{}:", name.to_lowercase());
-        if lower.starts_with(&search) {
-            let value = &line[name.len() + 1..];
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
-
-/// Extract the To tag from a SIP response
-pub fn extract_to_tag(msg: &str) -> Option<String> {
-    let to = extract_header(msg, "To")?;
-    let tag_pos = to.find("tag=")?;
-    let tag_start = tag_pos + 4;
-    let tag_end = to[tag_start..]
-        .find([';', '>', ' '])
-        .map(|p| tag_start + p)
-        .unwrap_or(to.len());
-    Some(to[tag_start..tag_end].to_string())
-}
-
-/// Extract the Via branch from a SIP message
-pub fn extract_via_branch(msg: &str) -> Option<String> {
-    let via = extract_header(msg, "Via")?;
-    let branch_pos = via.find("branch=")?;
-    let start = branch_pos + 7;
-    let end = via[start..]
-        .find([';', ',', ' '])
-        .map(|p| start + p)
-        .unwrap_or(via.len());
-    Some(via[start..end].to_string())
-}
-
-/// Parse SDP to extract remote RTP address and port
-pub fn parse_sdp_connection(sdp: &str) -> Option<(String, u16)> {
-    let mut ip = None;
-    let mut port = None;
-
-    for line in sdp.lines() {
-        if let Some(addr) = line.strip_prefix("c=IN IP4 ") {
-            ip = Some(addr.trim().to_string());
-        }
-        if line.starts_with("m=audio ") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                port = parts[1].parse().ok();
-            }
-        }
-    }
-
-    match (ip, port) {
-        (Some(i), Some(p)) => Some((i, p)),
-        _ => None,
-    }
-}
-
-/// Get the status code from a SIP response line
-pub fn parse_status_code(msg: &str) -> Option<u16> {
-    let first_line = msg.lines().next()?;
-    if first_line.starts_with("SIP/2.0 ") {
-        let parts: Vec<&str> = first_line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            return parts[1].parse().ok();
-        }
-    }
-    None
-}
-
-/// Check if a raw message is a SIP request (not a response)
-pub fn is_request(msg: &str) -> bool {
-    let first_line = msg.lines().next().unwrap_or("");
-    !first_line.starts_with("SIP/2.0")
-}
-
-/// Extract the method from a SIP request
-pub fn extract_method(msg: &str) -> Option<String> {
-    let first_line = msg.lines().next()?;
-    let parts: Vec<&str> = first_line.split_whitespace().collect();
-    if parts.len() >= 2 && !first_line.starts_with("SIP/2.0") {
-        Some(parts[0].to_string())
-    } else {
-        None
-    }
-}
-
-/// Extract `received` and `rport` parameters from the Via header of a SIP response
-pub fn extract_via_received(msg: &str) -> Option<(String, u16)> {
-    let via = extract_header(msg, "Via")?;
-    let received = via.find("received=").map(|p| {
-        let start = p + 9;
-        let end = via[start..]
-            .find([';', ',', ' '])
-            .map(|e| start + e)
-            .unwrap_or(via.len());
-        via[start..end].to_string()
-    })?;
-    let rport = via.find("rport=").and_then(|p| {
-        let start = p + 6;
-        let end = via[start..]
-            .find([';', ',', ' '])
-            .map(|e| start + e)
-            .unwrap_or(via.len());
-        via[start..end].parse::<u16>().ok()
-    })?;
-    Some((received, rport))
-}
-
-/// Extract all values for a given header (e.g., multiple Record-Route lines)
-pub fn extract_all_headers(msg: &str, name: &str) -> Vec<String> {
-    let search = format!("{}:", name.to_lowercase());
-    let mut results = Vec::new();
-    for line in msg.lines() {
-        let lower = line.to_lowercase();
-        if lower.starts_with(&search) {
-            let value = &line[name.len() + 1..];
-            results.push(value.trim().to_string());
-        }
-    }
-    results
-}
-
 /// Build a BYE request with Route headers
 #[allow(clippy::too_many_arguments)]
 pub fn build_bye_with_routes(
@@ -961,61 +828,6 @@ pub fn build_invite_with_replaces(
 
     msg.push_str(&format!("Content-Length: {}\r\n\r\n{}", sdp.len(), sdp));
     msg
-}
-
-/// Extract the From tag from a SIP message
-#[allow(dead_code)]
-pub fn extract_from_tag(msg: &str) -> Option<String> {
-    let from = extract_header(msg, "From")?;
-    let tag_pos = from.find("tag=")?;
-    let tag_start = tag_pos + 4;
-    let tag_end = from[tag_start..]
-        .find([';', '>', ' '])
-        .map(|p| tag_start + p)
-        .unwrap_or(from.len());
-    Some(from[tag_start..tag_end].to_string())
-}
-
-/// Parse a sipfrag body to extract the status code (e.g. "SIP/2.0 200 OK" -> 200)
-#[allow(dead_code)]
-pub fn parse_sipfrag_status(body: &str) -> Option<u16> {
-    let line = body.lines().next()?;
-    if line.starts_with("SIP/2.0 ") {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            return parts[1].parse().ok();
-        }
-    }
-    None
-}
-
-/// Parse Replaces header: "call-id;to-tag=xxx;from-tag=yyy"
-#[allow(dead_code)]
-pub fn parse_replaces_header(header_value: &str) -> Option<(String, String, String)> {
-    let parts: Vec<&str> = header_value.splitn(2, ';').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-    let replaces_call_id = parts[0].trim().to_string();
-    let params = parts[1];
-
-    let mut to_tag = String::new();
-    let mut from_tag = String::new();
-
-    for param in params.split(';') {
-        let param = param.trim();
-        if let Some(val) = param.strip_prefix("to-tag=") {
-            to_tag = val.to_string();
-        } else if let Some(val) = param.strip_prefix("from-tag=") {
-            from_tag = val.to_string();
-        }
-    }
-
-    if to_tag.is_empty() || from_tag.is_empty() {
-        return None;
-    }
-
-    Some((replaces_call_id, to_tag, from_tag))
 }
 
 /// Build a SIP OPTIONS request (used as keepalive)
