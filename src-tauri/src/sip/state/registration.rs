@@ -40,7 +40,7 @@ use super::super::account::AccountConfig;
 
 /// Events that can trigger registration state transitions
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(dead_code, clippy::large_enum_variant)]
 pub enum RegistrationEvent {
     /// Start registration process
     Register { account: AccountConfig },
