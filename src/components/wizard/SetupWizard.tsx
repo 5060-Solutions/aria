@@ -55,6 +55,7 @@ export function SetupWizard() {
     // Advanced
     displayName: "",
     authUsername: "",
+    authRealm: "",
     transport: "udp" as TransportType,
     port: 5060,
     registrar: "",
@@ -185,6 +186,7 @@ export function SetupWizard() {
       registrar: form.registrar || undefined,
       outboundProxy: form.outboundProxy || undefined,
       authUsername: form.authUsername || undefined,
+      authRealm: form.authRealm || undefined,
       enabled: true,
     };
 
@@ -383,6 +385,18 @@ export function SetupWizard() {
                 value={form.authUsername}
                 onChange={(e) => update("authUsername", e.target.value)}
                 placeholder={t("wizard.authUsernamePlaceholder")}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                sx={inputSx}
+              />
+              <TextField
+                label={t("wizard.authRealm")}
+                size="small"
+                value={form.authRealm}
+                onChange={(e) => update("authRealm", e.target.value)}
+                placeholder={t("wizard.authRealmPlaceholder")}
+                helperText={t("wizard.authRealmHelper")}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
