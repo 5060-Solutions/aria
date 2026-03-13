@@ -31,7 +31,7 @@ uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
 # Shared SIP protocol utilities
-aria-sip-core = { path = "../../aria-sip-core" }
+aria-sip-core = { git = "https://github.com/5060-Solutions/aria-sip-core.git" }
 
 rsip = "0.4.0"
 rand = "0.8"
@@ -42,7 +42,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 rustls-pki-types = "1"
 
 # RTP media engine (local path for development, switch to git for release)
-rtp-engine = { path = "../../rtp-engine", features = ["device", "srtp", "opus"] }
+rtp-engine = { git = "https://github.com/5060-Solutions/rtp-engine.git", features = ["device", "srtp", "opus"] }
 
 # Filesystem utilities (for recordings directory)
 dirs = "6"

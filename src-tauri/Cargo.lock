@@ -163,6 +163,7 @@ dependencies = [
 [[package]]
 name = "aria-sip-core"
 version = "0.1.0"
+source = "git+https://github.com/5060-Solutions/aria-sip-core.git#8f2784e30f502744365107b7b00fdc2d12c30046"
 dependencies = [
  "hex",
  "log",
@@ -3832,6 +3833,7 @@ dependencies = [
 [[package]]
 name = "rtp-engine"
 version = "0.1.0"
+source = "git+https://github.com/5060-Solutions/rtp-engine.git#b7973e77ce6e8cc6cf21f082eaa124b127f531e7"
 dependencies = [
  "aes",
  "audioadapter-buffers",
