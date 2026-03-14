@@ -50,6 +50,7 @@ export function SetupWizard() {
   const waitingForReg = useRef(false);
   const [form, setForm] = useState({
     server: "",
+    domain: "",
     username: "",
     password: "",
     // Advanced
@@ -175,18 +176,19 @@ export function SetupWizard() {
     const accountId = crypto.randomUUID();
     registeringAccountId.current = accountId;
     
+    const effectiveDomain = form.domain || form.server;
     const account: SipAccount = {
       id: accountId,
       displayName: form.displayName || form.username,
       username: form.username,
-      domain: form.server,
+      domain: effectiveDomain,
       password: form.password,
       transport: form.transport,
       port: form.port,
-      registrar: form.registrar || undefined,
+      registrar: form.registrar || form.server,
       outboundProxy: form.outboundProxy || undefined,
       authUsername: form.authUsername || undefined,
-      authRealm: form.authRealm || undefined,
+      authRealm: form.authRealm || effectiveDomain,
       enabled: true,
     };
 
@@ -315,6 +317,21 @@ export function SetupWizard() {
             spellCheck={false}
             sx={inputSx}
           />
+          <Collapse in={!!form.server} timeout={250}>
+            <TextField
+              label={t("wizard.domain")}
+              size="small"
+              value={form.domain}
+              onChange={(e) => update("domain", e.target.value)}
+              placeholder={form.server || t("wizard.domainPlaceholder")}
+              helperText={t("wizard.domainHelper")}
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              fullWidth
+              sx={inputSx}
+            />
+          </Collapse>
           <TextField
             label={t("wizard.username")}
             size="small"
