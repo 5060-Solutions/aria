@@ -101,7 +101,7 @@
     "signOutAll": "Déconnecter tous les comptes",
     "developerDiagnostics": "Diagnostics développeur",
     "sipTraceRtp": "Trace SIP, statistiques RTP",
-    "about": "Aria v0.2.2",
+    "about": "Aria v0.2.3",
     "aboutDescription": "Un softphone moderne par 5060 Solutions.",
     "aboutLicense": "Gratuit pour usage non commercial.",
     "language": "Langue",
@@ -153,7 +153,7 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "version": "Aria v0.2.2",
+    "version": "Aria v0.2.3",
     "connection": "Connexion",
     "registered": "Enregistré",
     "registering": "Enregistrement...",

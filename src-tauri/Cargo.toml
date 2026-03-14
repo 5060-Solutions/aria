@@ -1,6 +1,6 @@
 [package]
 name = "aria"
-version = "0.2.2"
+version = "0.2.3"
 description = "Aria - A modern SIP softphone by 5060 Solutions"
 authors = ["5060 Solutions"]
 license = "LicenseRef-Proprietary"
