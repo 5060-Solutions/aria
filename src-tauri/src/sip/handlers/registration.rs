@@ -239,20 +239,6 @@ pub async fn handle_register_response(
 
             log::debug!("Sending authenticated REGISTER:\n{}", msg);
 
-            let diag = DiagnosticLog {
-                timestamp: diagnostics::now_millis(),
-                account_id: account_id.to_string(),
-                direction: diagnostics::MessageDirection::Sent,
-                remote_addr: server_addr.to_string(),
-                summary: diagnostics::summarize_sip(&msg),
-                raw: msg.clone(),
-            };
-            {
-                let s = state.read().await;
-                s.diagnostic_store.push(diag.clone()).await;
-            }
-            let _ = event_tx.send(SipEvent::DiagnosticMessage(diag));
-
             if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
                 log::error!("Failed to send auth REGISTER: {}", e);
             }
@@ -296,20 +282,6 @@ pub async fn handle_register_response(
 
             if let Some((config, Some(local_addr), Some(server_addr), Some(transport), call_id, from_tag, cseq)) = retry_info {
                 let msg = build_register(&config, local_addr, &call_id, cseq, &from_tag, None, 3600);
-
-                let diag = DiagnosticLog {
-                    timestamp: diagnostics::now_millis(),
-                    account_id: account_id.to_string(),
-                    direction: diagnostics::MessageDirection::Sent,
-                    remote_addr: server_addr.to_string(),
-                    summary: "[REALM FALLBACK] Retrying REGISTER with server IP as realm".to_string(),
-                    raw: msg.clone(),
-                };
-                {
-                    let s = state.read().await;
-                    s.diagnostic_store.push(diag.clone()).await;
-                }
-                let _ = event_tx.send(SipEvent::DiagnosticMessage(diag));
 
                 if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
                     log::error!("Failed to send fallback REGISTER: {}", e);

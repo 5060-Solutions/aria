@@ -1,5 +1,8 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
+
+use super::SipEvent;
 
 /// Direction of a SIP message
 #[derive(Debug, Clone, serde::Serialize)]
@@ -63,4 +66,41 @@ pub fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Lightweight handle that the transport layer uses to log outbound messages.
+/// Cloneable and cheap — stores only an Arc to the diagnostic store, the event
+/// sender, and the account ID.
+#[derive(Clone)]
+pub struct DiagnosticSender {
+    store: Arc<DiagnosticStore>,
+    event_tx: mpsc::UnboundedSender<SipEvent>,
+    account_id: String,
+}
+
+impl DiagnosticSender {
+    pub fn new(
+        store: Arc<DiagnosticStore>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        account_id: String,
+    ) -> Self {
+        Self {
+            store,
+            event_tx,
+            account_id,
+        }
+    }
+
+    pub async fn log_sent(&self, msg: &str, remote: SocketAddr) {
+        let diag = DiagnosticLog {
+            timestamp: now_millis(),
+            account_id: self.account_id.clone(),
+            direction: MessageDirection::Sent,
+            remote_addr: remote.to_string(),
+            summary: summarize_sip(msg),
+            raw: msg.to_string(),
+        };
+        self.store.push(diag.clone()).await;
+        let _ = self.event_tx.send(SipEvent::DiagnosticMessage(diag));
+    }
 }

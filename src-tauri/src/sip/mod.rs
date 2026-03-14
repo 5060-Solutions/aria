@@ -154,7 +154,7 @@ pub(crate) struct ManagerState {
     /// Last OPTIONS keepalive round-trip time in ms (from active account)
     pub(crate) last_latency_ms: Option<f64>,
     /// Shared diagnostic store
-    pub(crate) diagnostic_store: diagnostics::DiagnosticStore,
+    pub(crate) diagnostic_store: Arc<diagnostics::DiagnosticStore>,
 }
 
 impl ManagerState {
@@ -271,7 +271,7 @@ impl SipManager {
                 accounts: HashMap::new(),
                 active_account_id: None,
                 last_latency_ms: None,
-                diagnostic_store: diagnostics::DiagnosticStore::new(500),
+                diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
             })),
             event_tx,
         };
@@ -315,7 +315,7 @@ impl SipManager {
 
         // Create transport based on account config
         log::info!("Creating {:?} transport to {}", account.transport, server_addr);
-        let (transport, rx) = match account.transport {
+        let (mut transport, rx) = match account.transport {
             TransportType::Udp => {
                 let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
                 log::info!("UDP transport created, local addr: {}", t.local_addr());
@@ -342,6 +342,17 @@ impl SipManager {
                 }
             }
         };
+
+        // Attach diagnostic sender so all outbound messages are logged automatically
+        {
+            let s = self.state.read().await;
+            let diag_sender = diagnostics::DiagnosticSender::new(
+                s.diagnostic_store.clone(),
+                self.event_tx.clone(),
+                account.id.clone(),
+            );
+            transport.set_diagnostic_sender(diag_sender);
+        }
 
         // Resolve `0.0.0.0` to the actual outbound interface IP
         let raw_addr = transport.local_addr();
@@ -412,7 +423,7 @@ impl SipManager {
             }
         }
 
-        self.log_sip_sent(&register_msg, server_addr, &account_id).await;
+
         log::debug!("Sent REGISTER:\n{}", register_msg);
 
         // Start the receive loop for this account
@@ -775,7 +786,6 @@ impl SipManager {
 
         transport.send_to(invite.as_bytes(), server_addr).await?;
 
-        self.log_sip_sent(&invite, server_addr, &aid).await;
         log::info!("Sending INVITE to {}", uri);
 
         self.emit(SipEvent::CallStateChanged(CallEvent::new(
@@ -1167,7 +1177,7 @@ impl SipManager {
 
         transport.send_to(refer.as_bytes(), server_addr).await?;
 
-        self.log_sip_sent(&refer, server_addr, &account_id).await;
+
         log::info!(
             "Sent blind REFER to transfer call {} -> {}",
             call_id,
@@ -1244,7 +1254,7 @@ impl SipManager {
 
         transport.send_to(refer.as_bytes(), server_addr).await?;
 
-        self.log_sip_sent(&refer, server_addr, &account_id).await;
+
         log::info!(
             "Sent attended REFER to transfer call {} (with Replaces for call {})",
             call_id_a,
@@ -1528,7 +1538,7 @@ impl SipManager {
 
         transport.send_to(msg.as_bytes(), server_addr).await?;
 
-        self.log_sip_sent(&msg, server_addr, &aid).await;
+
         log::info!(
             "Sent SUBSCRIBE for {} (event={})",
             target_uri,
@@ -1587,7 +1597,7 @@ impl SipManager {
 
         transport.send_to(msg.as_bytes(), server_addr).await?;
 
-        self.log_sip_sent(&msg, server_addr, &aid).await;
+
         log::info!("Sent SUBSCRIBE (Expires: 0) for {}", target_uri);
 
         {
@@ -1721,7 +1731,6 @@ impl SipManager {
     /// Start subscription refresh timers for all active subscriptions
     fn start_subscribe_refresh_timer(&self) {
         let state = self.state.clone();
-        let event_tx = self.event_tx.clone();
 
         tokio::spawn(async move {
             loop {
@@ -1798,36 +1807,12 @@ impl SipManager {
 
                     if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
                         log::error!("SUBSCRIBE refresh failed for {}: {}", target_uri, e);
-                        let _ = event_tx.send(SipEvent::DiagnosticMessage(DiagnosticLog {
-                            timestamp: diagnostics::now_millis(),
-                            account_id: aid.clone(),
-                            direction: diagnostics::MessageDirection::Sent,
-                            remote_addr: server_addr.to_string(),
-                            summary: format!("SUBSCRIBE refresh failed: {}", e),
-                            raw: msg,
-                        }));
                     } else {
                         log::debug!("Sent SUBSCRIBE refresh for {} (cseq={})", target_uri, cseq);
                     }
                 }
             }
         });
-    }
-
-    async fn log_sip_sent(&self, msg: &str, remote: SocketAddr, account_id: &str) {
-        let log = DiagnosticLog {
-            timestamp: diagnostics::now_millis(),
-            account_id: account_id.to_string(),
-            direction: diagnostics::MessageDirection::Sent,
-            remote_addr: remote.to_string(),
-            summary: diagnostics::summarize_sip(msg),
-            raw: msg.to_string(),
-        };
-        {
-            let s = self.state.read().await;
-            s.diagnostic_store.push(log.clone()).await;
-        }
-        self.emit(SipEvent::DiagnosticMessage(log));
     }
 
     fn start_receive_loop_for_account(&self, mut rx: mpsc::Receiver<SipMessage>, account_id: String) {

@@ -9,7 +9,6 @@ use crate::sip::builder::{
     self, build_ack, build_invite_with_public_ip, extract_all_headers, extract_header, extract_to_tag,
     extract_via_branch, parse_sdp_connection, AuthHeaderType,
 };
-use crate::sip::diagnostics::{self, DiagnosticLog};
 use crate::sip::state::CallFSMEvent;
 use crate::sip::{codec, media, CallEvent, ManagerState, SipEvent};
 
@@ -314,7 +313,7 @@ pub async fn handle_invite_response(
                 })
             };
 
-            let (account_id, account_config, local_addr, server_addr, transport, remote_uri, sip_call_id, from_tag, rtp_port, public_addr, _existing_srtp_key) = match retry_data {
+            let (_account_id, account_config, local_addr, server_addr, transport, remote_uri, sip_call_id, from_tag, rtp_port, public_addr, _existing_srtp_key) = match retry_data {
                 Some((aid, ac, Some(la), Some(sa), Some(t), ru, sci, ft, rp, pa, sk)) => (aid, ac, la, sa, t, ru, sci, ft, rp, pa, sk),
                 _ => return,
             };
@@ -380,18 +379,6 @@ pub async fn handle_invite_response(
 
             if let Err(e) = transport.send_to(invite.as_bytes(), server_addr).await {
                 log::error!("Failed to send authenticated INVITE: {}", e);
-            } else {
-                let log = DiagnosticLog {
-                    timestamp: diagnostics::now_millis(),
-                    account_id: account_id.clone(),
-                    direction: diagnostics::MessageDirection::Sent,
-                    remote_addr: server_addr.to_string(),
-                    summary: diagnostics::summarize_sip(&invite),
-                    raw: invite.clone(),
-                };
-                let s = state.read().await;
-                s.diagnostic_store.push(log.clone()).await;
-                let _ = event_tx.send(SipEvent::DiagnosticMessage(log));
             }
         }
         _ if status >= 400 => {

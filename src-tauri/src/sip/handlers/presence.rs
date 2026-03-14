@@ -6,7 +6,6 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::sip::auth::DigestAuth;
 use crate::sip::builder::{build_subscribe, extract_header, extract_to_tag};
-use crate::sip::diagnostics::{self, DiagnosticLog};
 use crate::sip::{presence, BlfEntry, ManagerState, SipEvent, SubscriptionState};
 
 use super::request::build_simple_response;
@@ -14,7 +13,7 @@ use super::request::build_simple_response;
 /// Handle SUBSCRIBE response (200 OK, auth challenges, errors).
 pub async fn handle_subscribe_response(
     state: &Arc<RwLock<ManagerState>>,
-    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    _event_tx: &mpsc::UnboundedSender<SipEvent>,
     text: &str,
     status: u16,
     account_id: &str,
@@ -137,20 +136,6 @@ pub async fn handle_subscribe_response(
             if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
                 log::error!("Failed to send authenticated SUBSCRIBE: {}", e);
             }
-
-            let diag = DiagnosticLog {
-                timestamp: diagnostics::now_millis(),
-                account_id: account_id.to_string(),
-                direction: diagnostics::MessageDirection::Sent,
-                remote_addr: server_addr.to_string(),
-                summary: diagnostics::summarize_sip(&msg),
-                raw: msg,
-            };
-            {
-                let s = state.read().await;
-                s.diagnostic_store.push(diag.clone()).await;
-            }
-            let _ = event_tx.send(SipEvent::DiagnosticMessage(diag));
         }
         489 => {
             log::warn!("SUBSCRIBE rejected: Bad Event (489)");

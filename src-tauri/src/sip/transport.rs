@@ -4,6 +4,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Mutex};
 
+use super::diagnostics::DiagnosticSender;
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub enum TransportType {
@@ -49,6 +51,13 @@ pub enum SipTransport {
 
 impl SipTransport {
     pub async fn send_to(&self, data: &[u8], addr: SocketAddr) -> Result<(), String> {
+        // Log outbound SIP message to diagnostics before sending
+        if let Some(diag) = self.diagnostic_sender() {
+            if let Ok(text) = std::str::from_utf8(data) {
+                diag.log_sent(text, addr).await;
+            }
+        }
+
         match self {
             Self::Udp(t) => t.send_to(data, addr).await,
             Self::Tcp(t) => t.send_to(data, addr).await,
@@ -63,6 +72,23 @@ impl SipTransport {
             Self::Tls(t) => t.local_addr(),
         }
     }
+
+    /// Attach a diagnostic sender to this transport for automatic send logging.
+    pub fn set_diagnostic_sender(&mut self, sender: DiagnosticSender) {
+        match self {
+            Self::Udp(t) => t.diagnostic = Some(sender),
+            Self::Tcp(t) => t.diagnostic = Some(sender),
+            Self::Tls(t) => t.diagnostic = Some(sender),
+        }
+    }
+
+    fn diagnostic_sender(&self) -> Option<&DiagnosticSender> {
+        match self {
+            Self::Udp(t) => t.diagnostic.as_ref(),
+            Self::Tcp(t) => t.diagnostic.as_ref(),
+            Self::Tls(t) => t.diagnostic.as_ref(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +99,7 @@ impl SipTransport {
 pub struct UdpTransport {
     socket: Arc<UdpSocket>,
     local_addr: SocketAddr,
+    pub diagnostic: Option<DiagnosticSender>,
 }
 
 impl UdpTransport {
@@ -110,7 +137,7 @@ impl UdpTransport {
             }
         });
 
-        Ok((Self { socket, local_addr }, rx))
+        Ok((Self { socket, local_addr, diagnostic: None }, rx))
     }
 
     pub async fn send_to(&self, data: &[u8], addr: SocketAddr) -> Result<(), String> {
@@ -235,6 +262,7 @@ type AsyncWriter = Box<dyn tokio::io::AsyncWrite + Send + Unpin>;
 pub struct TcpTransport {
     writer: Arc<Mutex<AsyncWriter>>,
     local_addr: SocketAddr,
+    pub diagnostic: Option<DiagnosticSender>,
 }
 
 impl TcpTransport {
@@ -270,7 +298,7 @@ impl TcpTransport {
             stream_receive_loop(read_half, tx, remote, "TCP").await;
         });
 
-        Ok((Self { writer, local_addr }, rx))
+        Ok((Self { writer, local_addr, diagnostic: None }, rx))
     }
 
     pub async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> Result<(), String> {
@@ -297,6 +325,7 @@ impl TcpTransport {
 pub struct TlsTransport {
     writer: Arc<Mutex<AsyncWriter>>,
     local_addr: SocketAddr,
+    pub diagnostic: Option<DiagnosticSender>,
 }
 
 impl TlsTransport {
@@ -350,7 +379,7 @@ impl TlsTransport {
             stream_receive_loop(read_half, tx, remote, "TLS").await;
         });
 
-        Ok((Self { writer, local_addr }, rx))
+        Ok((Self { writer, local_addr, diagnostic: None }, rx))
     }
 
     pub async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> Result<(), String> {
