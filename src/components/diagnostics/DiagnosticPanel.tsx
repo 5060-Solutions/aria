@@ -1036,6 +1036,22 @@ function AccountTabContent({
   );
 }
 
+// --- Message classification helpers ---
+
+type MessageCategory = "calls" | "register" | "keepalive" | "other";
+
+const CALL_METHODS = new Set(["INVITE", "BYE", "ACK", "CANCEL", "REFER", "INFO", "UPDATE", "PRACK"]);
+
+function getMessageCategory(raw: string): MessageCategory {
+  const cseq = raw.match(/^CSeq:\s*\d+\s+(\w+)/mi);
+  const method = cseq?.[1]?.toUpperCase();
+  if (!method) return "other";
+  if (CALL_METHODS.has(method)) return "calls";
+  if (method === "REGISTER") return "register";
+  if (method === "OPTIONS") return "keepalive";
+  return "other";
+}
+
 // --- Main Panel ---
 
 export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
@@ -1047,6 +1063,9 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
   const [selectedTab, setSelectedTab] = useState(0);
   const [expandedSet, setExpandedSet] = useState<Set<number>>(new Set());
   const [viewMode, setViewMode] = useState<"messages" | "ladder">("messages");
+  const [activeFilters, setActiveFilters] = useState<Set<MessageCategory>>(
+    () => new Set(["calls", "register", "other"]),
+  );
   const [exportMenuAnchor, setExportMenuAnchor] = useState<HTMLElement | null>(null);
 
   const toggleExpanded = useCallback((idx: number) => {
@@ -1194,6 +1213,23 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
     ? logs.filter(l => l.accountId === selectedAccount.accountId)
     : logs;
 
+  const filteredLogs = useMemo(() => {
+    const source = hasMultipleAccounts ? accountLogs : logs;
+    return source.filter(l => activeFilters.has(getMessageCategory(l.raw)));
+  }, [hasMultipleAccounts, accountLogs, logs, activeFilters]);
+
+  const toggleFilter = useCallback((cat: MessageCategory) => {
+    setActiveFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(cat)) {
+        if (next.size > 1) next.delete(cat);
+      } else {
+        next.add(cat);
+      }
+      return next;
+    });
+  }, []);
+
   return (
     <Box
       sx={{
@@ -1324,6 +1360,48 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
         </Tooltip>
       </Box>
 
+      {/* Filter chips */}
+      <Box sx={{ display: "flex", gap: 0.5, px: 1.5, py: 0.4, flexWrap: "wrap" }}>
+        {(
+          [
+            { key: "calls", label: "Calls" },
+            { key: "register", label: "Register" },
+            { key: "keepalive", label: "OPTIONS" },
+            { key: "other", label: "Other" },
+          ] as const
+        ).map(({ key, label }) => {
+          const active = activeFilters.has(key);
+          return (
+            <Chip
+              key={key}
+              label={label}
+              size="small"
+              variant={active ? "filled" : "outlined"}
+              onClick={() => toggleFilter(key)}
+              sx={{
+                height: 20,
+                fontSize: "0.6rem",
+                fontWeight: 600,
+                borderRadius: "10px",
+                "& .MuiChip-label": { px: 0.75 },
+                opacity: active ? 1 : 0.45,
+                bgcolor: active
+                  ? alpha(theme.palette.primary.main, 0.12)
+                  : "transparent",
+                color: active ? "primary.main" : "text.secondary",
+                borderColor: active
+                  ? alpha(theme.palette.primary.main, 0.3)
+                  : alpha(theme.palette.divider, 0.3),
+                "&:hover": {
+                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  opacity: 1,
+                },
+              }}
+            />
+          );
+        })}
+      </Box>
+
       {anyRegistering && (
         <LinearProgress
           sx={{
@@ -1394,11 +1472,11 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
       >
         {selectedAccount ? (
           viewMode === "ladder" ? (
-            <SipLadderDiagram logs={hasMultipleAccounts ? accountLogs : logs} />
+            <SipLadderDiagram logs={filteredLogs} />
           ) : (
             <AccountTabContent
               account={selectedAccount}
-              logs={hasMultipleAccounts ? accountLogs : logs}
+              logs={filteredLogs}
               latencyMs={status?.latencyMs ?? null}
               expandedSet={expandedSet}
               toggleExpanded={toggleExpanded}
