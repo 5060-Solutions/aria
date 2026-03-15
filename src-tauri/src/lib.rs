@@ -119,6 +119,8 @@ pub fn run() {
             commands::get_system_status,
             commands::export_sip_log_text,
             commands::export_sip_log_pcap,
+            commands::export_call_pcap,
+            commands::get_call_sip_trace,
             commands::store_credential,
             commands::get_credential,
             commands::delete_credential,

@@ -187,6 +187,7 @@ pub async fn handle_register_response(
                     direction: diagnostics::MessageDirection::Sent,
                     remote_addr: server_addr.to_string(),
                     summary: debug_summary.clone(),
+                    call_id: None, // Auth debug entry, not a SIP message
                     raw: format!(
                         "{}\n\nChallenge header:\n{}\n\nAuth response header:\n{}",
                         debug_summary,

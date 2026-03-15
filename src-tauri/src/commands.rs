@@ -860,6 +860,49 @@ pub async fn export_diagnostic_report(
     Ok(path)
 }
 
+/// Export PCAP for a specific call (filtered by SIP Call-ID)
+#[tauri::command]
+pub async fn export_call_pcap(
+    manager: State<'_, SipManager>,
+    sip_call_id: String,
+    path: Option<String>,
+) -> Result<String, String> {
+    let logs = manager.get_diagnostics().await;
+    let filtered: Vec<_> = logs
+        .into_iter()
+        .filter(|l| l.call_id.as_deref() == Some(&sip_call_id))
+        .collect();
+
+    if filtered.is_empty() {
+        return Err("No SIP messages found for this call".into());
+    }
+
+    let bytes = build_pcap(&filtered);
+
+    if let Some(file_path) = path {
+        std::fs::write(&file_path, &bytes)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+        Ok(file_path)
+    } else {
+        Ok(base64_encode(&bytes))
+    }
+}
+
+/// Get SIP message trace for a specific call
+#[tauri::command]
+pub async fn get_call_sip_trace(
+    manager: State<'_, SipManager>,
+    sip_call_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    let logs = manager.get_diagnostics().await;
+    let filtered: Vec<_> = logs
+        .into_iter()
+        .filter(|l| l.call_id.as_deref() == Some(&sip_call_id))
+        .map(|l| serde_json::to_value(l).unwrap_or_default())
+        .collect();
+    Ok(filtered)
+}
+
 /// Export call history as CSV
 #[tauri::command]
 pub async fn export_call_history_csv(
@@ -884,7 +927,114 @@ pub async fn export_call_history_csv(
     
     std::fs::write(&path, &csv)
         .map_err(|e| format!("Failed to write file: {}", e))?;
-    
+
     Ok(path)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sip::diagnostics::{DiagnosticLog, MessageDirection};
+
+    fn make_log(call_id: Option<&str>, direction: MessageDirection, remote: &str) -> DiagnosticLog {
+        DiagnosticLog {
+            timestamp: 1710000000000,
+            account_id: "test-account".to_string(),
+            direction,
+            remote_addr: remote.to_string(),
+            summary: "INVITE sip:bob@example.com SIP/2.0".to_string(),
+            raw: format!(
+                "INVITE sip:bob@example.com SIP/2.0\r\n\
+                 Call-ID: {}\r\n\
+                 \r\n",
+                call_id.unwrap_or("no-id")
+            ),
+            call_id: call_id.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_build_pcap_produces_valid_header() {
+        let logs = vec![make_log(Some("call-1"), MessageDirection::Sent, "10.0.0.1:5060")];
+        let pcap = build_pcap(&logs);
+
+        // PCAP magic number (little-endian): 0xa1b2c3d4
+        assert_eq!(pcap[0..4], [0xd4, 0xc3, 0xb2, 0xa1]);
+        // Version 2.4
+        assert_eq!(pcap[4..6], 2u16.to_le_bytes());
+        assert_eq!(pcap[6..8], 4u16.to_le_bytes());
+        // Link type 228 (LINKTYPE_IPV4)
+        assert_eq!(pcap[20..24], 228u32.to_le_bytes());
+    }
+
+    #[test]
+    fn test_build_pcap_empty_logs() {
+        let pcap = build_pcap(&[]);
+        // Just global header (24 bytes)
+        assert_eq!(pcap.len(), 24);
+    }
+
+    #[test]
+    fn test_build_pcap_sent_vs_received_direction() {
+        let sent = vec![make_log(Some("c1"), MessageDirection::Sent, "10.0.0.2:5060")];
+        let recv = vec![make_log(Some("c1"), MessageDirection::Received, "10.0.0.2:5060")];
+
+        let pcap_sent = build_pcap(&sent);
+        let pcap_recv = build_pcap(&recv);
+
+        // Both should produce valid PCAPs with different IP address ordering
+        assert!(pcap_sent.len() > 24);
+        assert!(pcap_recv.len() > 24);
+        // The IP headers should differ (source/dest swapped)
+        assert_ne!(pcap_sent[24..], pcap_recv[24..]);
+    }
+
+    #[test]
+    fn test_build_pcap_multiple_packets() {
+        let logs = vec![
+            make_log(Some("call-1"), MessageDirection::Sent, "10.0.0.1:5060"),
+            make_log(Some("call-1"), MessageDirection::Received, "10.0.0.1:5060"),
+            make_log(Some("call-2"), MessageDirection::Sent, "10.0.0.2:5060"),
+        ];
+        let pcap = build_pcap(&logs);
+        // Should have global header + 3 packets
+        assert!(pcap.len() > 24 * 3);
+    }
+
+    #[test]
+    fn test_build_pcap_filter_by_call_id() {
+        let logs = vec![
+            make_log(Some("call-A"), MessageDirection::Sent, "10.0.0.1:5060"),
+            make_log(Some("call-B"), MessageDirection::Sent, "10.0.0.1:5060"),
+            make_log(Some("call-A"), MessageDirection::Received, "10.0.0.1:5060"),
+        ];
+
+        // Filter to only call-A
+        let filtered: Vec<_> = logs
+            .into_iter()
+            .filter(|l| l.call_id.as_deref() == Some("call-A"))
+            .collect();
+        assert_eq!(filtered.len(), 2);
+
+        let pcap = build_pcap(&filtered);
+        assert!(pcap.len() > 24);
+    }
+
+    #[test]
+    fn test_base64_encode_basic() {
+        assert_eq!(base64_encode(b"Hello"), "SGVsbG8=");
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"a"), "YQ==");
+        assert_eq!(base64_encode(b"ab"), "YWI=");
+        assert_eq!(base64_encode(b"abc"), "YWJj");
+    }
+
+    #[test]
+    fn test_chrono_format() {
+        let formatted = chrono_format(1710000000000);
+        // Should produce HH:MM:SS.mmm format
+        assert_eq!(formatted.len(), 12);
+        assert!(formatted.contains(':'));
+        assert!(formatted.contains('.'));
+    }
+}

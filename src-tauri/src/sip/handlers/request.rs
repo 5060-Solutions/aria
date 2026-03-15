@@ -66,6 +66,7 @@ pub async fn handle_incoming_request(
                     })
                     .unwrap_or_else(|| format!("sip:unknown@{}", remote.ip()));
 
+                let sip_call_id = call_id.clone();
                 let call = CallFSM::new_inbound(
                     account_id,
                     &remote_uri,
@@ -106,7 +107,7 @@ pub async fn handle_incoming_request(
                     "incoming",
                     &remote_uri_for_event,
                     "inbound",
-                );
+                ).with_sip_call_id(&sip_call_id);
                 let _ = event_tx.send(SipEvent::CallStateChanged(event));
             }
         }

@@ -4,6 +4,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{mpsc, Mutex};
 
+/// Configure TCP keepalive on a TcpStream for fast dead-peer detection.
+/// idle=10s, interval=5s → detects dead connections within ~20s.
+fn configure_tcp_keepalive(stream: &TcpStream) {
+    let sock = socket2::SockRef::from(stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(std::time::Duration::from_secs(10))
+        .with_interval(std::time::Duration::from_secs(5));
+    if let Err(e) = sock.set_tcp_keepalive(&keepalive) {
+        log::warn!("Failed to set TCP keepalive: {}", e);
+    }
+}
+
 use super::diagnostics::DiagnosticSender;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -288,6 +300,8 @@ impl TcpTransport {
             server_addr
         );
 
+        configure_tcp_keepalive(&stream);
+
         let (read_half, write_half) = stream.into_split();
         let writer: Arc<Mutex<AsyncWriter>> = Arc::new(Mutex::new(Box::new(write_half)));
 
@@ -345,6 +359,8 @@ impl TlsTransport {
         let local_addr = tcp_stream
             .local_addr()
             .map_err(|e| format!("Failed to get TLS local addr: {}", e))?;
+
+        configure_tcp_keepalive(&tcp_stream);
 
         // Build a TLS config that accepts any certificate (many PBXes use self-signed)
         let tls_config =

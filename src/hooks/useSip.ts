@@ -19,6 +19,7 @@ interface CallPayload {
   remoteUri: string;
   remoteName: string | null;
   direction: string;
+  sipCallId?: string;
 }
 
 /** Auto-registers ALL enabled accounts on app launch. */
@@ -115,6 +116,7 @@ export function useSipEvents() {
               ? Math.floor((Date.now() - activeCall.connectTime) / 1000)
               : 0,
             missed: !activeCall.connectTime,
+            sipCallId: p.sipCallId ?? activeCall.sipCallId,
           });
         }
         setActiveCall(null);
@@ -133,6 +135,7 @@ export function useSipEvents() {
           muted: false,
           held: false,
           recording: false,
+          sipCallId: p.sipCallId,
         });
         return;
       }
@@ -146,6 +149,7 @@ export function useSipEvents() {
             p.state === "connected" && !activeCall.connectTime
               ? Date.now()
               : activeCall.connectTime,
+          sipCallId: p.sipCallId ?? activeCall.sipCallId,
         });
       }
     });
@@ -281,6 +285,23 @@ export interface SystemContact {
   id: string;
   name: string;
   phone: string | null;
+}
+
+// ── Per-call diagnostics ─────────────────────────────────────────────────────
+
+/** Export PCAP for a specific call by SIP Call-ID */
+export async function exportCallPcap(
+  sipCallId: string,
+  path?: string,
+): Promise<string> {
+  return invoke<string>("export_call_pcap", { sipCallId, path });
+}
+
+/** Get SIP message trace for a specific call */
+export async function getCallSipTrace(
+  sipCallId: string,
+): Promise<unknown[]> {
+  return invoke<unknown[]>("get_call_sip_trace", { sipCallId });
 }
 
 export async function fetchSystemContacts(): Promise<SystemContact[]> {

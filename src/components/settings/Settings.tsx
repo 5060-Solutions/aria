@@ -351,7 +351,7 @@ export function Settings() {
     if (!account) return;
 
     const currentState = getAccountStatus(accountId);
-    if (currentState === "registered" || currentState === "registering") return;
+    if (currentState === "registered" || currentState === "registering" || currentState === "reconnecting") return;
 
     // Try to re-register just this account
     setAccountRegistrationState(accountId, "registering");
@@ -588,7 +588,7 @@ export function Settings() {
                       bgcolor:
                         status === "registered"
                           ? alpha(theme.palette.success.main, 0.15)
-                          : status === "registering"
+                          : status === "registering" || status === "reconnecting"
                             ? alpha(theme.palette.warning.main, 0.15)
                             : status === "error"
                               ? alpha(theme.palette.error.main, 0.15)
@@ -603,7 +603,7 @@ export function Settings() {
                         color:
                           status === "registered"
                             ? "success.main"
-                            : status === "registering"
+                            : status === "registering" || status === "reconnecting"
                               ? "warning.main"
                               : status === "error"
                                 ? "error.main"
@@ -614,9 +614,11 @@ export function Settings() {
                         ? t("settings.online")
                         : status === "registering"
                           ? "..."
-                          : status === "error"
-                            ? t("settings.error")
-                            : t("settings.offline")}
+                          : status === "reconnecting"
+                            ? t("settings.reconnect") + "..."
+                            : status === "error"
+                              ? t("settings.error")
+                              : t("settings.offline")}
                     </Typography>
                   </Box>
                 )}

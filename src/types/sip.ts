@@ -36,6 +36,7 @@ export type RegistrationState =
   | "unregistered"
   | "registering"
   | "registered"
+  | "reconnecting"
   | "error";
 
 export type CallState =
@@ -118,6 +119,8 @@ export interface ActiveCall {
   recordingPath?: string;
   /** Conference ID if this call is part of a conference */
   conferenceId?: string;
+  /** SIP Call-ID header (for linking to PCAP/diagnostic traces) */
+  sipCallId?: string;
 }
 
 export interface CallHistoryEntry {
@@ -130,6 +133,8 @@ export interface CallHistoryEntry {
   duration: number;
   missed: boolean;
   recordingPath?: string;
+  /** SIP Call-ID header (for retrieving per-call PCAP from diagnostics) */
+  sipCallId?: string;
 }
 
 export type ContactSource = "local" | "google" | "system";

@@ -91,6 +91,7 @@ pub enum RegistrationStatus {
     Unregistered,
     Registering,
     Registered,
+    Reconnecting,
     Error,
 }
 
@@ -111,6 +112,13 @@ pub enum RegistrationState {
         /// Public address discovered via Via received/rport
         public_addr: Option<SocketAddr>,
     },
+    /// Transport lost, auto-reconnecting
+    Reconnecting {
+        /// When reconnection started
+        since: Instant,
+        /// Current attempt number (for backoff)
+        attempt: u32,
+    },
     /// Registration failed
     Error {
         /// Error message
@@ -125,6 +133,7 @@ impl RegistrationState {
             Self::Unregistered => "unregistered",
             Self::Registering { .. } => "registering",
             Self::Registered { .. } => "registered",
+            Self::Reconnecting { .. } => "reconnecting",
             Self::Error { .. } => "error",
         }
     }
@@ -141,6 +150,7 @@ impl RegistrationState {
             Self::Unregistered => RegistrationStatus::Unregistered,
             Self::Registering { .. } => RegistrationStatus::Registering,
             Self::Registered { .. } => RegistrationStatus::Registered,
+            Self::Reconnecting { .. } => RegistrationStatus::Reconnecting,
             Self::Error { .. } => RegistrationStatus::Error,
         }
     }
@@ -295,10 +305,47 @@ impl RegistrationFSM {
         self.local_addr = Some(addr);
     }
 
+    /// Transition to reconnecting state (transport lost)
+    pub fn transport_lost(&mut self) {
+        match &self.state {
+            RegistrationState::Registered { .. }
+            | RegistrationState::Registering { .. } => {
+                self.state = RegistrationState::Reconnecting {
+                    since: Instant::now(),
+                    attempt: 0,
+                };
+            }
+            _ => {
+                log::warn!(
+                    "transport_lost called in unexpected state: {}",
+                    self.state.name()
+                );
+            }
+        }
+    }
+
+    /// Increment reconnection attempt counter
+    pub fn reconnect_attempt(&mut self) {
+        if let RegistrationState::Reconnecting { attempt, .. } = &mut self.state {
+            *attempt += 1;
+        }
+    }
+
+    /// Get the current reconnection attempt number
+    #[allow(dead_code)]
+    pub fn reconnect_attempt_count(&self) -> u32 {
+        match &self.state {
+            RegistrationState::Reconnecting { attempt, .. } => *attempt,
+            _ => 0,
+        }
+    }
+
     /// Start registration
     pub fn start_registration(&mut self, account: AccountConfig) -> RegistrationTransitionResult {
         match &self.state {
-            RegistrationState::Unregistered | RegistrationState::Error { .. } => {
+            RegistrationState::Unregistered
+            | RegistrationState::Error { .. }
+            | RegistrationState::Reconnecting { .. } => {
                 self.account = Some(account);
                 self.cseq += 1;
                 self.state = RegistrationState::Registering { auth_attempts: 0 };
@@ -500,6 +547,7 @@ mod tests {
             domain: "example.com".to_string(),
             display_name: "Test User".to_string(),
             auth_username: None,
+            auth_realm: None,
             transport: TransportType::Udp,
             port: 5060,
             registrar: None,
@@ -632,5 +680,111 @@ mod tests {
             result,
             RegistrationTransitionResult::InvalidTransition { .. }
         ));
+    }
+
+    #[test]
+    fn test_transport_lost_from_registered() {
+        let mut fsm = RegistrationFSM::new();
+        fsm.start_registration(test_account());
+        fsm.registration_success(None);
+        assert_eq!(fsm.state_name(), "registered");
+
+        fsm.transport_lost();
+        assert_eq!(fsm.state_name(), "reconnecting");
+        assert_eq!(fsm.status(), RegistrationStatus::Reconnecting);
+        assert_eq!(fsm.reconnect_attempt_count(), 0);
+    }
+
+    #[test]
+    fn test_transport_lost_from_registering() {
+        let mut fsm = RegistrationFSM::new();
+        fsm.start_registration(test_account());
+        assert_eq!(fsm.state_name(), "registering");
+
+        fsm.transport_lost();
+        assert_eq!(fsm.state_name(), "reconnecting");
+    }
+
+    #[test]
+    fn test_reconnect_attempt_counter() {
+        let mut fsm = RegistrationFSM::new();
+        fsm.start_registration(test_account());
+        fsm.registration_success(None);
+        fsm.transport_lost();
+
+        assert_eq!(fsm.reconnect_attempt_count(), 0);
+        fsm.reconnect_attempt();
+        assert_eq!(fsm.reconnect_attempt_count(), 1);
+        fsm.reconnect_attempt();
+        assert_eq!(fsm.reconnect_attempt_count(), 2);
+    }
+
+    #[test]
+    fn test_start_registration_from_reconnecting() {
+        let mut fsm = RegistrationFSM::new();
+        fsm.start_registration(test_account());
+        fsm.registration_success(None);
+        fsm.transport_lost();
+        assert_eq!(fsm.state_name(), "reconnecting");
+
+        // Should be able to re-register from reconnecting
+        let result = fsm.start_registration(test_account());
+        assert!(matches!(
+            result,
+            RegistrationTransitionResult::SendRegister { auth_header: None }
+        ));
+        assert_eq!(fsm.state_name(), "registering");
+    }
+
+    #[test]
+    fn test_transport_lost_noop_when_unregistered() {
+        let mut fsm = RegistrationFSM::new();
+        assert_eq!(fsm.state_name(), "unregistered");
+
+        // Should not change state
+        fsm.transport_lost();
+        assert_eq!(fsm.state_name(), "unregistered");
+    }
+
+    #[test]
+    fn test_transport_lost_noop_when_error() {
+        let mut fsm = RegistrationFSM::new();
+        fsm.start_registration(test_account());
+        fsm.registration_timeout();
+        assert_eq!(fsm.state_name(), "error");
+
+        // Should not change state
+        fsm.transport_lost();
+        assert_eq!(fsm.state_name(), "error");
+    }
+
+    #[test]
+    fn test_reconnecting_to_registered_full_cycle() {
+        let mut fsm = RegistrationFSM::new();
+
+        // Initial registration
+        fsm.start_registration(test_account());
+        fsm.registration_success(None);
+        assert_eq!(fsm.state_name(), "registered");
+
+        // Transport dies
+        fsm.transport_lost();
+        assert_eq!(fsm.state_name(), "reconnecting");
+
+        // Reconnect loop starts registration
+        fsm.start_registration(test_account());
+        assert_eq!(fsm.state_name(), "registering");
+
+        // Registration succeeds again
+        fsm.registration_success(None);
+        assert_eq!(fsm.state_name(), "registered");
+    }
+
+    #[test]
+    fn test_reconnecting_serializes_correctly() {
+        assert_eq!(
+            serde_json::to_string(&RegistrationStatus::Reconnecting).unwrap(),
+            "\"reconnecting\""
+        );
     }
 }

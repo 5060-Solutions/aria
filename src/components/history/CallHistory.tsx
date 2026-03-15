@@ -28,9 +28,10 @@ import PhoneIcon from "@mui/icons-material/Phone";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import AccountCircleIcon from "@mui/icons-material/AccountCircle";
+import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
-import { playRecording } from "../../hooks/useSip";
+import { playRecording, exportCallPcap } from "../../hooks/useSip";
 import type { CallHistoryEntry } from "../../types/sip";
 import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
 
@@ -430,6 +431,48 @@ export function CallHistory() {
                     >
                       <PlayArrowIcon />
                     </IconButton>
+                  </Box>
+                )}
+
+                {selectedEntry.sipCallId && (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                    <DescriptionOutlinedIcon sx={{ color: "text.secondary" }} />
+                    <Box sx={{ flex: 1 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {t("history.sipTrace")}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        {t("history.sipTraceDescription")}
+                      </Typography>
+                    </Box>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={async () => {
+                        try {
+                          const { save } = await import("@tauri-apps/plugin-dialog");
+                          const sipId = selectedEntry.sipCallId;
+                          if (!sipId) return;
+                          const path = await save({
+                            defaultPath: `aria-call-${selectedEntry.id.substring(0, 8)}.pcap`,
+                            filters: [{ name: "PCAP Files", extensions: ["pcap"] }],
+                          });
+                          if (path) {
+                            await exportCallPcap(sipId, path);
+                          }
+                        } catch {
+                          // Export failed silently
+                        }
+                      }}
+                      sx={{
+                        borderRadius: "8px",
+                        fontSize: "0.7rem",
+                        minWidth: "auto",
+                        px: 1.5,
+                      }}
+                    >
+                      PCAP
+                    </Button>
                   </Box>
                 )}
               </Box>

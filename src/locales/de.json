@@ -8,6 +8,7 @@
   "status": {
     "connected": "Verbunden",
     "connecting": "Verbinde...",
+    "reconnecting": "Verbindung wird wiederhergestellt...",
     "notConnected": "Nicht verbunden",
     "connectionError": "Verbindungsfehler",
     "noAccount": "Kein Konto konfiguriert"
@@ -47,7 +48,9 @@
     "sipUri": "SIP URI",
     "callRecorded": "Anruf aufgenommen",
     "recordingAvailable": "Aufnahme verfügbar",
-    "callBack": "Zurückrufen"
+    "callBack": "Zurückrufen",
+    "sipTrace": "SIP-Trace",
+    "sipTraceDescription": "Wireshark-kompatible PCAP herunterladen"
   },
   "contacts": {
     "title": "Kontakte",
@@ -101,7 +104,7 @@
     "signOutAll": "Alle Konten abmelden",
     "developerDiagnostics": "Entwickler-Diagnose",
     "sipTraceRtp": "SIP-Trace, RTP-Statistiken",
-    "about": "Aria v0.2.3",
+    "about": "Aria v0.2.4",
     "aboutDescription": "Ein modernes Softphone von 5060 Solutions.",
     "aboutLicense": "Kostenlos für nicht-kommerzielle Nutzung.",
     "language": "Sprache",
@@ -153,7 +156,7 @@
   },
   "diagnostics": {
     "title": "Diagnose",
-    "version": "Aria v0.2.3",
+    "version": "Aria v0.2.4",
     "connection": "Verbindung",
     "registered": "Registriert",
     "registering": "Registriere...",

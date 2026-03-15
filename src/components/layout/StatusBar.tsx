@@ -11,6 +11,7 @@ import { sipSetActiveAccount } from "../../hooks/useSip";
 const stateColors: Record<string, string> = {
   registered: "#4caf50",
   registering: "#ff9800",
+  reconnecting: "#ff9800",
   unregistered: "#9e9e9e",
   error: "#f44336",
 };
@@ -18,6 +19,7 @@ const stateColors: Record<string, string> = {
 const stateLabelsKeys: Record<string, string> = {
   registered: "status.connected",
   registering: "status.connecting",
+  reconnecting: "status.reconnecting",
   unregistered: "status.notConnected",
   error: "status.connectionError",
 };
@@ -40,7 +42,7 @@ export function StatusBar() {
     return accounts.filter((a) => {
       if (!a.enabled) return false;
       const state = accountStates[a.id]?.registrationState;
-      return state === "registered" || state === "registering";
+      return state === "registered" || state === "registering" || state === "reconnecting";
     });
   }, [accounts, accountStates]);
 

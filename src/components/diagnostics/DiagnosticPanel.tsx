@@ -202,6 +202,7 @@ function registrationColor(state: string): string {
     case "registered":
       return "#4caf50";
     case "registering":
+    case "reconnecting":
       return "#ff9800";
     case "error":
       return "#f44336";
@@ -218,6 +219,8 @@ function useRegistrationLabel() {
         return t("diagnostics.registered");
       case "registering":
         return t("diagnostics.registering");
+      case "reconnecting":
+        return t("diagnostics.reconnecting");
       case "error":
         return t("diagnostics.error");
       default:

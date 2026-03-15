@@ -1,5 +1,6 @@
 // Re-export digest auth from the shared crate
-pub use aria_sip_core::auth::{extract_challenge_realm, DigestAuth};
+#[allow(unused_imports)]
+pub use aria_sip_core::auth::{extract_challenge_realm, extract_param, DigestAuth};
 
 #[cfg(test)]
 mod tests {

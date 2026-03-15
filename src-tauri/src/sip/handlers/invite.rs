@@ -38,6 +38,7 @@ pub async fn handle_invite_response(
                 let _ = call.process(CallFSMEvent::RemoteRinging);
                 let _ = event_tx.send(SipEvent::CallStateChanged(
                     CallEvent::new(&account_id, &call_id, "ringing", &remote_uri, "outbound")
+                        .with_sip_call_id(&call_id_header)
                 ));
             }
         }
@@ -196,6 +197,7 @@ pub async fn handle_invite_response(
 
             let _ = event_tx.send(SipEvent::CallStateChanged(
                 CallEvent::new(&account_id, call_internal_id, "connected", remote_uri, "outbound")
+                    .with_sip_call_id(&call_id_header)
             ));
         }
         486 | 600 | 603 => {

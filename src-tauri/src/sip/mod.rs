@@ -71,6 +71,7 @@ impl CallEventPayload {
             remote_uri: call.remote_uri.clone(),
             remote_name: extract_display_name(&call.remote_uri),
             direction: call.direction_str().to_string(),
+            sip_call_id: Some(call.call_id_header.clone()),
         }
     }
 
@@ -90,7 +91,14 @@ impl CallEventPayload {
             remote_uri: uri.clone(),
             remote_name: extract_display_name(&uri),
             direction: direction.into(),
+            sip_call_id: None,
         }
+    }
+
+    /// Set the SIP Call-ID header value
+    pub fn with_sip_call_id(mut self, sip_call_id: impl Into<String>) -> Self {
+        self.sip_call_id = Some(sip_call_id.into());
+        self
     }
 }
 
@@ -104,6 +112,9 @@ pub struct CallEventPayload {
     pub remote_uri: String,
     pub remote_name: Option<String>,
     pub direction: String,
+    /// SIP Call-ID header value (for linking to PCAP/diagnostic traces)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sip_call_id: Option<String>,
 }
 
 pub struct SipManager {
@@ -301,11 +312,13 @@ impl SipManager {
                 let status = existing.registration.status();
                 if status == RegistrationState::Registering || status == RegistrationState::Registered {
                     // Update the config even if already registered (so SRTP mode, codecs, etc. take effect)
-                    log::info!("Account {} already registered — updating config (SRTP mode: {:?})", 
+                    log::info!("Account {} already registered — updating config (SRTP mode: {:?})",
                                account_id, account.srtp_mode);
                     existing.config = account;
                     return Ok("already_registering".into());
                 }
+                // If reconnecting, allow the manual register to proceed
+                // (it will replace the reconnect loop's work)
             }
         }
 
@@ -526,9 +539,15 @@ impl SipManager {
                     let mut s = state.write().await;
                     let account = match s.get_account_mut(&aid) {
                         Some(a) => a,
-                        None => continue,
+                        None => return, // Account removed — stop timer
                     };
-                    if account.registration.status() != RegistrationState::Registered {
+                    let status = account.registration.status();
+                    if status == RegistrationState::Reconnecting
+                        || status == RegistrationState::Unregistered
+                    {
+                        return; // Stop — reconnect or user-initiated unregister
+                    }
+                    if status != RegistrationState::Registered {
                         continue;
                     }
                     let (local_addr, server_addr) = match (account.local_addr, account.server_addr) {
@@ -557,11 +576,9 @@ impl SipManager {
 
                 if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
                     log::error!("Re-REGISTER failed for {}: {}", aid, e);
-                    let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                        account_id: aid.clone(),
-                        state: RegistrationState::Error,
-                        error: Some(format!("Re-registration failed: {}", e)),
-                    }));
+                    // Trigger transport death — let reconnect loop handle it
+                    Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone()).await;
+                    return; // Stop this timer
                 } else {
                     log::info!("Sent re-REGISTER for {} (cseq={})", aid, cseq);
                 }
@@ -577,15 +594,22 @@ impl SipManager {
         tokio::spawn(async move {
             let mut fail_count = 0u32;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
 
                 let (account_config, local_addr, server_addr, transport, cseq) = {
                     let mut s = state.write().await;
                     let account = match s.get_account_mut(&aid) {
                         Some(a) => a,
-                        None => continue,
+                        None => return, // Account removed — stop keepalive
                     };
-                    if account.registration.status() != RegistrationState::Registered {
+                    let status = account.registration.status();
+                    if status == RegistrationState::Reconnecting
+                        || status == RegistrationState::Unregistered
+                    {
+                        // Don't send keepalives during reconnection or when unregistered
+                        return; // Stop — reconnect loop handles recovery
+                    }
+                    if status != RegistrationState::Registered {
                         fail_count = 0;
                         continue;
                     }
@@ -616,13 +640,16 @@ impl SipManager {
 
                 if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
                     fail_count += 1;
-                    log::warn!("OPTIONS keepalive failed for {} ({}/3): {}", aid, fail_count, e);
-                    if fail_count >= 3 {
-                        let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                            account_id: aid.clone(),
-                            state: RegistrationState::Error,
-                            error: Some("Connection lost (OPTIONS keepalive failed)".into()),
-                        }));
+                    log::warn!("OPTIONS keepalive failed for {} ({}/2): {}", aid, fail_count, e);
+                    if fail_count >= 2 {
+                        // Trigger transport death — the receive loop exit will handle reconnection
+                        log::error!("OPTIONS keepalive lost for {} — triggering transport death", aid);
+                        Self::handle_transport_death(
+                            state.clone(),
+                            event_tx.clone(),
+                            aid.clone(),
+                        ).await;
+                        return; // Stop this keepalive — reconnect will start a new one
                     }
                 } else {
                     fail_count = 0;
@@ -788,9 +815,10 @@ impl SipManager {
 
         log::info!("Sending INVITE to {}", uri);
 
+        let sip_call_id_header = call.call_id_header.clone();
         self.emit(SipEvent::CallStateChanged(CallEvent::new(
             &aid, &id, "dialing", uri, "outbound"
-        )));
+        ).with_sip_call_id(&sip_call_id_header)));
 
         {
             let mut s = self.state.write().await;
@@ -1836,6 +1864,7 @@ impl SipManager {
                     remote_addr: msg.remote.to_string(),
                     summary: diagnostics::summarize_sip(&text),
                     raw: text.clone(),
+                    call_id: diagnostics::extract_sip_call_id(&text),
                 };
                 {
                     let s = state.read().await;
@@ -1849,7 +1878,317 @@ impl SipManager {
                     handlers::handle_response(&state, &event_tx, &text, &aid).await;
                 }
             }
+
+            // Receive loop ended — transport is dead.
+            // Only trigger reconnect if we were registered/registering (not if user unregistered).
+            log::warn!("Receive loop ended for account {} — transport dead", aid);
+            Self::handle_transport_death(state, event_tx, aid).await;
         });
+    }
+
+    /// Handle transport death: clean up stale state, end active calls, and start reconnection.
+    fn handle_transport_death(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        account_id: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+        let should_reconnect = {
+            let mut s = state.write().await;
+            let account = match s.accounts.get_mut(&account_id) {
+                Some(a) => a,
+                None => return, // Account removed (user unregistered) — do nothing
+            };
+
+            let was_active = matches!(
+                account.registration.status(),
+                RegistrationState::Registered | RegistrationState::Registering
+            );
+
+            if !was_active {
+                // Already in error/unregistered/reconnecting — don't double-trigger
+                return;
+            }
+
+            // Transition to reconnecting
+            account.registration.transport_lost();
+
+            // End all active calls for this account
+            let call_events: Vec<CallEventPayload> = account.calls.drain(..)
+                .map(|call| CallEventPayload::new(
+                    &account_id,
+                    &call.id,
+                    "ended",
+                    &call.remote_uri,
+                    call.direction_str(),
+                ))
+                .collect();
+
+            // Clear stale transport state
+            account.transport = None;
+            account.subscriptions.clear();
+            account.conferences.clear();
+            account.blf_states.clear();
+            // Reset realm fallback so reconnect gets a fresh auth attempt
+            account.realm_fallback = None;
+            account.realm_fallback_exhausted = false;
+
+            // Emit call ended events
+            for evt in call_events {
+                let _ = event_tx.send(SipEvent::CallStateChanged(evt));
+            }
+
+            was_active
+        };
+
+        if !should_reconnect {
+            return;
+        }
+
+        // Emit reconnecting state to UI
+        let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
+            account_id: account_id.clone(),
+            state: RegistrationState::Reconnecting,
+            error: Some("Connection lost — reconnecting...".into()),
+        }));
+
+        // Start auto-reconnect with exponential backoff (spawned as a new task)
+        tokio::spawn(Self::start_reconnect_loop(state, event_tx, account_id));
+        })
+    }
+
+    /// Exponential backoff reconnection loop.
+    /// Attempts to re-establish transport and re-register automatically.
+    async fn start_reconnect_loop(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        account_id: String,
+    ) {
+        const BACKOFF_SECS: &[u64] = &[1, 2, 4, 8, 16, 30];
+
+        for attempt in 0u32.. {
+            let delay = BACKOFF_SECS[std::cmp::min(attempt as usize, BACKOFF_SECS.len() - 1)];
+
+            // Check if account still exists and is still in reconnecting state
+            {
+                let s = state.read().await;
+                match s.accounts.get(&account_id) {
+                    Some(account) => {
+                        let status = account.registration.status();
+                        if status != RegistrationState::Reconnecting {
+                            // User manually unregistered or re-registered — stop reconnecting
+                            log::info!(
+                                "Reconnect loop stopping for {} — state changed to {:?}",
+                                account_id,
+                                status
+                            );
+                            return;
+                        }
+                    }
+                    None => {
+                        // Account removed — stop reconnecting
+                        log::info!("Reconnect loop stopping for {} — account removed", account_id);
+                        return;
+                    }
+                }
+            }
+
+            log::info!(
+                "Reconnect attempt {} for {} — waiting {}s",
+                attempt + 1,
+                account_id,
+                delay
+            );
+
+            // Update attempt counter in state
+            {
+                let mut s = state.write().await;
+                if let Some(account) = s.accounts.get_mut(&account_id) {
+                    account.registration.reconnect_attempt();
+                }
+            }
+
+            let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
+                account_id: account_id.clone(),
+                state: RegistrationState::Reconnecting,
+                error: Some(format!("Reconnecting (attempt {})...", attempt + 1)),
+            }));
+
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+
+            // Re-check state after sleeping (user may have unregistered during the wait)
+            let account_config = {
+                let s = state.read().await;
+                match s.accounts.get(&account_id) {
+                    Some(account) if account.registration.status() == RegistrationState::Reconnecting => {
+                        account.config.clone()
+                    }
+                    _ => {
+                        log::info!("Reconnect loop stopping for {} — state changed during backoff", account_id);
+                        return;
+                    }
+                }
+            };
+
+            // Attempt to reconnect: resolve, connect transport, send REGISTER
+            match Self::attempt_reconnect(&state, &event_tx, &account_id, &account_config).await {
+                Ok(rx) => {
+                    log::info!("Reconnect transport established for {} — waiting for registration", account_id);
+
+                    // Start a new receive loop for the reconnected transport
+                    let recv_state = state.clone();
+                    let recv_event_tx = event_tx.clone();
+                    let recv_aid = account_id.clone();
+                    tokio::spawn(async move {
+                        Self::run_receive_loop(recv_state.clone(), recv_event_tx.clone(), recv_aid.clone(), rx).await;
+                        // If this loop also dies, trigger reconnect again
+                        log::warn!("Receive loop ended again for account {} — transport dead", recv_aid);
+                        Self::handle_transport_death(recv_state, recv_event_tx, recv_aid).await;
+                    });
+
+                    return; // Successfully handed off to new receive loop
+                }
+                Err(e) => {
+                    log::warn!("Reconnect attempt {} failed for {}: {}", attempt + 1, account_id, e);
+                    // Continue to next attempt
+                }
+            }
+        }
+    }
+
+    /// Core receive loop logic, extracted so it can be reused by reconnection.
+    async fn run_receive_loop(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        account_id: String,
+        mut rx: mpsc::Receiver<SipMessage>,
+    ) {
+        while let Some(msg) = rx.recv().await {
+            let text = match String::from_utf8(msg.data) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            log::debug!("Received SIP for account {} from {}:\n{}", account_id, msg.remote, text);
+
+            let diag = DiagnosticLog {
+                timestamp: diagnostics::now_millis(),
+                account_id: account_id.clone(),
+                direction: diagnostics::MessageDirection::Received,
+                remote_addr: msg.remote.to_string(),
+                summary: diagnostics::summarize_sip(&text),
+                raw: text.clone(),
+                call_id: diagnostics::extract_sip_call_id(&text),
+            };
+            {
+                let s = state.read().await;
+                s.diagnostic_store.push(diag.clone()).await;
+            }
+            let _ = event_tx.send(SipEvent::DiagnosticMessage(diag));
+
+            if is_request(&text) {
+                handlers::handle_incoming_request(&state, &event_tx, &text, msg.remote, &account_id).await;
+            } else {
+                handlers::handle_response(&state, &event_tx, &text, &account_id).await;
+            }
+        }
+    }
+
+    /// Attempt a single reconnection: resolve DNS, create transport, send REGISTER.
+    /// Returns the new receive channel on success.
+    async fn attempt_reconnect(
+        state: &Arc<RwLock<ManagerState>>,
+        event_tx: &mpsc::UnboundedSender<SipEvent>,
+        account_id: &str,
+        account: &AccountConfig,
+    ) -> Result<mpsc::Receiver<SipMessage>, String> {
+        // Resolve server address
+        let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
+        let server_addr = Self::resolve_server(registrar, &account.transport, account.port).await?;
+
+        // Create transport
+        let (mut transport, rx) = match account.transport {
+            TransportType::Udp => {
+                let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
+                (SipTransport::Udp(t), rx)
+            }
+            TransportType::Tcp => {
+                let (t, rx) = transport::TcpTransport::connect(server_addr).await?;
+                (SipTransport::Tcp(t), rx)
+            }
+            TransportType::Tls => {
+                let tls_name = account.registrar.as_deref().unwrap_or(&account.domain);
+                let (t, rx) = transport::TlsTransport::connect(server_addr, tls_name).await?;
+                (SipTransport::Tls(t), rx)
+            }
+        };
+
+        // Attach diagnostics
+        {
+            let s = state.read().await;
+            let diag_sender = diagnostics::DiagnosticSender::new(
+                s.diagnostic_store.clone(),
+                event_tx.clone(),
+                account.id.clone(),
+            );
+            transport.set_diagnostic_sender(diag_sender);
+        }
+
+        // Resolve local address
+        let raw_addr = transport.local_addr();
+        let local_addr = if raw_addr.ip().is_unspecified() {
+            let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+                .and_then(|s| { s.connect(server_addr)?; s.local_addr() })
+                .map(|a| a.ip())
+                .unwrap_or(raw_addr.ip());
+            std::net::SocketAddr::new(real_ip, raw_addr.port())
+        } else {
+            raw_addr
+        };
+
+        // Update account state and send REGISTER
+        let (call_id, from_tag, cseq) = {
+            let mut s = state.write().await;
+            let account_state = match s.accounts.get_mut(account_id) {
+                Some(a) => a,
+                None => return Err("Account removed during reconnect".into()),
+            };
+
+            account_state.config = account.clone();
+            account_state.registration.start_registration(account.clone());
+            account_state.registration.set_server_addr(server_addr);
+            account_state.registration.set_local_addr(local_addr);
+            account_state.transport = Some(transport);
+            account_state.server_addr = Some(server_addr);
+            account_state.local_addr = Some(local_addr);
+
+            (
+                account_state.registration.call_id().to_string(),
+                account_state.registration.local_tag().to_string(),
+                account_state.registration.current_cseq(),
+            )
+        };
+
+        let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
+            account_id: account_id.to_string(),
+            state: RegistrationState::Registering,
+            error: None,
+        }));
+
+        let register_msg = build_register(account, local_addr, &call_id, cseq, &from_tag, None, 3600);
+
+        {
+            let s = state.read().await;
+            if let Some(account_state) = s.accounts.get(account_id) {
+                if let Some(ref t) = account_state.transport {
+                    t.send_to(register_msg.as_bytes(), server_addr).await?;
+                }
+            }
+        }
+
+        log::info!("Sent reconnect REGISTER for {} to {}", account_id, server_addr);
+
+        Ok(rx)
     }
 }
 
