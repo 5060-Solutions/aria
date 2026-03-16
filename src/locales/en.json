@@ -110,7 +110,7 @@
     "signOutAll": "Sign out all accounts",
     "developerDiagnostics": "Developer diagnostics",
     "sipTraceRtp": "SIP trace, RTP stats",
-    "about": "Aria v0.2.4",
+    "about": "Aria v0.2.5",
     "aboutDescription": "A modern softphone by 5060 Solutions.",
     "aboutLicense": "Free for non-commercial use.",
     "language": "Language",
@@ -169,7 +169,7 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "version": "Aria v0.2.4",
+    "version": "Aria v0.2.5",
     "connection": "Connection",
     "registered": "Registered",
     "registering": "Registering...",
