@@ -166,6 +166,12 @@ pub(crate) struct ManagerState {
     pub(crate) last_latency_ms: Option<f64>,
     /// Shared diagnostic store
     pub(crate) diagnostic_store: Arc<diagnostics::DiagnosticStore>,
+
+    // === Audio device preferences ===
+    /// Preferred input (microphone) device name (None = system default)
+    pub(crate) preferred_input_device: Option<String>,
+    /// Preferred output (speaker) device name (None = system default)
+    pub(crate) preferred_output_device: Option<String>,
 }
 
 impl ManagerState {
@@ -283,6 +289,8 @@ impl SipManager {
                 active_account_id: None,
                 last_latency_ms: None,
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
+                preferred_input_device: None,
+                preferred_output_device: None,
             })),
             event_tx,
         };
@@ -765,6 +773,32 @@ impl SipManager {
         }
     }
 
+    /// Set preferred audio devices for future calls.
+    pub async fn set_audio_devices(
+        &self,
+        input_device: Option<String>,
+        output_device: Option<String>,
+    ) {
+        let mut s = self.state.write().await;
+        log::info!(
+            "Audio devices set: input={:?}, output={:?}",
+            input_device,
+            output_device
+        );
+        s.preferred_input_device = input_device;
+        s.preferred_output_device = output_device;
+    }
+
+    /// Get current preferred audio devices.
+    #[allow(dead_code)]
+    pub async fn get_preferred_audio_devices(&self) -> (Option<String>, Option<String>) {
+        let s = self.state.read().await;
+        (
+            s.preferred_input_device.clone(),
+            s.preferred_output_device.clone(),
+        )
+    }
+
     pub async fn make_call(&self, uri: &str) -> Result<String, String> {
         self.make_call_on_account(uri, None).await
     }
@@ -1034,7 +1068,13 @@ impl SipManager {
             let negotiated_codec = codec::negotiate_codec(sdp);
             log::info!("Negotiated codec for inbound: {:?}", negotiated_codec);
 
-            let media = media::MediaSession::start(rtp_port, remote_rtp, negotiated_codec)
+            let (input_dev, output_dev) = {
+                let s = self.state.read().await;
+                (s.preferred_input_device.clone(), s.preferred_output_device.clone())
+            };
+            let media = media::MediaSession::start_with_devices(
+                rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
+            )
                 .await
                 .map_err(|e| e.to_string())?;
 

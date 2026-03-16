@@ -405,6 +405,16 @@ pub struct AudioDevicesResponse {
 }
 
 #[tauri::command]
+pub async fn set_audio_devices(
+    manager: State<'_, SipManager>,
+    input_device: Option<String>,
+    output_device: Option<String>,
+) -> Result<(), String> {
+    manager.set_audio_devices(input_device, output_device).await;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_audio_devices() -> Result<AudioDevicesResponse, String> {
     let devices = rtp_engine::list_all_devices()
         .map_err(|e| format!("Failed to list audio devices: {}", e))?;

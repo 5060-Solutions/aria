@@ -145,8 +145,12 @@ export function Settings() {
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [menuAccountId, setMenuAccountId] = useState<string | null>(null);
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
-  const [selectedInputDevice, setSelectedInputDevice] = useState<string>("default");
-  const [selectedOutputDevice, setSelectedOutputDevice] = useState<string>("default");
+  const storeInputDevice = useAppStore((s) => s.selectedInputDevice);
+  const storeOutputDevice = useAppStore((s) => s.selectedOutputDevice);
+  const storeSetInputDevice = useAppStore((s) => s.setSelectedInputDevice);
+  const storeSetOutputDevice = useAppStore((s) => s.setSelectedOutputDevice);
+  const [selectedInputDevice, setSelectedInputDeviceLocal] = useState<string>(storeInputDevice ?? "default");
+  const [selectedOutputDevice, setSelectedOutputDeviceLocal] = useState<string>(storeOutputDevice ?? "default");
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showContactsSettings, setShowContactsSettings] = useState(false);
   const [recordingsDir, setRecordingsDir] = useState<string>("");
@@ -168,17 +172,22 @@ export function Settings() {
     invoke<AudioDevices>("get_audio_devices")
       .then((devices) => {
         setAudioDevices(devices);
-        // Set defaults based on what's marked as default
-        const defaultInput = devices.inputDevices.find(d => d.isDefault);
-        const defaultOutput = devices.outputDevices.find(d => d.isDefault);
-        if (defaultInput) setSelectedInputDevice(defaultInput.name);
-        if (defaultOutput) setSelectedOutputDevice(defaultOutput.name);
+        // If no stored preference, use the system default
+        if (!storeInputDevice) {
+          const defaultInput = devices.inputDevices.find(d => d.isDefault);
+          if (defaultInput) setSelectedInputDeviceLocal(defaultInput.name);
+        }
+        if (!storeOutputDevice) {
+          const defaultOutput = devices.outputDevices.find(d => d.isDefault);
+          if (defaultOutput) setSelectedOutputDeviceLocal(defaultOutput.name);
+        }
       })
       .catch((e) => log.error("Failed to load audio devices:", e));
 
     getDefaultRecordingsDir()
       .then(setRecordingsDir)
       .catch((e) => log.error("Failed to get recordings dir:", e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -837,7 +846,15 @@ export function Settings() {
                     <Select
                       value={selectedInputDevice}
                       label={t("settings.microphone")}
-                      onChange={(e) => setSelectedInputDevice(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSelectedInputDeviceLocal(val);
+                        storeSetInputDevice(val);
+                        invoke("set_audio_devices", {
+                          inputDevice: val === "default" ? null : val,
+                          outputDevice: selectedOutputDevice === "default" ? null : selectedOutputDevice,
+                        }).catch(() => {});
+                      }}
                       startAdornment={<MicIcon sx={{ fontSize: 18, mr: 1, color: "text.secondary" }} />}
                       sx={{ borderRadius: "12px" }}
                     >
@@ -854,7 +871,15 @@ export function Settings() {
                     <Select
                       value={selectedOutputDevice}
                       label={t("settings.speaker")}
-                      onChange={(e) => setSelectedOutputDevice(e.target.value)}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSelectedOutputDeviceLocal(val);
+                        storeSetOutputDevice(val);
+                        invoke("set_audio_devices", {
+                          inputDevice: selectedInputDevice === "default" ? null : selectedInputDevice,
+                          outputDevice: val === "default" ? null : val,
+                        }).catch(() => {});
+                      }}
                       startAdornment={<VolumeUpIcon sx={{ fontSize: 18, mr: 1, color: "text.secondary" }} />}
                       sx={{ borderRadius: "12px" }}
                     >

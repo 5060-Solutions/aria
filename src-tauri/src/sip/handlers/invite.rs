@@ -131,6 +131,12 @@ pub async fn handle_invite_response(
                 let negotiated_codec = codec::negotiate_codec(sdp);
                 log::info!("Negotiated codec: {:?}", negotiated_codec);
 
+                // Get preferred audio devices
+                let (input_dev, output_dev) = {
+                    let s = state.read().await;
+                    (s.preferred_input_device.clone(), s.preferred_output_device.clone())
+                };
+
                 // Start media session with SRTP if both keys are available
                 let media_result = match (&local_srtp_key, &remote_srtp_key) {
                     (Some(local_key), Some(remote_key)) => {
@@ -145,20 +151,26 @@ pub async fn handle_invite_response(
                             rtp_engine::srtp::SrtpContext::from_base64(remote_key),
                         ) {
                             (Ok(tx_ctx), Ok(rx_ctx)) => {
-                                media::MediaSession::start_with_srtp_keys(
-                                    local_rtp_port, remote_rtp, negotiated_codec, tx_ctx, rx_ctx
+                                media::MediaSession::start_with_srtp_keys_and_devices(
+                                    local_rtp_port, remote_rtp, negotiated_codec, tx_ctx, rx_ctx,
+                                    input_dev.clone(), output_dev.clone(),
                                 ).await
                             }
                             (Err(e), _) | (_, Err(e)) => {
                                 log::error!("Failed to create SRTP context: {:?}", e);
-                                // Fall back to plain RTP
-                                media::MediaSession::start(local_rtp_port, remote_rtp, negotiated_codec).await
+                                media::MediaSession::start_with_devices(
+                                    local_rtp_port, remote_rtp, negotiated_codec,
+                                    input_dev.clone(), output_dev.clone(),
+                                ).await
                             }
                         }
                     }
                     _ => {
                         log::info!("Starting plain RTP media session (no SRTP keys)");
-                        media::MediaSession::start(local_rtp_port, remote_rtp, negotiated_codec).await
+                        media::MediaSession::start_with_devices(
+                            local_rtp_port, remote_rtp, negotiated_codec,
+                            input_dev, output_dev,
+                        ).await
                     }
                 };
 

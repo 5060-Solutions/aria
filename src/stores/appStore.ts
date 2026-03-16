@@ -562,13 +562,25 @@ export const useAppStore = create<AppState>((set, get) => {
 
     // Audio
     audioDevices: [],
-    selectedInputDevice: null,
-    selectedOutputDevice: null,
+    selectedInputDevice: localStorage.getItem("aria_input_device"),
+    selectedOutputDevice: localStorage.getItem("aria_output_device"),
     setAudioDevices: (audioDevices) => set({ audioDevices }),
-    setSelectedInputDevice: (selectedInputDevice) =>
-      set({ selectedInputDevice }),
-    setSelectedOutputDevice: (selectedOutputDevice) =>
-      set({ selectedOutputDevice }),
+    setSelectedInputDevice: (id) => {
+      if (id) {
+        localStorage.setItem("aria_input_device", id);
+      } else {
+        localStorage.removeItem("aria_input_device");
+      }
+      set({ selectedInputDevice: id });
+    },
+    setSelectedOutputDevice: (id) => {
+      if (id) {
+        localStorage.setItem("aria_output_device", id);
+      } else {
+        localStorage.removeItem("aria_output_device");
+      }
+      set({ selectedOutputDevice: id });
+    },
 
     // Recordings
     recordingsDirectory: localStorage.getItem("aria_recordings_dir"),

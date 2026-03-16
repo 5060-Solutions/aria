@@ -102,6 +102,7 @@ pub fn run() {
             commands::play_recording,
             commands::get_registration_state,
             commands::get_audio_devices,
+            commands::set_audio_devices,
             commands::open_debug_window,
             commands::get_sip_diagnostics,
             commands::clear_sip_diagnostics,

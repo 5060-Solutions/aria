@@ -493,7 +493,11 @@ pub async fn handle_invite_with_replaces(
                 negotiated_codec
             );
 
-            match media::MediaSession::start(rtp_port, remote_rtp, negotiated_codec).await {
+            let (input_dev, output_dev) = {
+                let s = state.read().await;
+                (s.preferred_input_device.clone(), s.preferred_output_device.clone())
+            };
+            match media::MediaSession::start_with_devices(rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev).await {
                 Ok(session) => {
                     let mut s = state.write().await;
                     let mut new_call = call;

@@ -1,28 +1,45 @@
-import { useState } from "react";
-import { Box, IconButton, alpha, useTheme, Typography, Dialog, DialogTitle, DialogContent, TextField, Button } from "@mui/material";
+import { useState, useEffect } from "react";
+import {
+  Box, IconButton, alpha, useTheme, Typography, Dialog, DialogTitle,
+  DialogContent, TextField, Button, Popover, List, ListItemButton,
+  ListItemIcon, ListItemText, Divider,
+} from "@mui/material";
 import MicIcon from "@mui/icons-material/Mic";
 import MicOffIcon from "@mui/icons-material/MicOff";
 import PauseIcon from "@mui/icons-material/Pause";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import CallEndIcon from "@mui/icons-material/CallEnd";
 import DialpadIcon from "@mui/icons-material/Dialpad";
-import VolumeUpIcon from "@mui/icons-material/VolumeUp";
+import HeadsetMicIcon from "@mui/icons-material/HeadsetMic";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import StopIcon from "@mui/icons-material/Stop";
 import AddIcCallIcon from "@mui/icons-material/AddIcCall";
 import CallMergeIcon from "@mui/icons-material/CallMerge";
 import SwapCallsIcon from "@mui/icons-material/SwapCalls";
+import CheckIcon from "@mui/icons-material/Check";
+import VolumeUpIcon from "@mui/icons-material/VolumeUp";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 import { sipHangup, sipMute, sipHold, sipStartRecording, sipStopRecording, sipAddCall, sipConferenceMerge, sipSwapCalls } from "../../hooks/useSip";
 import { log } from "../../utils/log";
+
+interface AudioDevice {
+  name: string;
+  isDefault: boolean;
+}
+
+interface AudioDevices {
+  inputDevices: AudioDevice[];
+  outputDevices: AudioDevice[];
+}
 
 interface ControlButtonProps {
   icon: React.ReactNode;
   label: string;
   active?: boolean;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 function ControlButton({ icon, label, active, onClick }: ControlButtonProps) {
@@ -80,13 +97,28 @@ export function CallControls() {
   const setPrimaryCall = useAppStore((s) => s.setPrimaryCall);
   const createConference = useAppStore((s) => s.createConference);
   const addCallHistory = useAppStore((s) => s.addCallHistory);
-  
+
+  const selectedInputDevice = useAppStore((s) => s.selectedInputDevice);
+  const selectedOutputDevice = useAppStore((s) => s.selectedOutputDevice);
+  const setSelectedInputDevice = useAppStore((s) => s.setSelectedInputDevice);
+  const setSelectedOutputDevice = useAppStore((s) => s.setSelectedOutputDevice);
+
   const [addCallDialogOpen, setAddCallDialogOpen] = useState(false);
   const [newCallUri, setNewCallUri] = useState("");
+  const [audioAnchor, setAudioAnchor] = useState<HTMLButtonElement | null>(null);
+  const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
+
+  // Load audio devices when popover opens
+  useEffect(() => {
+    if (audioAnchor) {
+      invoke<AudioDevices>("get_audio_devices")
+        .then(setAudioDevices)
+        .catch(() => {});
+    }
+  }, [audioAnchor]);
 
   if (!activeCall) return null;
-  
-  // Check if we have multiple calls for conference features
+
   const connectedCalls = activeCalls.filter(
     (c) => c.state === "connected" || c.state === "held" || c.state === "conferenced"
   );
@@ -97,7 +129,6 @@ export function CallControls() {
   const canMerge = hasMultipleCalls && !isInConference;
 
   const handleHangup = async () => {
-    // If recording is active, stop it and get the path
     let recordingPath = activeCall.recordingPath;
     if (activeCall.recording) {
       try {
@@ -129,6 +160,7 @@ export function CallControls() {
       duration,
       missed: !activeCall.connectTime,
       recordingPath,
+      sipCallId: activeCall.sipCallId,
     });
 
     setActiveCall({ ...activeCall, state: "ended", endTime });
@@ -157,62 +189,50 @@ export function CallControls() {
     try {
       if (activeCall.recording) {
         await sipStopRecording(activeCall.id);
-        // Clear recording state but keep the existing path
         setActiveCall({ ...activeCall, recording: false });
       } else {
         const path = await sipStartRecording(activeCall.id);
-        // Store the recording path
         setActiveCall({ ...activeCall, recording: true, recordingPath: path });
       }
     } catch (e) {
       log.error("Recording toggle failed:", e);
     }
   };
-  
+
   const handleAddCall = async () => {
     if (!newCallUri.trim()) return;
-    
+
     try {
-      // Put current call on hold first
       await sipHold(activeCall.id, true);
       updateCall(activeCall.id, { held: true, state: "held" });
-      
-      // Make the new call
       const newCallId = await sipAddCall(newCallUri.trim());
-      
-      // The new call will be added to activeCalls via SIP event
       setPrimaryCall(newCallId);
-      
       setAddCallDialogOpen(false);
       setNewCallUri("");
     } catch (e) {
       log.error("Add call failed:", e);
     }
   };
-  
+
   const handleMerge = async () => {
     const callIds = connectedCalls.map((c) => c.id);
     if (callIds.length < 2) return;
-    
+
     try {
       const conferenceId = await sipConferenceMerge(callIds);
-      // Update local state
       createConference(callIds);
       log.info("Conference created:", conferenceId);
     } catch (e) {
       log.error("Merge failed:", e);
     }
   };
-  
+
   const handleSwap = async () => {
-    // Find the other call (held one)
     const otherCall = heldCalls.find((c) => c.id !== activeCall.id);
     if (!otherCall) return;
-    
+
     try {
       await sipSwapCalls(activeCall.id, otherCall.id);
-      
-      // Update local state
       updateCall(activeCall.id, { held: true, state: "held" });
       updateCall(otherCall.id, { held: false, state: "connected" });
       setPrimaryCall(otherCall.id);
@@ -220,6 +240,23 @@ export function CallControls() {
       log.error("Swap failed:", e);
     }
   };
+
+  const handleSelectDevice = (type: "input" | "output", name: string) => {
+    if (type === "input") {
+      setSelectedInputDevice(name);
+    } else {
+      setSelectedOutputDevice(name);
+    }
+    // Push to backend
+    invoke("set_audio_devices", {
+      inputDevice: type === "input" ? name : selectedInputDevice,
+      outputDevice: type === "output" ? name : selectedOutputDevice,
+    }).catch(() => {});
+  };
+
+  const hasNonDefaultDevice = audioDevices && (
+    audioDevices.inputDevices.length > 1 || audioDevices.outputDevices.length > 1
+  );
 
   return (
     <>
@@ -245,9 +282,9 @@ export function CallControls() {
             onClick={() => {}}
           />
           <ControlButton
-            icon={<VolumeUpIcon />}
-            label={t("call.speaker")}
-            onClick={() => {}}
+            icon={<HeadsetMicIcon />}
+            label={t("call.audio")}
+            onClick={(e) => setAudioAnchor(e.currentTarget)}
           />
           <ControlButton
             icon={activeCall.held ? <PlayArrowIcon /> : <PauseIcon />}
@@ -261,7 +298,6 @@ export function CallControls() {
             active={activeCall.recording}
             onClick={handleRecord}
           />
-          {/* Add Call button - shown when connected and not in conference */}
           {canAddCall && (
             <ControlButton
               icon={<AddIcCallIcon />}
@@ -270,8 +306,8 @@ export function CallControls() {
             />
           )}
         </Box>
-        
-        {/* Conference controls row - shown when multiple calls */}
+
+        {/* Conference controls row */}
         {hasMultipleCalls && (
           <Box
             sx={{
@@ -296,7 +332,7 @@ export function CallControls() {
             )}
           </Box>
         )}
-        
+
         {/* Conference indicator */}
         {isInConference && (
           <Box sx={{ textAlign: "center" }}>
@@ -326,10 +362,145 @@ export function CallControls() {
           </motion.div>
         </Box>
       </Box>
-      
+
+      {/* Audio device picker popover */}
+      <Popover
+        open={Boolean(audioAnchor)}
+        anchorEl={audioAnchor}
+        onClose={() => setAudioAnchor(null)}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+        transformOrigin={{ vertical: "bottom", horizontal: "center" }}
+        slotProps={{
+          paper: {
+            sx: {
+              borderRadius: "16px",
+              minWidth: 240,
+              maxWidth: 300,
+              mb: 1,
+            },
+          },
+        }}
+      >
+        {audioDevices && (
+          <Box sx={{ py: 1 }}>
+            {/* Microphone section */}
+            <Typography
+              variant="overline"
+              sx={{
+                px: 2,
+                py: 0.5,
+                display: "block",
+                fontSize: "0.6rem",
+                color: "text.secondary",
+                letterSpacing: 1,
+              }}
+            >
+              {t("settings.microphone")}
+            </Typography>
+            <List dense disablePadding>
+              {audioDevices.inputDevices.map((device) => {
+                const isSelected = selectedInputDevice === device.name
+                  || (!selectedInputDevice && device.isDefault);
+                return (
+                  <ListItemButton
+                    key={device.name}
+                    selected={isSelected}
+                    onClick={() => handleSelectDevice("input", device.name)}
+                    sx={{
+                      py: 0.5,
+                      px: 2,
+                      borderRadius: "8px",
+                      mx: 0.5,
+                      minHeight: 36,
+                    }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 28 }}>
+                      <MicIcon sx={{ fontSize: 16, color: isSelected ? "primary.main" : "text.secondary" }} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={device.name}
+                      primaryTypographyProps={{
+                        fontSize: "0.78rem",
+                        fontWeight: isSelected ? 600 : 400,
+                        noWrap: true,
+                      }}
+                    />
+                    {isSelected && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
+                  </ListItemButton>
+                );
+              })}
+            </List>
+
+            {hasNonDefaultDevice && <Divider sx={{ my: 0.5 }} />}
+
+            {/* Speaker section */}
+            <Typography
+              variant="overline"
+              sx={{
+                px: 2,
+                py: 0.5,
+                display: "block",
+                fontSize: "0.6rem",
+                color: "text.secondary",
+                letterSpacing: 1,
+              }}
+            >
+              {t("settings.speaker")}
+            </Typography>
+            <List dense disablePadding>
+              {audioDevices.outputDevices.map((device) => {
+                const isSelected = selectedOutputDevice === device.name
+                  || (!selectedOutputDevice && device.isDefault);
+                return (
+                  <ListItemButton
+                    key={device.name}
+                    selected={isSelected}
+                    onClick={() => handleSelectDevice("output", device.name)}
+                    sx={{
+                      py: 0.5,
+                      px: 2,
+                      borderRadius: "8px",
+                      mx: 0.5,
+                      minHeight: 36,
+                    }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 28 }}>
+                      <VolumeUpIcon sx={{ fontSize: 16, color: isSelected ? "primary.main" : "text.secondary" }} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary={device.name}
+                      primaryTypographyProps={{
+                        fontSize: "0.78rem",
+                        fontWeight: isSelected ? 600 : 400,
+                        noWrap: true,
+                      }}
+                    />
+                    {isSelected && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
+                  </ListItemButton>
+                );
+              })}
+            </List>
+
+            <Typography
+              variant="caption"
+              sx={{
+                display: "block",
+                px: 2,
+                pt: 1,
+                pb: 0.5,
+                fontSize: "0.6rem",
+                color: "text.disabled",
+              }}
+            >
+              {t("settings.audioNote")}
+            </Typography>
+          </Box>
+        )}
+      </Popover>
+
       {/* Add Call Dialog */}
-      <Dialog 
-        open={addCallDialogOpen} 
+      <Dialog
+        open={addCallDialogOpen}
         onClose={() => setAddCallDialogOpen(false)}
         maxWidth="xs"
         fullWidth
