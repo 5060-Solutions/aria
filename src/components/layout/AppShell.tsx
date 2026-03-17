@@ -27,6 +27,7 @@ export function AppShell() {
 
   const ViewComponent = views[currentView];
   const showCallScreen =
+    currentView === "dialer" &&
     activeCall && activeCall.state !== "idle" && activeCall.state !== "ended";
 
   return (

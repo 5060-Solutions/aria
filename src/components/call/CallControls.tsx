@@ -22,7 +22,8 @@ import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
-import { sipHangup, sipMute, sipHold, sipStartRecording, sipStopRecording, sipAddCall, sipConferenceMerge, sipSwapCalls } from "../../hooks/useSip";
+import { sipHangup, sipMute, sipHold, sipStartRecording, sipStopRecording, sipAddCall, sipConferenceMerge, sipSwapCalls, sipSendDtmf } from "../../hooks/useSip";
+import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
 
 interface AudioDevice {
@@ -105,6 +106,7 @@ export function CallControls() {
 
   const [addCallDialogOpen, setAddCallDialogOpen] = useState(false);
   const [newCallUri, setNewCallUri] = useState("");
+  const [dtmfAnchor, setDtmfAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioAnchor, setAudioAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
 
@@ -279,7 +281,8 @@ export function CallControls() {
           <ControlButton
             icon={<DialpadIcon />}
             label={t("call.keypad")}
-            onClick={() => {}}
+            active={Boolean(dtmfAnchor)}
+            onClick={(e) => setDtmfAnchor(dtmfAnchor ? null : e.currentTarget)}
           />
           <ControlButton
             icon={<HeadsetMicIcon />}
@@ -362,6 +365,57 @@ export function CallControls() {
           </motion.div>
         </Box>
       </Box>
+
+      {/* DTMF keypad popover */}
+      <Popover
+        open={Boolean(dtmfAnchor)}
+        anchorEl={dtmfAnchor}
+        onClose={() => setDtmfAnchor(null)}
+        anchorOrigin={{ vertical: "top", horizontal: "center" }}
+        transformOrigin={{ vertical: "bottom", horizontal: "center" }}
+        slotProps={{
+          paper: {
+            sx: {
+              borderRadius: "16px",
+              p: 2,
+              mb: 1,
+            },
+          },
+        }}
+      >
+        <Box
+          sx={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: 1,
+            justifyItems: "center",
+          }}
+        >
+          {[
+            { digit: "1", letters: "" },
+            { digit: "2", letters: "ABC" },
+            { digit: "3", letters: "DEF" },
+            { digit: "4", letters: "GHI" },
+            { digit: "5", letters: "JKL" },
+            { digit: "6", letters: "MNO" },
+            { digit: "7", letters: "PQRS" },
+            { digit: "8", letters: "TUV" },
+            { digit: "9", letters: "WXYZ" },
+            { digit: "*", letters: "" },
+            { digit: "0", letters: "+" },
+            { digit: "#", letters: "" },
+          ].map(({ digit, letters }) => (
+            <DialerButton
+              key={digit}
+              digit={digit}
+              letters={letters || undefined}
+              onPress={(d) => {
+                sipSendDtmf(activeCall.id, d).catch(() => {});
+              }}
+            />
+          ))}
+        </Box>
+      </Popover>
 
       {/* Audio device picker popover */}
       <Popover
