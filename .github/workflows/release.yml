@@ -91,6 +91,22 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }}
 
+      - name: Sign Windows artifacts with Azure Trusted Signing
+        if: matrix.platform == 'windows-latest'
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://wcus.codesigning.azure.net/
+          trusted-signing-account-name: FiftySixty-Solutions
+          certificate-profile-name: Aria-Softphone
+          files-folder: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+          files-folder-filter: exe,msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
   build-macos-universal:
     runs-on: macos-latest
     steps:
