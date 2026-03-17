@@ -103,9 +103,24 @@ jobs:
           certificate-profile-name: Aria-Softphone
           files-folder: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
           files-folder-filter: exe,msi
+          files-folder-depth: 3
           file-digest: SHA256
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
+
+      - name: Re-upload signed Windows artifacts to release
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ github.ref_name }}"
+          bundle="src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          for f in "$bundle"/nsis/*.exe "$bundle"/msi/*.msi; do
+            [ -f "$f" ] || continue
+            echo "Uploading signed: $f"
+            gh release upload "$tag" "$f" --clobber
+          done
 
   build-macos-universal:
     runs-on: macos-latest
