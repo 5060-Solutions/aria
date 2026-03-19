@@ -31,9 +31,8 @@ uuid = { version = "1", features = ["v4"] }
 log = "0.4"
 env_logger = "0.11"
 # Shared SIP protocol utilities
-aria-sip-core = { git = "https://github.com/5060-Solutions/aria-sip-core.git" }
 
-rsip = "0.4.0"
+sip-5060 = { git = "https://github.com/5060-Solutions/5060-sip.git" }
 rand = "0.8"
 socket2 = "0.5"
 tokio-util = "0.7.18"

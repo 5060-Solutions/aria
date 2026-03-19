@@ -1,6 +1,6 @@
-// Re-export digest auth from the shared crate
+// Re-export digest auth from the SIP library
 #[allow(unused_imports)]
-pub use aria_sip_core::auth::{extract_challenge_realm, extract_param, DigestAuth};
+pub use rsip::sip_auth::{extract_challenge_realm, extract_param, DigestAuth};
 
 #[cfg(test)]
 mod tests {

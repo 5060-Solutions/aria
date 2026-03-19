@@ -132,9 +132,8 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "aria"
-version = "0.2.8"
+version = "0.2.9"
 dependencies = [
- "aria-sip-core",
  "bytes",
  "dirs",
  "env_logger",
@@ -142,12 +141,12 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "reqwest 0.12.28",
- "rsip",
  "rtp-engine",
  "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
+ "sip-5060",
  "socket2 0.5.10",
  "tauri",
  "tauri-build",
@@ -158,19 +157,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
- "uuid 1.22.0",
-]
-
-[[package]]
-name = "aria-sip-core"
-version = "0.1.0"
-source = "git+https://github.com/5060-Solutions/aria-sip-core.git#8f2784e30f502744365107b7b00fdc2d12c30046"
-dependencies = [
- "hex",
- "log",
- "md-5 0.10.6",
- "rand 0.8.5",
- "sha2 0.10.9",
  "uuid 1.22.0",
 ]
 
@@ -2676,16 +2662,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "md-5"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
-dependencies = [
- "cfg-if",
- "digest 0.10.7",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3948,25 +3924,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "rsip"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1690d2cc1b13c9ff67f48f59bd2b0bb9bb57e157b5cce2d0b27ccf8e11964c3"
-dependencies = [
- "bstr",
- "bytes",
- "md-5 0.9.1",
- "nom",
- "rsip-derives",
- "sha2 0.9.9",
- "uuid 0.8.2",
-]
-
-[[package]]
 name = "rsip-derives"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6c16c459d744ca5815a23876812dc1655db9ce25bffabc01962967848487eea"
+source = "git+https://github.com/5060-Solutions/5060-sip.git#cd8ad0312f6dd29193591f0b1404649e17811800"
 dependencies = [
  "darling 0.13.4",
  "proc-macro2",
@@ -4506,6 +4466,23 @@ name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+
+[[package]]
+name = "sip-5060"
+version = "0.6.0"
+source = "git+https://github.com/5060-Solutions/5060-sip.git#cd8ad0312f6dd29193591f0b1404649e17811800"
+dependencies = [
+ "bstr",
+ "bytes",
+ "hex",
+ "log",
+ "md-5",
+ "nom",
+ "rand 0.8.5",
+ "rsip-derives",
+ "sha2 0.9.9",
+ "uuid 0.8.2",
+]
 
 [[package]]
 name = "siphasher"
