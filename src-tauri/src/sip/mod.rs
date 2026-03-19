@@ -841,7 +841,8 @@ impl SipManager {
 
         let branch = extract_via_branch(&invite).unwrap_or_default();
 
-        let mut call = CallFSM::new_outbound(&aid, uri, call_id, from_tag, rtp_port, branch);
+        let local_uri = format!("sip:{}@{}", account_config.username, account_config.domain);
+        let mut call = CallFSM::new_outbound(&aid, uri, call_id, from_tag, rtp_port, branch, local_uri);
         call.local_srtp_key = local_srtp_key;
         let id = call.id.clone();
 
@@ -942,6 +943,7 @@ impl SipManager {
                 call.last_invite_branch.clone(),
                 call.route_set().to_vec(),
                 call.direction_str().to_string(),
+                call.local_uri.clone(),
             );
 
             let account = s.get_account(&aid).ok_or("Account not found")?;
@@ -953,7 +955,7 @@ impl SipManager {
             (info, la, sa, (transport, transport_str), aid)
         };
 
-        let (remote_uri, sip_call_id, cseq, from_tag, to_tag, needs_cancel, branch, route_set, direction) = call_info;
+        let (remote_uri, sip_call_id, cseq, from_tag, to_tag, needs_cancel, branch, route_set, direction, local_uri) = call_info;
         let (transport, transport_str) = transport;
 
         let msg = if needs_cancel {
@@ -965,6 +967,8 @@ impl SipManager {
                 &from_tag,
                 &transport_str,
                 &branch.unwrap_or_default(),
+                &local_uri,
+                &remote_uri,
             )
         } else {
             build_bye_with_routes(
@@ -976,6 +980,8 @@ impl SipManager {
                 &to_tag,
                 &transport_str,
                 &route_set,
+                &local_uri,
+                &remote_uri,
             )
         };
 
@@ -1218,6 +1224,7 @@ impl SipManager {
                 call.from_tag.clone(),
                 call.to_tag.clone().unwrap_or_default(),
                 call.route_set().to_vec(),
+                call.local_uri.clone(),
             );
 
             let account = s.get_account(&aid).ok_or("Account not found")?;
@@ -1229,7 +1236,7 @@ impl SipManager {
             (info, la, sa, tp, aid, transport)
         };
 
-        let (remote_uri, sip_call_id, cseq, from_tag, to_tag, route_set) = call_info;
+        let (remote_uri, sip_call_id, cseq, from_tag, to_tag, route_set, local_uri) = call_info;
 
         let refer = build_refer(
             &remote_uri,
@@ -1241,6 +1248,8 @@ impl SipManager {
             &to_tag,
             &transport_str,
             &route_set,
+            &local_uri,
+            &remote_uri,
         );
 
         transport.send_to(refer.as_bytes(), server_addr).await?;
@@ -1291,6 +1300,7 @@ impl SipManager {
                 call_a.from_tag.clone(),
                 call_a.to_tag.clone().unwrap_or_default(),
                 call_a.route_set().to_vec(),
+                call_a.local_uri.clone(),
             );
 
             let account = s.get_account(&aid).ok_or("Account not found")?;
@@ -1302,7 +1312,7 @@ impl SipManager {
             (a_info, b_info, la, sa, tp, aid, transport)
         };
 
-        let (a_remote_uri, a_sip_call_id, a_cseq, a_from_tag, a_to_tag, a_route_set) = call_a_info;
+        let (a_remote_uri, a_sip_call_id, a_cseq, a_from_tag, a_to_tag, a_route_set, a_local_uri) = call_a_info;
         let (b_remote_uri, b_sip_call_id, b_from_tag, b_to_tag) = call_b_info;
 
         let refer = build_refer_with_replaces(
@@ -1318,6 +1328,8 @@ impl SipManager {
             &a_to_tag,
             &transport_str,
             &a_route_set,
+            &a_local_uri,
+            &a_remote_uri,
         );
 
         transport.send_to(refer.as_bytes(), server_addr).await?;

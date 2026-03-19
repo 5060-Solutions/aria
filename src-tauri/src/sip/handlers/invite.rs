@@ -188,6 +188,19 @@ pub async fn handle_invite_response(
                 _ => return,
             };
 
+            // Determine From/To URIs for in-dialog ACK based on call direction.
+            // For outbound calls: From = our local URI, To = remote URI
+            // For inbound calls: From = remote URI, To = our local URI
+            // But within a dialog, the From/To match the original INVITE direction.
+            let (ack_from_uri, ack_to_uri) = {
+                let s = state.read().await;
+                if let Some((_, call)) = s.find_call_by_header(&call_id_header) {
+                    (call.local_uri.clone(), call.remote_uri.clone())
+                } else {
+                    (format!("sip:unknown@{}", local_addr.ip()), remote_uri.clone())
+                }
+            };
+
             let ack = build_ack(
                 &remote_uri,
                 local_addr,
@@ -197,6 +210,8 @@ pub async fn handle_invite_response(
                 &to_tag,
                 &transport_param,
                 &builder::generate_branch(),
+                &ack_from_uri,
+                &ack_to_uri,
             );
 
             let _ = transport.send_to(ack.as_bytes(), server_addr).await;
@@ -397,6 +412,15 @@ pub async fn handle_invite_response(
                 _ => return,
             };
 
+            let (ack_from_uri, ack_to_uri) = {
+                let s = state.read().await;
+                if let Some((_, call)) = s.find_call_by_header(&call_id_header) {
+                    (call.local_uri.clone(), call.remote_uri.clone())
+                } else {
+                    (format!("sip:unknown@{}", local_addr.ip()), remote_uri.clone())
+                }
+            };
+
             let ack = build_ack(
                 &remote_uri,
                 local_addr,
@@ -406,6 +430,8 @@ pub async fn handle_invite_response(
                 &extract_to_tag(text).unwrap_or_default(),
                 &transport_param,
                 &builder::generate_branch(),
+                &ack_from_uri,
+                &ack_to_uri,
             );
             let _ = transport.send_to(ack.as_bytes(), server_addr).await;
 

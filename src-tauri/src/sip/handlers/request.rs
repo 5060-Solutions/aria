@@ -67,6 +67,13 @@ pub async fn handle_incoming_request(
                     .unwrap_or_else(|| format!("sip:unknown@{}", remote.ip()));
 
                 let sip_call_id = call_id.clone();
+                let local_uri = {
+                    let s = state.read().await;
+                    match s.get_account(account_id) {
+                        Some(a) => format!("sip:{}@{}", a.config.username, a.config.domain),
+                        None => format!("sip:unknown@{}", remote.ip()),
+                    }
+                };
                 let call = CallFSM::new_inbound(
                     account_id,
                     &remote_uri,
@@ -75,6 +82,7 @@ pub async fn handle_incoming_request(
                     to_tag.clone(),
                     rtp_port,
                     text.to_string(),
+                    local_uri,
                 );
 
                 let call_id_for_event = call.id.clone();

@@ -1,5 +1,6 @@
 use crate::sip::account::{AccountConfig, SrtpMode};
 use crate::sip::presence::EventType;
+use rsip::headers::UntypedHeader;
 use std::net::SocketAddr;
 
 // Re-export shared utilities so existing callers keep working
@@ -9,6 +10,91 @@ pub use aria_sip_core::parser::{
     extract_via_branch, extract_via_received, is_request, parse_replaces_header,
     parse_sdp_connection, parse_sipfrag_status, parse_status_code,
 };
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const USER_AGENT: &str = "Aria/0.2.0";
+const ALLOW: &str = "INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO";
+
+/// Build an `rsip::Request` from parts and convert to `String`.
+fn request_to_string(
+    method: rsip::Method,
+    uri: rsip::Uri,
+    headers: rsip::Headers,
+    body: Vec<u8>,
+) -> String {
+    let req = rsip::Request {
+        method,
+        uri,
+        version: rsip::Version::V2,
+        headers,
+        body,
+    };
+    req.to_string()
+}
+
+/// Build an `rsip::Response` from parts and convert to `String`.
+fn response_to_string(
+    status_code: rsip::StatusCode,
+    headers: rsip::Headers,
+    body: Vec<u8>,
+) -> String {
+    let resp = rsip::Response {
+        status_code,
+        version: rsip::Version::V2,
+        headers,
+        body,
+    };
+    resp.to_string()
+}
+
+/// Parse a SIP URI string like `sip:user@host:port` into an `rsip::Uri`.
+/// Falls back to treating the whole string as a domain if parsing fails.
+fn parse_uri(s: &str) -> rsip::Uri {
+    use std::convert::TryFrom;
+    rsip::Uri::try_from(s).unwrap_or_else(|_| {
+        rsip::Uri {
+            scheme: Some(rsip::Scheme::Sip),
+            host_with_port: rsip::Domain::from(s).into(),
+            ..Default::default()
+        }
+    })
+}
+
+/// Build a Via header value string for our outgoing messages.
+fn via_value(transport: &str, local_addr: SocketAddr, branch: &str) -> String {
+    format!(
+        "SIP/2.0/{} {}:{};branch={};rport",
+        transport.to_uppercase(),
+        local_addr.ip(),
+        local_addr.port(),
+        branch,
+    )
+}
+
+/// Create common headers shared by many outgoing requests.
+fn base_request_headers(
+    via: &str,
+    from: &str,
+    to: &str,
+    call_id: &str,
+    cseq_val: &str,
+) -> rsip::Headers {
+    let mut headers = rsip::Headers::default();
+    headers.push(rsip::headers::Via::new(via).into());
+    headers.push(rsip::Header::MaxForwards(rsip::headers::MaxForwards::new("70")));
+    headers.push(rsip::headers::From::new(from).into());
+    headers.push(rsip::headers::To::new(to).into());
+    headers.push(rsip::headers::CallId::new(call_id).into());
+    headers.push(rsip::headers::CSeq::new(cseq_val).into());
+    headers
+}
+
+// ---------------------------------------------------------------------------
+// REGISTER
+// ---------------------------------------------------------------------------
 
 /// Build a REGISTER request
 #[allow(clippy::too_many_arguments)]
@@ -25,39 +111,40 @@ pub fn build_register(
     let transport_param = account.transport.param();
     let branch = generate_branch();
 
-    let mut msg = format!(
-        "REGISTER sip:{registrar} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: <sip:{user}@{domain}>;tag={from_tag}\r\n\
-         To: <sip:{user}@{domain}>\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} REGISTER\r\n\
-         Contact: <sip:{user}@{local_ip}:{local_port};transport={tp}>\r\n\
-         Expires: {expires}\r\n\
-         Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO\r\n\
-         User-Agent: Aria/0.2.0\r\n",
-        registrar = registrar,
-        transport = transport_param.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-        user = account.username,
-        domain = account.domain,
-        from_tag = from_tag,
-        call_id = call_id,
-        cseq = cseq,
-        tp = transport_param,
-        expires = expires,
+    let request_uri = rsip::Uri {
+        scheme: Some(rsip::Scheme::Sip),
+        host_with_port: rsip::Domain::from(registrar).into(),
+        ..Default::default()
+    };
+
+    let via = via_value(transport_param, local_addr, &branch);
+    let from_hdr = format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag);
+    let to_hdr = format!("<sip:{}@{}>", account.username, account.domain);
+    let cseq_hdr = format!("{} REGISTER", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+
+    let contact = format!(
+        "<sip:{}@{}:{};transport={}>",
+        account.username, local_addr.ip(), local_addr.port(), transport_param,
     );
+    headers.push(rsip::headers::Contact::new(contact).into());
+    headers.push(rsip::headers::Expires::new(expires.to_string()).into());
+    headers.push(rsip::headers::Allow::new(ALLOW).into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
 
     if let Some(auth) = auth_header {
-        msg.push_str(&format!("Authorization: {}\r\n", auth));
+        headers.push(rsip::headers::Authorization::new(auth).into());
     }
 
-    msg.push_str("Content-Length: 0\r\n\r\n");
-    msg
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Register, request_uri, headers, vec![])
 }
+
+// ---------------------------------------------------------------------------
+// Authorization header type
+// ---------------------------------------------------------------------------
 
 /// Authorization header type for SIP requests
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,6 +154,10 @@ pub enum AuthHeaderType {
     /// Proxy-Authorization header (for 407 Proxy-Authenticate challenges)
     ProxyAuthorization,
 }
+
+// ---------------------------------------------------------------------------
+// INVITE
+// ---------------------------------------------------------------------------
 
 /// Build an INVITE request with SDP, optionally using a public IP for NAT traversal.
 /// Returns (invite_message, local_srtp_key) where local_srtp_key is Some if SRTP is enabled.
@@ -87,7 +178,7 @@ pub fn build_invite_with_public_ip(
 
     // Use public IP for SDP if available (for NAT traversal), otherwise use local IP
     let sdp_ip = public_ip.map(|s| s.to_string()).unwrap_or_else(|| local_addr.ip().to_string());
-    
+
     // Generate SRTP key if account has SRTP enabled
     log::info!("Building INVITE for account {} with SRTP mode: {:?}", account.username, account.srtp_mode);
     let crypto_key = match account.srtp_mode {
@@ -114,43 +205,47 @@ pub fn build_invite_with_public_ip(
     };
     let sdp = build_sdp_offer_with_codecs(sdp_ip, rtp_port, crypto_key.as_deref(), &account.codecs);
 
-    let mut msg = format!(
-        "INVITE {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: \"{display}\" <sip:{user}@{domain}>;tag={from_tag}\r\n\
-         To: <{target_uri}>\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} INVITE\r\n\
-         Contact: <sip:{user}@{local_ip}:{local_port};transport={tp}>\r\n\
-         Content-Type: application/sdp\r\n\
-         Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO\r\n\
-         User-Agent: Aria/0.2.0\r\n",
-        target_uri = target_uri,
-        transport = transport_param.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-        display = account.display_name,
-        user = account.username,
-        domain = account.domain,
-        from_tag = from_tag,
-        call_id = call_id,
-        cseq = cseq,
-        tp = transport_param,
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport_param, local_addr, &branch);
+    let from_hdr = format!(
+        "\"{}\" <sip:{}@{}>;tag={}",
+        account.display_name, account.username, account.domain, from_tag,
     );
+    let to_hdr = format!("<{}>", target_uri);
+    let cseq_hdr = format!("{} INVITE", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+
+    let contact = format!(
+        "<sip:{}@{}:{};transport={}>",
+        account.username, local_addr.ip(), local_addr.port(), transport_param,
+    );
+    headers.push(rsip::headers::Contact::new(contact).into());
+    headers.push(rsip::headers::ContentType::new("application/sdp").into());
+    headers.push(rsip::headers::Allow::new(ALLOW).into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
 
     if let Some((auth_value, auth_type)) = auth {
-        let header_name = match auth_type {
-            AuthHeaderType::Authorization => "Authorization",
-            AuthHeaderType::ProxyAuthorization => "Proxy-Authorization",
-        };
-        msg.push_str(&format!("{}: {}\r\n", header_name, auth_value));
+        match auth_type {
+            AuthHeaderType::Authorization => {
+                headers.push(rsip::headers::Authorization::new(auth_value).into());
+            }
+            AuthHeaderType::ProxyAuthorization => {
+                headers.push(rsip::headers::ProxyAuthorization::new(auth_value).into());
+            }
+        }
     }
 
-    msg.push_str(&format!("Content-Length: {}\r\n\r\n{}", sdp.len(), sdp));
+    headers.push(rsip::headers::ContentLength::new(sdp.len().to_string()).into());
+
+    let msg = request_to_string(rsip::Method::Invite, request_uri, headers, sdp.into_bytes());
     (msg, crypto_key)
 }
+
+// ---------------------------------------------------------------------------
+// ACK
+// ---------------------------------------------------------------------------
 
 /// Build an ACK request
 #[allow(clippy::too_many_arguments)]
@@ -163,27 +258,25 @@ pub fn build_ack(
     to_tag: &str,
     transport: &str,
     via_branch: &str,
+    from_uri: &str,
+    to_uri: &str,
 ) -> String {
-    format!(
-        "ACK {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: <sip:user@host>;tag={from_tag}\r\n\
-         To: <{target_uri}>;tag={to_tag}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} ACK\r\n\
-         Content-Length: 0\r\n\r\n",
-        target_uri = target_uri,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = via_branch,
-        from_tag = from_tag,
-        to_tag = to_tag,
-        call_id = call_id,
-        cseq = cseq,
-    )
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport, local_addr, via_branch);
+    let from_hdr = format!("<{}>;tag={}", from_uri, from_tag);
+    let to_hdr = format!("<{}>;tag={}", to_uri, to_tag);
+    let cseq_hdr = format!("{} ACK", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Ack, request_uri, headers, vec![])
 }
+
+// ---------------------------------------------------------------------------
+// BYE
+// ---------------------------------------------------------------------------
 
 /// Build a BYE request
 #[allow(clippy::too_many_arguments, dead_code)]
@@ -195,28 +288,59 @@ pub fn build_bye(
     from_tag: &str,
     to_tag: &str,
     transport: &str,
+    from_uri: &str,
+    to_uri: &str,
 ) -> String {
     let branch = generate_branch();
-    format!(
-        "BYE {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: <sip:user@host>;tag={from_tag}\r\n\
-         To: <{target_uri}>;tag={to_tag}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} BYE\r\n\
-         Content-Length: 0\r\n\r\n",
-        target_uri = target_uri,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-        from_tag = from_tag,
-        to_tag = to_tag,
-        call_id = call_id,
-        cseq = cseq,
-    )
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport, local_addr, &branch);
+    let from_hdr = format!("<{}>;tag={}", from_uri, from_tag);
+    let to_hdr = format!("<{}>;tag={}", to_uri, to_tag);
+    let cseq_hdr = format!("{} BYE", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Bye, request_uri, headers, vec![])
 }
+
+/// Build a BYE request with Route headers
+#[allow(clippy::too_many_arguments)]
+pub fn build_bye_with_routes(
+    target_uri: &str,
+    local_addr: SocketAddr,
+    call_id: &str,
+    cseq: u32,
+    from_tag: &str,
+    to_tag: &str,
+    transport: &str,
+    route_set: &[String],
+    from_uri: &str,
+    to_uri: &str,
+) -> String {
+    let branch = generate_branch();
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport, local_addr, &branch);
+    let from_hdr = format!("<{}>;tag={}", from_uri, from_tag);
+    let to_hdr = format!("<{}>;tag={}", to_uri, to_tag);
+    let cseq_hdr = format!("{} BYE", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+
+    for route in route_set {
+        headers.push(rsip::headers::Route::new(route.as_str()).into());
+    }
+
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Bye, request_uri, headers, vec![])
+}
+
+// ---------------------------------------------------------------------------
+// CANCEL
+// ---------------------------------------------------------------------------
 
 /// Build a CANCEL request
 #[allow(clippy::too_many_arguments)]
@@ -228,26 +352,25 @@ pub fn build_cancel(
     from_tag: &str,
     transport: &str,
     via_branch: &str,
+    from_uri: &str,
+    to_uri: &str,
 ) -> String {
-    format!(
-        "CANCEL {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: <sip:user@host>;tag={from_tag}\r\n\
-         To: <{target_uri}>\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} CANCEL\r\n\
-         Content-Length: 0\r\n\r\n",
-        target_uri = target_uri,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = via_branch,
-        from_tag = from_tag,
-        call_id = call_id,
-        cseq = cseq,
-    )
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport, local_addr, via_branch);
+    let from_hdr = format!("<{}>;tag={}", from_uri, from_tag);
+    let to_hdr = format!("<{}>", to_uri);
+    let cseq_hdr = format!("{} CANCEL", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Cancel, request_uri, headers, vec![])
 }
+
+// ---------------------------------------------------------------------------
+// 200 OK (INVITE)
+// ---------------------------------------------------------------------------
 
 /// Build a 200 OK response for an incoming INVITE
 #[allow(dead_code)]
@@ -307,27 +430,23 @@ pub fn build_200_ok_invite_with_public_ip(
         build_sdp_offer(sdp_ip, rtp_port)
     };
 
-    Some(format!(
-        "SIP/2.0 200 OK\r\n\
-         Via: {via}\r\n\
-         From: {from}\r\n\
-         To: {to}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq}\r\n\
-         Contact: <{contact}>\r\n\
-         Content-Type: application/sdp\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: {len}\r\n\r\n{sdp}",
-        via = via,
-        from = from,
-        to = to,
-        call_id = call_id,
-        cseq = cseq,
-        contact = contact_uri,
-        len = sdp.len(),
-        sdp = sdp,
-    ))
+    let mut headers = rsip::Headers::default();
+    headers.push(rsip::headers::Via::new(via).into());
+    headers.push(rsip::headers::From::new(from).into());
+    headers.push(rsip::headers::To::new(to).into());
+    headers.push(rsip::headers::CallId::new(call_id).into());
+    headers.push(rsip::headers::CSeq::new(cseq).into());
+    headers.push(rsip::headers::Contact::new(format!("<{}>", contact_uri)).into());
+    headers.push(rsip::headers::ContentType::new("application/sdp").into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new(sdp.len().to_string()).into());
+
+    Some(response_to_string(200.into(), headers, sdp.into_bytes()))
 }
+
+// ---------------------------------------------------------------------------
+// SDP helpers (not SIP -- kept as-is)
+// ---------------------------------------------------------------------------
 
 /// Build an SDP answer that only includes codecs from the offer that we support
 #[allow(dead_code)]
@@ -467,7 +586,7 @@ pub fn build_sdp_offer_with_codecs(
     codecs: &[super::account::CodecPreference],
 ) -> String {
     use rtp_engine::CodecType;
-    
+
     let session_id = rand::random::<u32>();
     let profile = if crypto_b64_key.is_some() {
         "RTP/SAVP"
@@ -481,7 +600,7 @@ pub fn build_sdp_offer_with_codecs(
         .filter(|c| c.enabled)
         .map(|c| c.codec.payload_type())
         .collect();
-    
+
     // Always include telephone-event for DTMF
     pts.push(101);
 
@@ -538,48 +657,9 @@ pub fn build_sdp_offer_with_codecs(
     sdp
 }
 
-/// Build a BYE request with Route headers
-#[allow(clippy::too_many_arguments)]
-pub fn build_bye_with_routes(
-    target_uri: &str,
-    local_addr: SocketAddr,
-    call_id: &str,
-    cseq: u32,
-    from_tag: &str,
-    to_tag: &str,
-    transport: &str,
-    route_set: &[String],
-) -> String {
-    let branch = generate_branch();
-    let mut msg = format!(
-        "BYE {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n",
-        target_uri = target_uri,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-    );
-
-    for route in route_set {
-        msg.push_str(&format!("Route: {}\r\n", route));
-    }
-
-    msg.push_str(&format!(
-        "From: <sip:user@host>;tag={from_tag}\r\n\
-         To: <{target_uri}>;tag={to_tag}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} BYE\r\n\
-         Content-Length: 0\r\n\r\n",
-        from_tag = from_tag,
-        target_uri = target_uri,
-        to_tag = to_tag,
-        call_id = call_id,
-        cseq = cseq,
-    ));
-    msg
-}
+// ---------------------------------------------------------------------------
+// REFER (blind transfer, RFC 3515)
+// ---------------------------------------------------------------------------
 
 /// Build a REFER request for blind transfer (RFC 3515)
 #[allow(clippy::too_many_arguments, dead_code)]
@@ -593,42 +673,32 @@ pub fn build_refer(
     to_tag: &str,
     transport: &str,
     route_set: &[String],
+    from_uri: &str,
+    to_uri: &str,
 ) -> String {
     let branch = generate_branch();
-    let mut msg = format!(
-        "REFER {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n",
-        target_uri = target_uri,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-    );
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport, local_addr, &branch);
+    let from_hdr = format!("<{}>;tag={}", from_uri, from_tag);
+    let to_hdr = format!("<{}>;tag={}", to_uri, to_tag);
+    let cseq_hdr = format!("{} REFER", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
 
     for route in route_set {
-        msg.push_str(&format!("Route: {}\r\n", route));
+        headers.push(rsip::headers::Route::new(route.as_str()).into());
     }
 
-    msg.push_str(&format!(
-        "From: <sip:user@host>;tag={from_tag}\r\n\
-         To: <{target_uri}>;tag={to_tag}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} REFER\r\n\
-         Refer-To: <{refer_to}>\r\n\
-         Referred-By: <sip:user@{local_ip}:{local_port}>\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: 0\r\n\r\n",
-        from_tag = from_tag,
-        target_uri = target_uri,
-        to_tag = to_tag,
-        call_id = call_id,
-        cseq = cseq,
-        refer_to = refer_to,
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
+    headers.push(rsip::Header::Other("Refer-To".into(), format!("<{}>", refer_to)));
+    headers.push(rsip::Header::Other(
+        "Referred-By".into(),
+        format!("<sip:user@{}:{}>", local_addr.ip(), local_addr.port()),
     ));
-    msg
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Refer, request_uri, headers, vec![])
 }
 
 /// Build a REFER with Replaces for attended transfer (RFC 3515 + RFC 3891)
@@ -646,6 +716,8 @@ pub fn build_refer_with_replaces(
     to_tag: &str,
     transport: &str,
     route_set: &[String],
+    from_uri: &str,
+    to_uri: &str,
 ) -> String {
     let branch = generate_branch();
     // URL-encode the Replaces header value inside Refer-To URI
@@ -655,41 +727,33 @@ pub fn build_refer_with_replaces(
     );
     let refer_to_uri = format!("{}?Replaces={}", refer_to, replaces_param);
 
-    let mut msg = format!(
-        "REFER {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n",
-        target_uri = target_uri,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-    );
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport, local_addr, &branch);
+    let from_hdr = format!("<{}>;tag={}", from_uri, from_tag);
+    let to_hdr = format!("<{}>;tag={}", to_uri, to_tag);
+    let cseq_hdr = format!("{} REFER", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
 
     for route in route_set {
-        msg.push_str(&format!("Route: {}\r\n", route));
+        headers.push(rsip::headers::Route::new(route.as_str()).into());
     }
 
-    msg.push_str(&format!(
-        "From: <sip:user@host>;tag={from_tag}\r\n\
-         To: <{target_uri}>;tag={to_tag}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} REFER\r\n\
-         Refer-To: <{refer_to_uri}>\r\n\
-         Referred-By: <sip:user@{local_ip}:{local_port}>\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: 0\r\n\r\n",
-        from_tag = from_tag,
-        target_uri = target_uri,
-        to_tag = to_tag,
-        call_id = call_id,
-        cseq = cseq,
-        refer_to_uri = refer_to_uri,
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
+    headers.push(rsip::Header::Other("Refer-To".into(), format!("<{}>", refer_to_uri)));
+    headers.push(rsip::Header::Other(
+        "Referred-By".into(),
+        format!("<sip:user@{}:{}>", local_addr.ip(), local_addr.port()),
     ));
-    msg
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Refer, request_uri, headers, vec![])
 }
+
+// ---------------------------------------------------------------------------
+// 202 Accepted (for REFER)
+// ---------------------------------------------------------------------------
 
 /// Build a 202 Accepted response for an incoming REFER
 #[allow(dead_code)]
@@ -706,17 +770,21 @@ pub fn build_202_accepted(request: &str, to_tag: &str) -> Option<String> {
         format!("{};tag={}", to_raw, to_tag)
     };
 
-    Some(format!(
-        "SIP/2.0 202 Accepted\r\n\
-         Via: {via}\r\n\
-         From: {from}\r\n\
-         To: {to}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq}\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: 0\r\n\r\n",
-    ))
+    let mut headers = rsip::Headers::default();
+    headers.push(rsip::headers::Via::new(via).into());
+    headers.push(rsip::headers::From::new(from).into());
+    headers.push(rsip::headers::To::new(to).into());
+    headers.push(rsip::headers::CallId::new(call_id).into());
+    headers.push(rsip::headers::CSeq::new(cseq).into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    Some(response_to_string(202.into(), headers, vec![]))
 }
+
+// ---------------------------------------------------------------------------
+// NOTIFY (REFER progress)
+// ---------------------------------------------------------------------------
 
 /// Build a NOTIFY with message/sipfrag body for REFER progress (RFC 3515 section 2.4.5)
 #[allow(clippy::too_many_arguments, dead_code)]
@@ -734,33 +802,27 @@ pub fn build_notify_refer(
 ) -> String {
     let branch = generate_branch();
     let body = format!("SIP/2.0 {} {}\r\n", sipfrag_status, sipfrag_reason);
-    format!(
-        "NOTIFY {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: <sip:user@host>;tag={from_tag}\r\n\
-         To: <{target_uri}>;tag={to_tag}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} NOTIFY\r\n\
-         Event: refer\r\n\
-         Subscription-State: {subscription_state}\r\n\
-         Content-Type: message/sipfrag;version=2.0\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: {len}\r\n\r\n{body}",
-        target_uri = target_uri,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-        from_tag = from_tag,
-        to_tag = to_tag,
-        call_id = call_id,
-        cseq = cseq,
-        subscription_state = subscription_state,
-        len = body.len(),
-        body = body,
-    )
+
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport, local_addr, &branch);
+    let from_hdr = format!("<sip:user@host>;tag={}", from_tag);
+    let to_hdr = format!("<{}>;tag={}", target_uri, to_tag);
+    let cseq_hdr = format!("{} NOTIFY", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+    headers.push(rsip::headers::Event::new("refer").into());
+    headers.push(rsip::headers::SubscriptionState::new(subscription_state).into());
+    headers.push(rsip::headers::ContentType::new("message/sipfrag;version=2.0").into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new(body.len().to_string()).into());
+
+    request_to_string(rsip::Method::Notify, request_uri, headers, body.into_bytes())
 }
+
+// ---------------------------------------------------------------------------
+// INVITE with Replaces (RFC 3891)
+// ---------------------------------------------------------------------------
 
 /// Build an INVITE with Replaces header (RFC 3891)
 #[allow(clippy::too_many_arguments, dead_code)]
@@ -792,43 +854,43 @@ pub fn build_invite_with_replaces(
     };
     let sdp = build_sdp_offer_with_codecs(local_addr.ip().to_string(), rtp_port, crypto_key.as_deref(), &account.codecs);
 
-    let mut msg = format!(
-        "INVITE {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: \"{display}\" <sip:{user}@{domain}>;tag={from_tag}\r\n\
-         To: <{target_uri}>\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} INVITE\r\n\
-         Contact: <sip:{user}@{local_ip}:{local_port};transport={tp}>\r\n\
-         Replaces: {replaces_call_id};to-tag={replaces_to_tag};from-tag={replaces_from_tag}\r\n\
-         Content-Type: application/sdp\r\n\
-         Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO\r\n\
-         User-Agent: Aria/0.2.0\r\n",
-        target_uri = target_uri,
-        transport = transport_param.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-        display = account.display_name,
-        user = account.username,
-        domain = account.domain,
-        from_tag = from_tag,
-        call_id = call_id,
-        cseq = cseq,
-        tp = transport_param,
-        replaces_call_id = replaces_call_id,
-        replaces_to_tag = replaces_to_tag,
-        replaces_from_tag = replaces_from_tag,
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport_param, local_addr, &branch);
+    let from_hdr = format!(
+        "\"{}\" <sip:{}@{}>;tag={}",
+        account.display_name, account.username, account.domain, from_tag,
     );
+    let to_hdr = format!("<{}>", target_uri);
+    let cseq_hdr = format!("{} INVITE", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+
+    let contact = format!(
+        "<sip:{}@{}:{};transport={}>",
+        account.username, local_addr.ip(), local_addr.port(), transport_param,
+    );
+    headers.push(rsip::headers::Contact::new(contact).into());
+    headers.push(rsip::Header::Other(
+        "Replaces".into(),
+        format!("{};to-tag={};from-tag={}", replaces_call_id, replaces_to_tag, replaces_from_tag),
+    ));
+    headers.push(rsip::headers::ContentType::new("application/sdp").into());
+    headers.push(rsip::headers::Allow::new(ALLOW).into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
 
     if let Some(auth) = auth_header {
-        msg.push_str(&format!("Proxy-Authorization: {}\r\n", auth));
+        headers.push(rsip::headers::ProxyAuthorization::new(auth).into());
     }
 
-    msg.push_str(&format!("Content-Length: {}\r\n\r\n{}", sdp.len(), sdp));
-    msg
+    headers.push(rsip::headers::ContentLength::new(sdp.len().to_string()).into());
+
+    request_to_string(rsip::Method::Invite, request_uri, headers, sdp.into_bytes())
 }
+
+// ---------------------------------------------------------------------------
+// OPTIONS
+// ---------------------------------------------------------------------------
 
 /// Build a SIP OPTIONS request (used as keepalive)
 #[allow(clippy::too_many_arguments)]
@@ -842,28 +904,29 @@ pub fn build_options(
     transport: &str,
 ) -> String {
     let branch = generate_branch();
-    format!(
-        "OPTIONS sip:{domain} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: <sip:{user}@{domain}>;tag={from_tag}\r\n\
-         To: <sip:{domain}>\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} OPTIONS\r\n\
-         Accept: application/sdp\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: 0\r\n\r\n",
-        domain = domain,
-        transport = transport.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-        user = username,
-        from_tag = from_tag,
-        call_id = call_id,
-        cseq = cseq,
-    )
+
+    let request_uri = rsip::Uri {
+        scheme: Some(rsip::Scheme::Sip),
+        host_with_port: rsip::Domain::from(domain).into(),
+        ..Default::default()
+    };
+
+    let via = via_value(transport, local_addr, &branch);
+    let from_hdr = format!("<sip:{}@{}>;tag={}", username, domain, from_tag);
+    let to_hdr = format!("<sip:{}>", domain);
+    let cseq_hdr = format!("{} OPTIONS", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+    headers.push(rsip::headers::Accept::new("application/sdp").into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Options, request_uri, headers, vec![])
 }
+
+// ---------------------------------------------------------------------------
+// SUBSCRIBE
+// ---------------------------------------------------------------------------
 
 /// Build a SUBSCRIBE request (RFC 6665)
 #[allow(clippy::too_many_arguments)]
@@ -881,43 +944,40 @@ pub fn build_subscribe(
     let transport_param = account.transport.param();
     let branch = generate_branch();
 
-    let mut msg = format!(
-        "SUBSCRIBE {target_uri} SIP/2.0\r\n\
-         Via: SIP/2.0/{transport} {local_ip}:{local_port};branch={branch};rport\r\n\
-         Max-Forwards: 70\r\n\
-         From: <sip:{user}@{domain}>;tag={from_tag}\r\n\
-         To: <{target_uri}>\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq} SUBSCRIBE\r\n\
-         Contact: <sip:{user}@{local_ip}:{local_port};transport={tp}>\r\n\
-         Event: {event}\r\n\
-         Accept: {accept}\r\n\
-         Expires: {expires}\r\n\
-         Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, SUBSCRIBE, REFER, INFO\r\n\
-         User-Agent: Aria/0.2.0\r\n",
-        target_uri = target_uri,
-        transport = transport_param.to_uppercase(),
-        local_ip = local_addr.ip(),
-        local_port = local_addr.port(),
-        branch = branch,
-        user = account.username,
-        domain = account.domain,
-        from_tag = from_tag,
-        call_id = call_id,
-        cseq = cseq,
-        tp = transport_param,
-        event = event_type.event_header(),
-        accept = event_type.accept_header(),
-        expires = expires,
+    let request_uri = parse_uri(target_uri);
+
+    let via = via_value(transport_param, local_addr, &branch);
+    let from_hdr = format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag);
+    let to_hdr = format!("<{}>", target_uri);
+    let cseq_hdr = format!("{} SUBSCRIBE", cseq);
+
+    let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+
+    let contact = format!(
+        "<sip:{}@{}:{};transport={}>",
+        account.username, local_addr.ip(), local_addr.port(), transport_param,
     );
+    headers.push(rsip::headers::Contact::new(contact).into());
+    headers.push(rsip::headers::Event::new(event_type.event_header()).into());
+    headers.push(rsip::headers::Accept::new(event_type.accept_header()).into());
+    headers.push(rsip::headers::Expires::new(expires.to_string()).into());
+    headers.push(rsip::headers::Allow::new(
+        "INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, SUBSCRIBE, REFER, INFO",
+    ).into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
 
     if let Some(auth) = auth_header {
-        msg.push_str(&format!("Authorization: {}\r\n", auth));
+        headers.push(rsip::headers::Authorization::new(auth).into());
     }
 
-    msg.push_str("Content-Length: 0\r\n\r\n");
-    msg
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    request_to_string(rsip::Method::Subscribe, request_uri, headers, vec![])
 }
+
+// ---------------------------------------------------------------------------
+// 200 OK (SUBSCRIBE)
+// ---------------------------------------------------------------------------
 
 /// Build a 200 OK response for an incoming SUBSCRIBE
 pub fn build_200_ok_subscribe(request_raw: &str, expires: u32) -> Option<String> {
@@ -934,24 +994,22 @@ pub fn build_200_ok_subscribe(request_raw: &str, expires: u32) -> Option<String>
         format!("{};tag={}", to_base, tag)
     };
 
-    Some(format!(
-        "SIP/2.0 200 OK\r\n\
-         Via: {via}\r\n\
-         From: {from}\r\n\
-         To: {to}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq}\r\n\
-         Expires: {expires}\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: 0\r\n\r\n",
-        via = via,
-        from = from,
-        to = to,
-        call_id = call_id,
-        cseq = cseq,
-        expires = expires,
-    ))
+    let mut headers = rsip::Headers::default();
+    headers.push(rsip::headers::Via::new(via).into());
+    headers.push(rsip::headers::From::new(from).into());
+    headers.push(rsip::headers::To::new(to).into());
+    headers.push(rsip::headers::CallId::new(call_id).into());
+    headers.push(rsip::headers::CSeq::new(cseq).into());
+    headers.push(rsip::headers::Expires::new(expires.to_string()).into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    Some(response_to_string(200.into(), headers, vec![]))
 }
+
+// ---------------------------------------------------------------------------
+// Simple response
+// ---------------------------------------------------------------------------
 
 /// Build a simple SIP response (no body) from a request
 pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<String> {
@@ -961,15 +1019,134 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
     let call_id = extract_header(request, "Call-ID")?;
     let cseq = extract_header(request, "CSeq")?;
 
+    // rsip::StatusCode only stores the numeric code; the reason phrase is appended
+    // in its Display impl. Since we need a custom reason phrase, we build the status
+    // line manually and let rsip handle the headers.
+    let mut headers = rsip::Headers::default();
+    headers.push(rsip::headers::Via::new(via).into());
+    headers.push(rsip::headers::From::new(from).into());
+    headers.push(rsip::headers::To::new(to).into());
+    headers.push(rsip::headers::CallId::new(call_id).into());
+    headers.push(rsip::headers::CSeq::new(cseq).into());
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::ContentLength::new("0").into());
+
+    // Use format! for the status line so we keep the exact reason phrase the caller wants.
+    // rsip::StatusCode maps code -> canonical reason, which may differ from what the caller
+    // intends (e.g., 481 "Call/Transaction Does Not Exist" vs rsip's default).
     Some(format!(
-        "SIP/2.0 {} {}\r\n\
-         Via: {}\r\n\
-         From: {}\r\n\
-         To: {}\r\n\
-         Call-ID: {}\r\n\
-         CSeq: {}\r\n\
-         User-Agent: Aria/0.2.0\r\n\
-         Content-Length: 0\r\n\r\n",
-        code, reason, via, from, to, call_id, cseq,
+        "SIP/2.0 {} {}\r\n{}\r\n",
+        code,
+        reason,
+        headers,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn addr() -> SocketAddr {
+        "192.168.1.100:5060".parse().unwrap()
+    }
+
+    #[test]
+    fn bye_has_correct_from_to_uris() {
+        let msg = build_bye(
+            "sip:pbx@159.203.80.231", addr(), "call-123", 2,
+            "from-tag", "to-tag", "UDP",
+            "sip:1001@example.com", "sip:1002@example.com",
+        );
+        assert!(msg.starts_with("BYE sip:pbx@159.203.80.231 SIP/2.0\r\n"));
+        assert!(msg.contains("From: <sip:1001@example.com>;tag=from-tag"));
+        assert!(msg.contains("To: <sip:1002@example.com>;tag=to-tag"));
+        assert!(msg.contains("Call-ID: call-123"));
+        assert!(msg.contains("CSeq: 2 BYE"));
+        assert!(!msg.contains("user@host"));
+        assert!(!msg.contains("unknown"));
+    }
+
+    #[test]
+    fn bye_with_routes_includes_route_headers() {
+        let routes = vec!["<sip:proxy.example.com;lr>".to_string()];
+        let msg = build_bye_with_routes(
+            "sip:pbx@159.203.80.231", addr(), "call-123", 2,
+            "ft", "tt", "UDP", &routes,
+            "sip:1001@example.com", "sip:1002@example.com",
+        );
+        assert!(msg.contains("Route: <sip:proxy.example.com;lr>"));
+        assert!(msg.contains("From: <sip:1001@example.com>;tag=ft"));
+        assert!(!msg.contains("user@host"));
+    }
+
+    #[test]
+    fn ack_has_correct_from_to_uris() {
+        let msg = build_ack(
+            "sip:1002@example.com", addr(), "call-123", 1,
+            "ft", "tt", "UDP", "z9hG4bK-test",
+            "sip:1001@example.com", "sip:1002@example.com",
+        );
+        assert!(msg.starts_with("ACK sip:1002@example.com SIP/2.0\r\n"));
+        assert!(msg.contains("From: <sip:1001@example.com>;tag=ft"));
+        assert!(msg.contains("To: <sip:1002@example.com>;tag=tt"));
+        assert!(!msg.contains("user@host"));
+    }
+
+    #[test]
+    fn cancel_has_correct_from_to_uris() {
+        let msg = build_cancel(
+            "sip:1002@example.com", addr(), "call-123", 1,
+            "ft", "UDP", "z9hG4bK-branch", "sip:1001@example.com", "sip:1002@example.com",
+        );
+        assert!(msg.starts_with("CANCEL sip:1002@example.com SIP/2.0\r\n"));
+        assert!(msg.contains("From: <sip:1001@example.com>;tag=ft"));
+        assert!(msg.contains("To: <sip:1002@example.com>"));
+        assert!(msg.contains("branch=z9hG4bK-branch"));
+        assert!(!msg.contains("user@host"));
+    }
+
+    #[test]
+    fn all_messages_end_with_double_crlf() {
+        let bye = build_bye("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "sip:a@b", "sip:x@y");
+        assert!(bye.ends_with("\r\n\r\n"), "BYE must end with \\r\\n\\r\\n");
+
+        let ack = build_ack("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
+        assert!(ack.ends_with("\r\n\r\n"), "ACK must end with \\r\\n\\r\\n");
+
+        let cancel = build_cancel("sip:x@y", addr(), "c", 1, "f", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
+        assert!(cancel.ends_with("\r\n\r\n"), "CANCEL must end with \\r\\n\\r\\n");
+    }
+
+    #[test]
+    fn options_is_valid_sip() {
+        let msg = build_options("example.com", addr(), "call-1", 1, "ft", "1001", "UDP");
+        assert!(msg.starts_with("OPTIONS sip:example.com SIP/2.0\r\n"));
+        assert!(msg.contains("Accept: application/sdp"));
+        assert!(msg.contains("From: <sip:1001@example.com>;tag=ft"));
+    }
+
+    #[test]
+    fn sdp_answer_has_correct_format() {
+        let remote_sdp = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 20000 RTP/AVP 0 8 101\r\na=rtpmap:0 PCMU/8000\r\n";
+        let answer = build_sdp_answer(remote_sdp, "192.168.1.100".to_string(), 30000);
+        assert!(answer.contains("v=0\r\n"));
+        assert!(answer.contains("c=IN IP4 192.168.1.100"));
+        assert!(answer.contains("m=audio 30000 RTP/AVP"));
+    }
+
+    #[test]
+    fn no_message_contains_hardcoded_user_at_host() {
+        let bye = build_bye("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "sip:a@b", "sip:x@y");
+        assert!(!bye.contains("user@host"));
+
+        let ack = build_ack("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
+        assert!(!ack.contains("user@host"));
+
+        let cancel = build_cancel("sip:x@y", addr(), "c", 1, "f", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
+        assert!(!cancel.contains("user@host"));
+    }
 }

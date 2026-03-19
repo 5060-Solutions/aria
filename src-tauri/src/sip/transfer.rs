@@ -186,7 +186,8 @@ pub async fn handle_incoming_refer(
         );
 
         let branch = extract_via_branch(&invite).unwrap_or_default();
-        let mut new_call = CallFSM::new_outbound(account_id, &refer_to, new_call_id, new_from_tag, rtp_port, branch);
+        let local_uri = format!("sip:{}@{}", account_config.username, account_config.domain);
+        let mut new_call = CallFSM::new_outbound(account_id, &refer_to, new_call_id, new_from_tag, rtp_port, branch, local_uri);
         new_call.local_srtp_key = local_srtp_key;
         let new_id = new_call.id.clone();
 
@@ -444,6 +445,14 @@ pub async fn handle_invite_with_replaces(
         })
         .unwrap_or_else(|| format!("sip:unknown@{}", remote.ip()));
 
+    let local_uri = {
+        let s = state.read().await;
+        match s.get_account(account_id) {
+            Some(a) => format!("sip:{}@{}", a.config.username, a.config.domain),
+            None => format!("sip:unknown@{}", remote.ip()),
+        }
+    };
+
     let call = CallFSM::new_inbound(
         account_id,
         &remote_uri,
@@ -452,6 +461,7 @@ pub async fn handle_invite_with_replaces(
         to_tag.clone(),
         rtp_port,
         text.to_string(),
+        local_uri,
     );
 
     let new_internal_id = call.id.clone();

@@ -241,6 +241,7 @@ impl CallFSM {
         from_tag: String,
         local_rtp_port: u16,
         invite_branch: String,
+        local_uri: String,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -256,6 +257,8 @@ impl CallFSM {
             last_invite_branch: Some(invite_branch.clone()),
             auth_attempted: false,
             local_srtp_key: None,
+            remote_contact: None,
+            local_uri,
             state: CallState::Dialing {
                 invite_branch,
                 auth_attempted: false,
@@ -272,6 +275,7 @@ impl CallFSM {
         to_tag: String,
         local_rtp_port: u16,
         raw_invite: String,
+        local_uri: String,
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -287,6 +291,8 @@ impl CallFSM {
             last_invite_branch: None,
             auth_attempted: false,
             local_srtp_key: None,
+            remote_contact: None,
+            local_uri,
             state: CallState::Incoming { raw_invite },
         }
     }
@@ -809,6 +815,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         assert_eq!(call.state_name(), "dialing");
@@ -843,6 +850,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         let result = call.process(CallFSMEvent::Reject { status: 486 });
@@ -866,6 +874,7 @@ mod tests {
             "to-tag".to_string(),
             10000,
             "INVITE sip:...".to_string(),
+            "sip:bob@example.com".to_string(),
         );
 
         assert_eq!(call.state_name(), "incoming");
@@ -885,6 +894,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         // Get to connected state
@@ -916,6 +926,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         // Try to hold while dialing (invalid)
@@ -933,6 +944,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         call.end(EndReason::LocalHangup);
@@ -952,6 +964,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         assert!(!call.auth_attempted());
@@ -974,6 +987,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         let result = call.process(CallFSMEvent::Cancel);
@@ -996,6 +1010,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         call.process(CallFSMEvent::RemoteRinging);
@@ -1015,6 +1030,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
         assert_eq!(outbound.direction_str(), "outbound");
         assert!(outbound.is_dialing());
@@ -1027,6 +1043,7 @@ mod tests {
             "to-tag".to_string(),
             10000,
             "INVITE sip:...".to_string(),
+            "sip:bob@example.com".to_string(),
         );
         assert_eq!(inbound.direction_str(), "inbound");
         assert!(inbound.is_incoming());
@@ -1041,6 +1058,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         // Get to connected state
@@ -1072,6 +1090,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         // Get to connected state
@@ -1101,6 +1120,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         let result = call.process(CallFSMEvent::Fail {
@@ -1124,6 +1144,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         assert_eq!(call.cseq, 1);
@@ -1142,6 +1163,7 @@ mod tests {
             "from-tag".to_string(),
             10000,
             "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
         );
 
         // Connect with route set and session expires
