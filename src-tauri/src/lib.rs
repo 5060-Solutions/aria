@@ -76,6 +76,15 @@ pub fn run() {
                                 });
                                 let _ = app_handle.emit("sip-conference-ended", payload);
                             }
+                            sip::SipEvent::VoicemailStatus(vm) => {
+                                let payload = serde_json::json!({
+                                    "accountId": vm.account_id,
+                                    "hasMessages": vm.messages_waiting,
+                                    "newMessages": vm.new_messages,
+                                    "oldMessages": vm.old_messages,
+                                });
+                                let _ = app_handle.emit("sip-voicemail", payload);
+                            }
                         }
                     }
                 log::warn!("SIP event forwarding loop ended");

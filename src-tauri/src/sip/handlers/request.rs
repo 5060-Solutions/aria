@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, RwLock};
 use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method};
 use crate::sip::state::{CallFSM, CallFSMEvent};
 use crate::sip::transfer;
-use crate::sip::{CallEvent, ManagerState, SipEvent};
+use crate::sip::{CallEvent, ManagerState, SipEvent, VoicemailStatusEvent};
 
 use super::presence::handle_notify_presence;
 
@@ -186,6 +186,31 @@ pub async fn handle_incoming_request(
                 transfer::handle_notify_refer(state, event_tx, text, remote, account_id).await;
             } else if event_trimmed == "dialog" || event_trimmed == "presence" {
                 handle_notify_presence(state, event_tx, text, remote, &event_trimmed, account_id).await;
+            } else if event_trimmed == "message-summary" {
+                // RFC 3842 MWI NOTIFY — parse the body for voicemail status
+                let mwi = parse_mwi_body(text);
+                log::info!(
+                    "MWI NOTIFY from {}: waiting={}, new={}, old={}",
+                    remote, mwi.messages_waiting, mwi.new_messages, mwi.old_messages
+                );
+
+                let _ = event_tx.send(SipEvent::VoicemailStatus(VoicemailStatusEvent {
+                    account_id: account_id.to_string(),
+                    messages_waiting: mwi.messages_waiting,
+                    new_messages: mwi.new_messages,
+                    old_messages: mwi.old_messages,
+                }));
+
+                // Respond 200 OK
+                let ok = build_simple_response(text, 200, "OK");
+                let s = state.read().await;
+                if let Some(account) = s.get_account(account_id) {
+                    if let Some(ref transport) = account.transport {
+                        if let Some(resp) = ok {
+                            let _ = transport.send_to(resp.as_bytes(), remote).await;
+                        }
+                    }
+                }
             } else {
                 let ok = build_simple_response(text, 200, "OK");
                 let s = state.read().await;
@@ -260,4 +285,54 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
          Content-Length: 0\r\n\r\n",
         code, reason, via, from, to, call_id, cseq,
     ))
+}
+
+/// Parsed MWI status from a message-summary NOTIFY body.
+struct MwiBody {
+    messages_waiting: bool,
+    new_messages: u32,
+    old_messages: u32,
+}
+
+/// Parse an RFC 3842 message-summary body.
+///
+/// Expected format:
+/// ```text
+/// Messages-Waiting: yes
+/// Voice-Message: 3/1 (0/0)
+/// ```
+///
+/// The `Voice-Message` line format is `new/old (urgent_new/urgent_old)`.
+fn parse_mwi_body(sip_message: &str) -> MwiBody {
+    // The body comes after the blank line separating headers from body
+    let body = sip_message
+        .find("\r\n\r\n")
+        .map(|pos| &sip_message[pos + 4..])
+        .or_else(|| sip_message.find("\n\n").map(|pos| &sip_message[pos + 2..]))
+        .unwrap_or("");
+
+    let mut waiting = false;
+    let mut new_msgs = 0u32;
+    let mut old_msgs = 0u32;
+
+    for line in body.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix("Messages-Waiting:") {
+            waiting = value.trim().eq_ignore_ascii_case("yes");
+        } else if let Some(value) = line.strip_prefix("Voice-Message:") {
+            // Format: "3/1 (0/0)" or just "3/1"
+            let counts = value.trim().split_once('(')
+                .map_or(value.trim(), |(before, _)| before.trim());
+            if let Some((new_str, old_str)) = counts.split_once('/') {
+                new_msgs = new_str.trim().parse().unwrap_or(0);
+                old_msgs = old_str.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+
+    MwiBody {
+        messages_waiting: waiting,
+        new_messages: new_msgs,
+        old_messages: old_msgs,
+    }
 }

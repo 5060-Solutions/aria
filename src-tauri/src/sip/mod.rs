@@ -149,6 +149,17 @@ pub enum SipEvent {
     ConferenceCreated { conference_id: String, call_ids: Vec<String> },
     ConferenceSplit { conference_id: String, call_id: String },
     ConferenceEnded { conference_id: String },
+    VoicemailStatus(VoicemailStatusEvent),
+}
+
+/// MWI (Message Waiting Indicator) status from a message-summary NOTIFY.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoicemailStatusEvent {
+    pub account_id: String,
+    pub messages_waiting: bool,
+    pub new_messages: u32,
+    pub old_messages: u32,
 }
 
 /// Manager state with multi-account support
