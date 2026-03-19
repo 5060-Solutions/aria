@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { CallControls } from "./CallControls";
+import { AudioLevelMeter } from "./AudioLevelMeter";
 import { RecordingIndicator } from "./RecordingIndicator";
 import { useCallTimer } from "../../hooks/useCallTimer";
 import type { SrtpMode } from "../../types/sip";
@@ -187,6 +188,12 @@ export function CallScreen() {
           </Box>
         )}
       </Box>
+
+      {isConnected && (
+        <Box sx={{ width: "100%", maxWidth: 280, px: 1 }}>
+          <AudioLevelMeter compact />
+        </Box>
+      )}
 
       <CallControls />
     </Box>

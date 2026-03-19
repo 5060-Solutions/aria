@@ -492,6 +492,15 @@ pub async fn get_rtp_stats(manager: State<'_, SipManager>) -> Result<serde_json:
     }
 }
 
+/// Get live audio levels for the active call (mic TX and speaker RX, RMS 0.0-1.0)
+#[tauri::command]
+pub async fn get_audio_levels(manager: State<'_, SipManager>) -> Result<serde_json::Value, String> {
+    match manager.get_audio_levels().await {
+        Some((tx, rx)) => Ok(serde_json::json!({ "tx": tx, "rx": rx })),
+        None => Ok(serde_json::json!(null)),
+    }
+}
+
 /// Make a second call while the first call is on hold (for three-way calling)
 #[tauri::command]
 pub async fn sip_add_call(

@@ -55,6 +55,7 @@ import InputAdornment from "@mui/material/InputAdornment";
 import { useTranslation } from "react-i18next";
 import { openRecordingsFolder, getDefaultRecordingsDir, fetchSystemContacts } from "../../hooks/useSip";
 import { changeLanguage, supportedLanguages, getCurrentLanguage } from "../../i18n";
+import { AudioLevelMeter } from "../call/AudioLevelMeter";
 import { log } from "../../utils/log";
 
 interface AudioDevice {
@@ -891,6 +892,9 @@ export function Settings() {
                     </Select>
                   </FormControl>
 
+                  <Box sx={{ mt: 2 }}>
+                    <AudioLevelMeter />
+                  </Box>
                   <Typography variant="caption" sx={{ display: "block", mt: 1.5, color: "text.secondary" }}>
                     {t("settings.audioNote")}
                   </Typography>

@@ -107,6 +107,7 @@ pub fn run() {
             commands::get_sip_diagnostics,
             commands::clear_sip_diagnostics,
             commands::get_rtp_stats,
+            commands::get_audio_levels,
             commands::sip_add_call,
             commands::sip_conference_merge,
             commands::sip_conference_split,

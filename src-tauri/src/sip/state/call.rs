@@ -224,6 +224,10 @@ pub struct CallFSM {
     pub auth_attempted: bool,
     /// Local SRTP key (base64 encoded) for outbound encryption
     pub local_srtp_key: Option<String>,
+    /// Remote Contact URI from 200 OK (the URI to send BYE/re-INVITE to)
+    pub remote_contact: Option<String>,
+    /// Our local SIP URI (e.g., sip:1001@lyonscomm.com)
+    pub local_uri: String,
     /// Current state
     state: CallState,
 }

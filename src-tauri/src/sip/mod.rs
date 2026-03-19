@@ -1552,6 +1552,14 @@ impl SipManager {
             .find_map(|c| c.media().map(|m| m.get_stats()))
     }
 
+    /// Get live audio levels (TX mic, RX speaker) for the active call.
+    pub async fn get_audio_levels(&self) -> Option<(f32, f32)> {
+        let s = self.state.read().await;
+        s.all_active_calls()
+            .iter()
+            .find_map(|c| c.media().map(|m| (m.tx_audio_level(), m.rx_audio_level())))
+    }
+
     /// Subscribe to presence/dialog events for a target URI (RFC 6665)
     pub async fn subscribe_presence(
         &self,
