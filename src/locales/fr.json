@@ -33,7 +33,9 @@
     "keypad": "Clavier",
     "speaker": "Haut-parleur",
     "recording": "ENR",
-    "recordingInProgress": "Enregistrement en cours"
+    "recordingInProgress": "Enregistrement en cours",
+    "answer": "Répondre",
+    "decline": "Refuser"
   },
   "history": {
     "title": "Récents",

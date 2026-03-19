@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useAppStore, getAccountWithPassword } from "../stores/appStore";
 import type { SipAccount, RegistrationState } from "../types/sip";
 import { useRingtone } from "./useRingtone";
+import { useRingback } from "./useRingback";
 import { log } from "../utils/log";
 
 interface RegistrationPayload {
@@ -86,9 +87,12 @@ export function useSipEvents() {
   const setActiveCall = useAppStore((s) => s.setActiveCall);
   const activeCall = useAppStore((s) => s.activeCall);
   const addCallHistory = useAppStore((s) => s.addCallHistory);
+  const setCurrentView = useAppStore((s) => s.setCurrentView);
 
   const isIncoming = activeCall?.state === "incoming";
+  const isRinging = activeCall?.state === "ringing" || activeCall?.state === "dialing";
   useRingtone(isIncoming);
+  useRingback(isRinging);
 
   useEffect(() => {
     const unlistenReg = listen<RegistrationPayload>(
@@ -137,6 +141,7 @@ export function useSipEvents() {
           recording: false,
           sipCallId: p.sipCallId,
         });
+        setCurrentView("dialer");
         return;
       }
 
@@ -158,7 +163,7 @@ export function useSipEvents() {
       unlistenReg.then((fn_) => fn_());
       unlistenCall.then((fn_) => fn_());
     };
-  }, [activeCall, setAccountRegistrationState, setActiveCall, addCallHistory]);
+  }, [activeCall, setAccountRegistrationState, setActiveCall, addCallHistory, setCurrentView]);
 }
 
 export async function sipRegister(account: SipAccount): Promise<string> {

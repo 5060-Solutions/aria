@@ -33,7 +33,9 @@
     "keypad": "Teclado",
     "speaker": "Altavoz",
     "recording": "GRAB",
-    "recordingInProgress": "Grabación en curso"
+    "recordingInProgress": "Grabación en curso",
+    "answer": "Contestar",
+    "decline": "Rechazar"
   },
   "history": {
     "title": "Recientes",

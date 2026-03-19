@@ -38,7 +38,9 @@
     "encrypted": "Encrypted",
     "encryptionSdes": "SDES-SRTP",
     "encryptionDtls": "DTLS-SRTP",
-    "notEncrypted": "Not encrypted"
+    "notEncrypted": "Not encrypted",
+    "answer": "Answer",
+    "decline": "Decline"
   },
   "history": {
     "title": "Recent",

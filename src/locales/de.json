@@ -33,7 +33,9 @@
     "keypad": "Tastatur",
     "speaker": "Lautsprecher",
     "recording": "AUFN",
-    "recordingInProgress": "Aufnahme läuft"
+    "recordingInProgress": "Aufnahme läuft",
+    "answer": "Annehmen",
+    "decline": "Ablehnen"
   },
   "history": {
     "title": "Letzte",

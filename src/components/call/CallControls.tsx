@@ -22,7 +22,8 @@ import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
-import { sipHangup, sipMute, sipHold, sipStartRecording, sipStopRecording, sipAddCall, sipConferenceMerge, sipSwapCalls, sipSendDtmf } from "../../hooks/useSip";
+import CallIcon from "@mui/icons-material/Call";
+import { sipHangup, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipAddCall, sipConferenceMerge, sipSwapCalls, sipSendDtmf } from "../../hooks/useSip";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
 
@@ -120,6 +121,76 @@ export function CallControls() {
   }, [audioAnchor]);
 
   if (!activeCall) return null;
+
+  const isIncoming = activeCall.state === "incoming";
+
+  const handleAnswer = async () => {
+    try {
+      await sipAnswer(activeCall.id);
+    } catch (e) {
+      log.error("Answer failed:", e);
+    }
+  };
+
+  const handleDecline = async () => {
+    try {
+      await sipHangup(activeCall.id);
+    } catch {
+      // ignore
+    }
+    setActiveCall(null);
+  };
+
+  if (isIncoming) {
+    return (
+      <Box sx={{ display: "flex", justifyContent: "center", gap: 6, mb: 1 }}>
+        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 0.5 }}>
+          <motion.div whileTap={{ scale: 0.88 }}>
+            <IconButton
+              onClick={handleDecline}
+              sx={{
+                width: 68,
+                height: 68,
+                borderRadius: "50%",
+                bgcolor: "error.main",
+                color: "#fff",
+                boxShadow: (theme) =>
+                  `0 6px 24px ${alpha(theme.palette.error.main, 0.4)}`,
+                "&:hover": { bgcolor: "error.dark" },
+              }}
+            >
+              <CallEndIcon sx={{ fontSize: 30 }} />
+            </IconButton>
+          </motion.div>
+          <Typography variant="caption" sx={{ fontSize: "0.7rem", color: "text.secondary" }}>
+            {t("call.decline")}
+          </Typography>
+        </Box>
+        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 0.5 }}>
+          <motion.div whileTap={{ scale: 0.88 }}>
+            <IconButton
+              onClick={handleAnswer}
+              sx={{
+                width: 68,
+                height: 68,
+                borderRadius: "50%",
+                bgcolor: "success.main",
+                color: "#fff",
+                boxShadow: (theme) =>
+                  `0 6px 24px ${alpha(theme.palette.success.main, 0.4)}`,
+                "&:hover": { bgcolor: "success.dark" },
+              }}
+            >
+              <CallIcon sx={{ fontSize: 30 }} />
+            </IconButton>
+          </motion.div>
+          <Typography variant="caption" sx={{ fontSize: "0.7rem", color: "text.secondary" }}>
+            {t("call.answer")}
+          </Typography>
+        </Box>
+      </Box>
+    );
+  }
 
   const connectedCalls = activeCalls.filter(
     (c) => c.state === "connected" || c.state === "held" || c.state === "conferenced"

@@ -145,7 +145,10 @@ pub enum CallState {
         auth_attempted: bool,
     },
     /// Received 180/183, waiting for answer
-    Ringing { to_tag: Option<String> },
+    Ringing {
+        to_tag: Option<String>,
+        early_media: Option<MediaSession>,
+    },
     /// Incoming call, waiting for local answer
     Incoming { raw_invite: String },
     /// Call is connected with active media
@@ -392,7 +395,7 @@ impl CallFSM {
     /// Set the to_tag (received in response)
     pub fn set_to_tag(&mut self, tag: String) {
         self.to_tag = Some(tag.clone());
-        if let CallState::Ringing { to_tag } = &mut self.state {
+        if let CallState::Ringing { to_tag, .. } = &mut self.state {
             *to_tag = Some(tag);
         }
     }
@@ -414,6 +417,27 @@ impl CallFSM {
             CallState::Connected { media: m, .. } => *m = Some(media),
             CallState::Held { media: m, .. } => *m = Some(media),
             _ => {}
+        }
+    }
+
+    /// Set early media session for a ringing call (183 with SDP)
+    pub fn set_early_media(&mut self, media: MediaSession) {
+        if let CallState::Ringing { early_media, .. } = &mut self.state {
+            *early_media = Some(media);
+        }
+    }
+
+    /// Check if early media is already established
+    pub fn has_early_media(&self) -> bool {
+        matches!(&self.state, CallState::Ringing { early_media: Some(_), .. })
+    }
+
+    /// Take early media session out of a ringing call (consumes it)
+    pub fn take_early_media(&mut self) -> Option<MediaSession> {
+        if let CallState::Ringing { early_media, .. } = &mut self.state {
+            early_media.take()
+        } else {
+            None
         }
     }
 
@@ -475,7 +499,7 @@ impl CallFSM {
                 (None, TransitionResult::Ok)
             }
             (CallState::Dialing { .. }, CallFSMEvent::RemoteRinging) => (
-                Some(CallState::Ringing { to_tag: None }),
+                Some(CallState::Ringing { to_tag: None, early_media: None }),
                 TransitionResult::Ok,
             ),
             (

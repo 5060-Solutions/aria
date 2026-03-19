@@ -30,16 +30,107 @@ pub async fn handle_invite_response(
         }
         180 | 183 => {
             log::info!("Call ringing ({})", status);
+
+            // Check for SDP in 183 (early media)
+            let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
+            let has_sdp = status == 183 && !sdp.trim().is_empty() && sdp.contains("m=audio");
+
+            // Extract data needed for early media before taking write lock
+            let early_media_data = if has_sdp {
+                let rtp_target = parse_sdp_connection(sdp);
+                let remote_srtp_key = rtp_engine::srtp::parse_sdp_crypto(sdp).map(String::from);
+                let negotiated_codec = codec::negotiate_codec(sdp);
+
+                let s = state.read().await;
+                s.find_call_by_header(&call_id_header).and_then(|(account, call)| {
+                    if call.has_early_media() {
+                        return None; // Already have early media
+                    }
+                    let remote_rtp_addr = rtp_target.and_then(|(ip, port)| {
+                        format!("{}:{}", ip, port).parse::<SocketAddr>().ok()
+                    })?;
+                    let input_dev = s.preferred_input_device.clone();
+                    let output_dev = s.preferred_output_device.clone();
+                    Some((
+                        call.local_rtp_port,
+                        remote_rtp_addr,
+                        negotiated_codec,
+                        call.local_srtp_key.clone(),
+                        remote_srtp_key,
+                        call.id.clone(),
+                        account.config.id.clone(),
+                        input_dev,
+                        output_dev,
+                    ))
+                })
+            } else {
+                None
+            };
+
+            // Start early media session if we have the data
+            let early_session = if let Some((local_rtp_port, remote_rtp, negotiated_codec, local_srtp_key, remote_srtp_key, _call_id, _account_id, input_dev, output_dev)) = early_media_data {
+                log::info!("Starting early media session for 183 response");
+                let result = match (&local_srtp_key, &remote_srtp_key) {
+                    (Some(local_key), Some(remote_key)) => {
+                        match (
+                            rtp_engine::srtp::SrtpContext::from_base64(local_key),
+                            rtp_engine::srtp::SrtpContext::from_base64(remote_key),
+                        ) {
+                            (Ok(tx_ctx), Ok(rx_ctx)) => {
+                                media::MediaSession::start_with_srtp_keys_and_devices(
+                                    local_rtp_port, remote_rtp, negotiated_codec, tx_ctx, rx_ctx,
+                                    input_dev, output_dev,
+                                ).await
+                            }
+                            (Err(e), _) | (_, Err(e)) => {
+                                log::error!("Failed to create SRTP context for early media: {:?}", e);
+                                media::MediaSession::start_with_devices(
+                                    local_rtp_port, remote_rtp, negotiated_codec,
+                                    input_dev, output_dev,
+                                ).await
+                            }
+                        }
+                    }
+                    _ => {
+                        media::MediaSession::start_with_devices(
+                            local_rtp_port, remote_rtp, negotiated_codec,
+                            input_dev, output_dev,
+                        ).await
+                    }
+                };
+                match result {
+                    Ok(session) => {
+                        log::info!("Early media session started successfully");
+                        Some(session)
+                    }
+                    Err(e) => {
+                        log::error!("Failed to start early media: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let mut s = state.write().await;
             if let Some((account_id, call)) = s.find_call_by_header_mut(&call_id_header) {
                 let account_id = account_id.to_string();
                 let call_id = call.id.clone();
                 let remote_uri = call.remote_uri.clone();
+                let was_ringing = call.is_ringing();
                 let _ = call.process(CallFSMEvent::RemoteRinging);
-                let _ = event_tx.send(SipEvent::CallStateChanged(
-                    CallEvent::new(&account_id, &call_id, "ringing", &remote_uri, "outbound")
-                        .with_sip_call_id(&call_id_header)
-                ));
+
+                if let Some(session) = early_session {
+                    call.set_early_media(session);
+                }
+
+                // Only emit ringing event if we weren't already ringing
+                if !was_ringing {
+                    let _ = event_tx.send(SipEvent::CallStateChanged(
+                        CallEvent::new(&account_id, &call_id, "ringing", &remote_uri, "outbound")
+                            .with_sip_call_id(&call_id_header)
+                    ));
+                }
             }
         }
         200 => {
@@ -114,9 +205,12 @@ pub async fn handle_invite_response(
                 format!("{}:{}", ip, port).parse::<SocketAddr>().ok()
             });
 
+            let has_media;
             {
                 let mut s = state.write().await;
                 if let Some((_, call)) = s.find_call_by_header_mut(&call_id_header) {
+                    let early_media = call.take_early_media();
+                    has_media = early_media.is_some();
                     call.set_to_tag(to_tag.clone());
                     let _ = call.process(CallFSMEvent::Answered {
                         to_tag: to_tag.clone(),
@@ -124,10 +218,18 @@ pub async fn handle_invite_response(
                         route_set,
                         session_expires,
                     });
+                    // If we had early media, set it on the now-connected call
+                    if let Some(session) = early_media {
+                        call.set_media(session);
+                    }
+                } else {
+                    has_media = false;
                 }
             }
 
-            if let Some(remote_rtp) = remote_rtp_addr {
+            if has_media {
+                log::info!("Early media session already active, skipping new media setup");
+            } else if let Some(remote_rtp) = remote_rtp_addr {
                 let negotiated_codec = codec::negotiate_codec(sdp);
                 log::info!("Negotiated codec: {:?}", negotiated_codec);
 
