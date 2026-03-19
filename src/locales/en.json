@@ -229,7 +229,9 @@
     "add": "Add",
     "delete": "Delete",
     "loading": "Loading...",
-    "never": "Never"
+    "never": "Never",
+    "test": "Test",
+    "stop": "Stop"
   },
   "time": {
     "hours": "h",

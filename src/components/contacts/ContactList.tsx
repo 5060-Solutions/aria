@@ -30,7 +30,8 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
-import type { Contact } from "../../types/sip";
+import type { Contact, PresenceState } from "../../types/sip";
+import { usePresence } from "../../hooks/usePresence";
 
 const inputSx = {
   "& .MuiOutlinedInput-root": {
@@ -218,6 +219,55 @@ function ContactDialog({
   );
 }
 
+// --- Presence Indicator ---
+
+const PRESENCE_COLORS: Record<PresenceState, string> = {
+  available: "#4CAF50",    // Green
+  busy: "#F44336",         // Red
+  onThePhone: "#F44336",   // Red
+  ringing: "#FF9800",      // Orange
+  away: "#FFC107",         // Yellow
+  doNotDisturb: "#FFC107", // Yellow
+  offline: "#9E9E9E",      // Gray
+  unknown: "#9E9E9E",      // Gray
+};
+
+const PRESENCE_LABELS: Record<PresenceState, string> = {
+  available: "Available",
+  busy: "Busy",
+  onThePhone: "On the phone",
+  ringing: "Ringing",
+  away: "Away",
+  doNotDisturb: "Do not disturb",
+  offline: "Offline",
+  unknown: "Unknown",
+};
+
+function PresenceDot({ uri }: { uri: string }) {
+  const presence = usePresence(uri);
+
+  // Don't show dot for offline/unknown (no subscription data)
+  if (presence === "offline" || presence === "unknown") return null;
+
+  const color = PRESENCE_COLORS[presence];
+  const label = PRESENCE_LABELS[presence];
+
+  return (
+    <Tooltip title={label} placement="top">
+      <Box
+        sx={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          bgcolor: color,
+          flexShrink: 0,
+          boxShadow: `0 0 0 2px white`,
+        }}
+      />
+    </Tooltip>
+  );
+}
+
 // --- Contact Item ---
 
 function ContactItem({
@@ -261,6 +311,7 @@ function ContactItem({
       <ListItemText
         primary={
           <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+            <PresenceDot uri={contact.uri} />
             {contact.name}
             {contact.favorite && (
               <StarIcon sx={{ fontSize: 14, color: "warning.main" }} />

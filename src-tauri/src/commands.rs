@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use tauri::{Manager, State};
 
+use crate::audio_test::AudioTestManager;
 use crate::sip::{self, SipManager};
 
 // ── PCAP helpers ────────────────────────────────────────────────────────────
@@ -492,13 +493,24 @@ pub async fn get_rtp_stats(manager: State<'_, SipManager>) -> Result<serde_json:
     }
 }
 
-/// Get live audio levels for the active call (mic TX and speaker RX, RMS 0.0-1.0)
+/// Get live audio levels for the active call (mic TX and speaker RX, RMS 0.0-1.0).
+/// Also returns levels from the audio test manager when a test is running.
 #[tauri::command]
-pub async fn get_audio_levels(manager: State<'_, SipManager>) -> Result<serde_json::Value, String> {
-    match manager.get_audio_levels().await {
-        Some((tx, rx)) => Ok(serde_json::json!({ "tx": tx, "rx": rx })),
-        None => Ok(serde_json::json!(null)),
+pub async fn get_audio_levels(
+    manager: State<'_, SipManager>,
+    test_manager: State<'_, AudioTestManager>,
+) -> Result<serde_json::Value, String> {
+    // First try active call levels
+    if let Some((tx, rx)) = manager.get_audio_levels().await {
+        return Ok(serde_json::json!({ "tx": tx, "rx": rx }));
     }
+
+    // Fall back to test levels if a mic test is running
+    if let Some(tx) = test_manager.get_test_level() {
+        return Ok(serde_json::json!({ "tx": tx, "rx": 0.0 }));
+    }
+
+    Ok(serde_json::json!(null))
 }
 
 /// Make a second call while the first call is on hold (for three-way calling)
@@ -948,6 +960,34 @@ pub async fn export_call_history_csv(
         .map_err(|e| format!("Failed to write file: {}", e))?;
 
     Ok(path)
+}
+
+// ── Audio Device Testing ─────────────────────────────────────────────────────
+
+/// Start capturing from the selected input device and measuring RMS levels.
+/// The levels are returned by `get_audio_levels` when no call is active.
+#[tauri::command]
+pub fn start_audio_test(
+    test_manager: State<'_, AudioTestManager>,
+    device_name: Option<String>,
+) -> Result<(), String> {
+    test_manager.start_input_test(device_name.as_deref())
+}
+
+/// Stop the input device test.
+#[tauri::command]
+pub fn stop_audio_test(test_manager: State<'_, AudioTestManager>) -> Result<(), String> {
+    test_manager.stop_input_test();
+    Ok(())
+}
+
+/// Play a brief test tone through the selected output device.
+#[tauri::command]
+pub fn play_test_tone(
+    test_manager: State<'_, AudioTestManager>,
+    device_name: Option<String>,
+) -> Result<(), String> {
+    test_manager.play_test_tone(device_name.as_deref())
 }
 
 #[cfg(test)]

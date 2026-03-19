@@ -148,7 +148,20 @@ export interface Contact {
   favorite: boolean;
   source: ContactSource;
   sourceId?: string;
+  /** Presence status from BLF/presence subscription */
+  status?: string;
 }
+
+/** Presence state from SIP presence/BLF notifications */
+export type PresenceState =
+  | "available"
+  | "busy"
+  | "away"
+  | "onThePhone"
+  | "ringing"
+  | "doNotDisturb"
+  | "unknown"
+  | "offline";
 
 export interface AudioDevice {
   id: string;

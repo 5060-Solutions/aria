@@ -215,7 +215,9 @@
     "add": "Agregar",
     "delete": "Eliminar",
     "loading": "Cargando...",
-    "never": "Nunca"
+    "never": "Nunca",
+    "test": "Probar",
+    "stop": "Parar"
   },
   "time": {
     "hours": "h",

@@ -215,7 +215,9 @@
     "add": "Ajouter",
     "delete": "Supprimer",
     "loading": "Chargement...",
-    "never": "Jamais"
+    "never": "Jamais",
+    "test": "Tester",
+    "stop": "Arrêter"
   },
   "time": {
     "hours": "h",

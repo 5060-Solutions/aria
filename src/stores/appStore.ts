@@ -11,6 +11,7 @@ import type {
   CallState,
   AudioDevice,
   Conference,
+  PresenceState,
 } from "../types/sip";
 import { storeCredential, getCredential, deleteCredential } from "../utils/credentials";
 import { log } from "../utils/log";
@@ -121,6 +122,12 @@ interface AppState {
   // Recordings
   recordingsDirectory: string | null;
   setRecordingsDirectory: (path: string | null) => void;
+
+  // Presence
+  presenceMap: Record<string, PresenceState>;
+  setPresenceState: (extension: string, state: PresenceState) => void;
+  setPresenceBulk: (entries: Array<{ extension: string; state: PresenceState }>) => void;
+  clearPresence: () => void;
 
   // Navigation
   currentView: View;
@@ -592,6 +599,22 @@ export const useAppStore = create<AppState>((set, get) => {
       }
       set({ recordingsDirectory: path });
     },
+
+    // Presence
+    presenceMap: {},
+    setPresenceState: (extension, state) =>
+      set((s) => ({
+        presenceMap: { ...s.presenceMap, [extension]: state },
+      })),
+    setPresenceBulk: (entries) =>
+      set((s) => {
+        const updated = { ...s.presenceMap };
+        for (const entry of entries) {
+          updated[entry.extension] = entry.state;
+        }
+        return { presenceMap: updated };
+      }),
+    clearPresence: () => set({ presenceMap: {} }),
 
     // Navigation
     currentView: "dialer",

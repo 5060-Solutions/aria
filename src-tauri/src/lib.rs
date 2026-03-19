@@ -1,3 +1,4 @@
+mod audio_test;
 mod commands;
 mod sip;
 mod system_contacts;
@@ -12,6 +13,7 @@ pub fn run() {
 
     // Create manager and take receiver before moving into Tauri
     let (manager, event_rx) = sip::SipManager::new_with_receiver();
+    let audio_test_manager = audio_test::AudioTestManager::new();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -21,6 +23,7 @@ pub fn run() {
             // Handle single instance - argv may contain deep link URL
         }))
         .manage(manager)
+        .manage(audio_test_manager)
         .setup(move |app| {
             // Set up event forwarding from SIP manager to frontend ONCE at startup
             let app_handle = app.handle().clone();
@@ -138,6 +141,9 @@ pub fn run() {
             commands::fetch_system_contacts,
             commands::export_diagnostic_report,
             commands::export_call_history_csv,
+            commands::start_audio_test,
+            commands::stop_audio_test,
+            commands::play_test_tone,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aria");

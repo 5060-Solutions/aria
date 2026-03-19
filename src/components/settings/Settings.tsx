@@ -154,6 +154,8 @@ export function Settings() {
   const [selectedOutputDevice, setSelectedOutputDeviceLocal] = useState<string>(storeOutputDevice ?? "default");
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showContactsSettings, setShowContactsSettings] = useState(false);
+  const [micTesting, setMicTesting] = useState(false);
+  const [tonePlaying, setTonePlaying] = useState(false);
   const [recordingsDir, setRecordingsDir] = useState<string>("");
   const [syncingSystemContacts, setSyncingSystemContacts] = useState(false);
 
@@ -457,6 +459,51 @@ export function Settings() {
   const handleLanguageChange = (lang: string) => {
     setSelectedLanguage(lang);
     changeLanguage(lang);
+  };
+
+  // Stop mic test when audio settings collapse or component unmounts
+  useEffect(() => {
+    return () => {
+      invoke("stop_audio_test").catch(() => {});
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!showAudioSettings && micTesting) {
+      invoke("stop_audio_test").catch(() => {});
+      setMicTesting(false);
+    }
+  }, [showAudioSettings, micTesting]);
+
+  const handleToggleMicTest = async () => {
+    if (micTesting) {
+      await invoke("stop_audio_test").catch(() => {});
+      setMicTesting(false);
+    } else {
+      try {
+        await invoke("start_audio_test", {
+          deviceName: selectedInputDevice === "default" ? null : selectedInputDevice,
+        });
+        setMicTesting(true);
+      } catch (e) {
+        log.error("Failed to start mic test:", e);
+      }
+    }
+  };
+
+  const handlePlayTestTone = async () => {
+    if (tonePlaying) return;
+    setTonePlaying(true);
+    try {
+      await invoke("play_test_tone", {
+        deviceName: selectedOutputDevice === "default" ? null : selectedOutputDevice,
+      });
+      // Tone plays for ~1.5s, reset button state after
+      setTimeout(() => setTonePlaying(false), 2000);
+    } catch (e) {
+      log.error("Failed to play test tone:", e);
+      setTonePlaying(false);
+    }
   };
 
   const systemContactCount = contacts.filter((c) => c.source === "system").length;
@@ -842,59 +889,106 @@ export function Settings() {
             <Box sx={{ px: 2, pb: 2 }}>
               {audioDevices && (
                 <>
-                  <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-                    <InputLabel>{t("settings.microphone")}</InputLabel>
-                    <Select
-                      value={selectedInputDevice}
-                      label={t("settings.microphone")}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setSelectedInputDeviceLocal(val);
-                        storeSetInputDevice(val);
-                        invoke("set_audio_devices", {
-                          inputDevice: val === "default" ? null : val,
-                          outputDevice: selectedOutputDevice === "default" ? null : selectedOutputDevice,
-                        }).catch(() => {});
+                  <Box sx={{ display: "flex", gap: 1, alignItems: "flex-end", mb: 2 }}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>{t("settings.microphone")}</InputLabel>
+                      <Select
+                        value={selectedInputDevice}
+                        label={t("settings.microphone")}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSelectedInputDeviceLocal(val);
+                          storeSetInputDevice(val);
+                          invoke("set_audio_devices", {
+                            inputDevice: val === "default" ? null : val,
+                            outputDevice: selectedOutputDevice === "default" ? null : selectedOutputDevice,
+                          }).catch(() => {});
+                          // Restart mic test with new device if testing
+                          if (micTesting) {
+                            invoke("stop_audio_test").then(() =>
+                              invoke("start_audio_test", {
+                                deviceName: val === "default" ? null : val,
+                              })
+                            ).catch(() => {});
+                          }
+                        }}
+                        startAdornment={<MicIcon sx={{ fontSize: 18, mr: 1, color: "text.secondary" }} />}
+                        sx={{ borderRadius: "12px" }}
+                      >
+                        {audioDevices.inputDevices.map((device) => (
+                          <MenuItem key={device.name} value={device.name}>
+                            {device.name} {device.isDefault && t("settings.default")}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <Button
+                      size="small"
+                      variant={micTesting ? "contained" : "outlined"}
+                      color={micTesting ? "error" : "primary"}
+                      onClick={handleToggleMicTest}
+                      sx={{
+                        minWidth: 64,
+                        borderRadius: "10px",
+                        height: 40,
+                        textTransform: "none",
+                        fontSize: "0.8rem",
+                        flexShrink: 0,
                       }}
-                      startAdornment={<MicIcon sx={{ fontSize: 18, mr: 1, color: "text.secondary" }} />}
-                      sx={{ borderRadius: "12px" }}
                     >
-                      {audioDevices.inputDevices.map((device) => (
-                        <MenuItem key={device.name} value={device.name}>
-                          {device.name} {device.isDefault && t("settings.default")}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-
-                  <FormControl fullWidth size="small">
-                    <InputLabel>{t("settings.speaker")}</InputLabel>
-                    <Select
-                      value={selectedOutputDevice}
-                      label={t("settings.speaker")}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setSelectedOutputDeviceLocal(val);
-                        storeSetOutputDevice(val);
-                        invoke("set_audio_devices", {
-                          inputDevice: selectedInputDevice === "default" ? null : selectedInputDevice,
-                          outputDevice: val === "default" ? null : val,
-                        }).catch(() => {});
-                      }}
-                      startAdornment={<VolumeUpIcon sx={{ fontSize: 18, mr: 1, color: "text.secondary" }} />}
-                      sx={{ borderRadius: "12px" }}
-                    >
-                      {audioDevices.outputDevices.map((device) => (
-                        <MenuItem key={device.name} value={device.name}>
-                          {device.name} {device.isDefault && t("settings.default")}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-
-                  <Box sx={{ mt: 2 }}>
-                    <AudioLevelMeter />
+                      {micTesting ? t("common.stop") : t("common.test")}
+                    </Button>
                   </Box>
+
+                  {micTesting && (
+                    <Box sx={{ mb: 2 }}>
+                      <AudioLevelMeter compact />
+                    </Box>
+                  )}
+
+                  <Box sx={{ display: "flex", gap: 1, alignItems: "flex-end" }}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel>{t("settings.speaker")}</InputLabel>
+                      <Select
+                        value={selectedOutputDevice}
+                        label={t("settings.speaker")}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setSelectedOutputDeviceLocal(val);
+                          storeSetOutputDevice(val);
+                          invoke("set_audio_devices", {
+                            inputDevice: selectedInputDevice === "default" ? null : selectedInputDevice,
+                            outputDevice: val === "default" ? null : val,
+                          }).catch(() => {});
+                        }}
+                        startAdornment={<VolumeUpIcon sx={{ fontSize: 18, mr: 1, color: "text.secondary" }} />}
+                        sx={{ borderRadius: "12px" }}
+                      >
+                        {audioDevices.outputDevices.map((device) => (
+                          <MenuItem key={device.name} value={device.name}>
+                            {device.name} {device.isDefault && t("settings.default")}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={handlePlayTestTone}
+                      disabled={tonePlaying}
+                      sx={{
+                        minWidth: 64,
+                        borderRadius: "10px",
+                        height: 40,
+                        textTransform: "none",
+                        fontSize: "0.8rem",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {tonePlaying ? "..." : t("common.test")}
+                    </Button>
+                  </Box>
+
                   <Typography variant="caption" sx={{ display: "block", mt: 1.5, color: "text.secondary" }}>
                     {t("settings.audioNote")}
                   </Typography>

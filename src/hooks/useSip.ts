@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore, getAccountWithPassword } from "../stores/appStore";
-import type { SipAccount, RegistrationState } from "../types/sip";
+import type { SipAccount, RegistrationState, PresenceState } from "../types/sip";
 import { useRingtone } from "./useRingtone";
 import { useRingback } from "./useRingback";
 import { log } from "../utils/log";
@@ -11,6 +11,17 @@ interface RegistrationPayload {
   accountId: string;
   state: RegistrationState;
   error: string | null;
+}
+
+interface PresenceEntry {
+  extension: string;
+  state: string;
+  displayName: string | null;
+}
+
+interface PresencePayload {
+  accountId: string;
+  entries: PresenceEntry[];
 }
 
 interface CallPayload {
@@ -88,11 +99,15 @@ export function useSipEvents() {
   const activeCall = useAppStore((s) => s.activeCall);
   const addCallHistory = useAppStore((s) => s.addCallHistory);
   const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const setPresenceBulk = useAppStore((s) => s.setPresenceBulk);
 
   const isIncoming = activeCall?.state === "incoming";
   const isRinging = activeCall?.state === "ringing" || activeCall?.state === "dialing";
   useRingtone(isIncoming);
   useRingback(isRinging);
+
+  // Track which accounts we've already subscribed presence for
+  const subscribedAccounts = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const unlistenReg = listen<RegistrationPayload>(
@@ -101,6 +116,30 @@ export function useSipEvents() {
         const { accountId, state, error } = event.payload;
         log.info("[useSipEvents] Registration event received:", { accountId, state, error });
         setAccountRegistrationState(accountId, state, error ?? undefined);
+
+        // Auto-subscribe to presence for internal contacts after registration success
+        if (state === "registered" && !subscribedAccounts.current.has(accountId)) {
+          subscribedAccounts.current.add(accountId);
+          // Read contacts from store at the time of registration (not stale closure)
+          const currentContacts = useAppStore.getState().contacts;
+          autoSubscribePresence(currentContacts);
+        }
+      },
+    );
+
+    // Listen for presence/BLF updates
+    const unlistenPresence = listen<PresencePayload>(
+      "sip-presence",
+      (event) => {
+        const { entries } = event.payload;
+        if (entries && entries.length > 0) {
+          setPresenceBulk(
+            entries.map((e) => ({
+              extension: e.extension,
+              state: mapPresenceState(e.state),
+            })),
+          );
+        }
       },
     );
 
@@ -162,8 +201,9 @@ export function useSipEvents() {
     return () => {
       unlistenReg.then((fn_) => fn_());
       unlistenCall.then((fn_) => fn_());
+      unlistenPresence.then((fn_) => fn_());
     };
-  }, [activeCall, setAccountRegistrationState, setActiveCall, addCallHistory, setCurrentView]);
+  }, [activeCall, setAccountRegistrationState, setActiveCall, addCallHistory, setCurrentView, setPresenceBulk]);
 }
 
 export async function sipRegister(account: SipAccount): Promise<string> {
@@ -311,4 +351,59 @@ export async function getCallSipTrace(
 
 export async function fetchSystemContacts(): Promise<SystemContact[]> {
   return invoke("fetch_system_contacts");
+}
+
+// ── Presence / BLF ──────────────────────────────────────────────────────────
+
+/** Subscribe to presence for contact extensions */
+export async function sipSubscribeBlf(extensions: string[]): Promise<string[]> {
+  return invoke<string[]>("sip_subscribe_blf", { extensions });
+}
+
+/** Auto-subscribe to presence for all contacts that look like internal extensions */
+async function autoSubscribePresence(contacts: Array<{ uri: string }>) {
+  // Extract extensions from contacts
+  const extensions = contacts
+    .map((c) => {
+      const withoutScheme = c.uri.replace(/^sips?:/, "");
+      return withoutScheme.split("@")[0];
+    })
+    .filter((ext) => ext && /^\d{2,6}$/.test(ext)); // Only short numeric extensions (internal)
+
+  if (extensions.length === 0) {
+    log.info("[autoSubscribePresence] No internal extensions to subscribe to");
+    return;
+  }
+
+  // Deduplicate
+  const unique = [...new Set(extensions)];
+  log.info("[autoSubscribePresence] Subscribing to presence for extensions:", unique);
+
+  try {
+    await sipSubscribeBlf(unique);
+  } catch (e) {
+    log.error("[autoSubscribePresence] Failed:", e);
+  }
+}
+
+/** Map backend presence state strings to our PresenceState type */
+function mapPresenceState(state: string): PresenceState {
+  switch (state) {
+    case "available":
+      return "available";
+    case "busy":
+      return "busy";
+    case "away":
+      return "away";
+    case "onThePhone":
+      return "onThePhone";
+    case "ringing":
+      return "ringing";
+    case "doNotDisturb":
+      return "doNotDisturb";
+    case "unknown":
+      return "unknown";
+    default:
+      return "offline";
+  }
 }
