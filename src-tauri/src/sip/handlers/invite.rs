@@ -38,7 +38,7 @@ pub async fn handle_invite_response(
             // Extract data needed for early media before taking write lock
             let early_media_data = if has_sdp {
                 let rtp_target = parse_sdp_connection(sdp);
-                let remote_srtp_key = rtp_engine::srtp::parse_sdp_crypto(sdp).map(String::from);
+                let remote_srtp_key = rtp_engine::srtp::parse_sdp_crypto(sdp);
                 let negotiated_codec = codec::negotiate_codec(sdp);
 
                 let s = state.read().await;

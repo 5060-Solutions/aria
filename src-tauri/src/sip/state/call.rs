@@ -232,6 +232,18 @@ pub struct CallFSM {
     state: CallState,
 }
 
+/// Parameters for creating an inbound call FSM.
+pub struct InboundCallParams {
+    pub account_id: String,
+    pub remote_uri: String,
+    pub call_id: String,
+    pub from_tag: String,
+    pub to_tag: String,
+    pub local_rtp_port: u16,
+    pub raw_invite: String,
+    pub local_uri: String,
+}
+
 impl CallFSM {
     /// Create a new outbound call FSM
     pub fn new_outbound(
@@ -267,33 +279,24 @@ impl CallFSM {
     }
 
     /// Create a new inbound call FSM
-    pub fn new_inbound(
-        account_id: &str,
-        remote_uri: &str,
-        call_id: String,
-        from_tag: String,
-        to_tag: String,
-        local_rtp_port: u16,
-        raw_invite: String,
-        local_uri: String,
-    ) -> Self {
+    pub fn new_inbound(params: InboundCallParams) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            account_id: account_id.to_string(),
-            remote_uri: remote_uri.to_string(),
+            account_id: params.account_id,
+            remote_uri: params.remote_uri,
             direction: CallDirection::Inbound,
-            call_id_header: call_id,
-            from_tag,
-            to_tag: Some(to_tag),
+            call_id_header: params.call_id,
+            from_tag: params.from_tag,
+            to_tag: Some(params.to_tag),
             cseq: 1,
-            local_rtp_port,
+            local_rtp_port: params.local_rtp_port,
             remote_rtp_addr: None,
             last_invite_branch: None,
             auth_attempted: false,
             local_srtp_key: None,
             remote_contact: None,
-            local_uri,
-            state: CallState::Incoming { raw_invite },
+            local_uri: params.local_uri,
+            state: CallState::Incoming { raw_invite: params.raw_invite },
         }
     }
 
@@ -866,16 +869,16 @@ mod tests {
 
     #[test]
     fn test_inbound_call_happy_path() {
-        let mut call = CallFSM::new_inbound(
-            "test-account",
-            "sip:alice@example.com",
-            "call-456".to_string(),
-            "from-tag".to_string(),
-            "to-tag".to_string(),
-            10000,
-            "INVITE sip:...".to_string(),
-            "sip:bob@example.com".to_string(),
-        );
+        let mut call = CallFSM::new_inbound(InboundCallParams {
+            account_id: "test-account".to_string(),
+            remote_uri: "sip:alice@example.com".to_string(),
+            call_id: "call-456".to_string(),
+            from_tag: "from-tag".to_string(),
+            to_tag: "to-tag".to_string(),
+            local_rtp_port: 10000,
+            raw_invite: "INVITE sip:...".to_string(),
+            local_uri: "sip:bob@example.com".to_string(),
+        });
 
         assert_eq!(call.state_name(), "incoming");
 
@@ -1035,16 +1038,16 @@ mod tests {
         assert_eq!(outbound.direction_str(), "outbound");
         assert!(outbound.is_dialing());
 
-        let inbound = CallFSM::new_inbound(
-            "test-account",
-            "sip:alice@example.com",
-            "call-456".to_string(),
-            "from-tag".to_string(),
-            "to-tag".to_string(),
-            10000,
-            "INVITE sip:...".to_string(),
-            "sip:bob@example.com".to_string(),
-        );
+        let inbound = CallFSM::new_inbound(InboundCallParams {
+            account_id: "test-account".to_string(),
+            remote_uri: "sip:alice@example.com".to_string(),
+            call_id: "call-456".to_string(),
+            from_tag: "from-tag".to_string(),
+            to_tag: "to-tag".to_string(),
+            local_rtp_port: 10000,
+            raw_invite: "INVITE sip:...".to_string(),
+            local_uri: "sip:bob@example.com".to_string(),
+        });
         assert_eq!(inbound.direction_str(), "inbound");
         assert!(inbound.is_incoming());
     }

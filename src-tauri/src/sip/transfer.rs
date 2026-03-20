@@ -7,7 +7,7 @@ use super::builder::{
     build_simple_response, extract_from_tag, extract_header, extract_via_branch,
     parse_replaces_header, parse_sdp_connection, parse_sipfrag_status,
 };
-use super::state::{CallFSM, CallFSMEvent};
+use super::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use super::codec;
 use super::media;
 use super::{CallEvent, ManagerState, SipEvent, TransferEvent};
@@ -453,16 +453,16 @@ pub async fn handle_invite_with_replaces(
         }
     };
 
-    let call = CallFSM::new_inbound(
-        account_id,
-        &remote_uri,
-        new_call_id,
+    let call = CallFSM::new_inbound(InboundCallParams {
+        account_id: account_id.to_string(),
+        remote_uri: remote_uri.clone(),
+        call_id: new_call_id,
         from_tag,
-        to_tag.clone(),
-        rtp_port,
-        text.to_string(),
+        to_tag: to_tag.clone(),
+        local_rtp_port: rtp_port,
+        raw_invite: text.to_string(),
         local_uri,
-    );
+    });
 
     let new_internal_id = call.id.clone();
     let new_remote_uri = call.remote_uri.clone();

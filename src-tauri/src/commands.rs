@@ -93,7 +93,6 @@ pub struct QrProvisionPayload {
     pub password: String,
     pub display_name: Option<String>,
     pub transport: Option<String>,
-    pub voicemail: Option<String>,
 }
 
 /// Provision an account from a scanned QR code or pasted aria:// URI.

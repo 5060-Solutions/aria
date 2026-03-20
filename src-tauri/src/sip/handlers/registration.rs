@@ -253,26 +253,29 @@ pub async fn handle_register_response(
                 if let Some(account) = s.get_account_mut(account_id) {
                     if account.config.auth_realm.is_none()
                         && !account.realm_fallback_exhausted
-                        && account.server_addr.is_some()
                     {
-                        let server_ip = account.server_addr.unwrap().ip().to_string();
-                        log::info!(
-                            "403 after auth — retrying with server IP '{}' as realm",
-                            server_ip
-                        );
-                        account.realm_fallback = Some(server_ip);
-                        account.realm_fallback_exhausted = true;
-                        // Reset FSM so we can re-register
-                        account.registration.registration_failed(403, "retrying with realm fallback");
-                        account.registration.start_registration(account.config.clone());
-                        let cseq = account.registration.next_cseq();
-                        let config = account.config.clone();
-                        let local_addr = account.local_addr;
-                        let server_addr = account.server_addr;
-                        let transport = account.transport.clone();
-                        let call_id = account.registration.call_id().to_string();
-                        let from_tag = account.registration.local_tag().to_string();
-                        Some((config, local_addr, server_addr, transport, call_id, from_tag, cseq))
+                        if let Some(sa) = account.server_addr {
+                            let server_ip = sa.ip().to_string();
+                            log::info!(
+                                "403 after auth — retrying with server IP '{}' as realm",
+                                server_ip
+                            );
+                            account.realm_fallback = Some(server_ip);
+                            account.realm_fallback_exhausted = true;
+                            // Reset FSM so we can re-register
+                            account.registration.registration_failed(403, "retrying with realm fallback");
+                            account.registration.start_registration(account.config.clone());
+                            let cseq = account.registration.next_cseq();
+                            let config = account.config.clone();
+                            let local_addr = account.local_addr;
+                            let server_addr = account.server_addr;
+                            let transport = account.transport.clone();
+                            let call_id = account.registration.call_id().to_string();
+                            let from_tag = account.registration.local_tag().to_string();
+                            Some((config, local_addr, server_addr, transport, call_id, from_tag, cseq))
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }

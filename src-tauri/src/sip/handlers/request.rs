@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method};
-use crate::sip::state::{CallFSM, CallFSMEvent};
+use crate::sip::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use crate::sip::transfer;
 use crate::sip::{CallEvent, ManagerState, SipEvent, VoicemailStatusEvent};
 
@@ -74,16 +74,16 @@ pub async fn handle_incoming_request(
                         None => format!("sip:unknown@{}", remote.ip()),
                     }
                 };
-                let call = CallFSM::new_inbound(
-                    account_id,
-                    &remote_uri,
+                let call = CallFSM::new_inbound(InboundCallParams {
+                    account_id: account_id.to_string(),
+                    remote_uri: remote_uri.clone(),
                     call_id,
                     from_tag,
-                    to_tag.clone(),
-                    rtp_port,
-                    text.to_string(),
+                    to_tag: to_tag.clone(),
+                    local_rtp_port: rtp_port,
+                    raw_invite: text.to_string(),
                     local_uri,
-                );
+                });
 
                 let call_id_for_event = call.id.clone();
                 let remote_uri_for_event = call.remote_uri.clone();

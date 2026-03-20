@@ -27,7 +27,7 @@ use super::account::AccountConfig;
 use super::presence::{BlfEntry, Subscription};
 use super::transport::SipTransport;
 
-pub use call::{CallFSM, CallFSMEvent, EndReason};
+pub use call::{CallFSM, CallFSMEvent, EndReason, InboundCallParams};
 pub use registration::{RegistrationFSM, RegistrationState, RegistrationStatus};
 #[allow(unused_imports)]
 pub use registration::RegistrationTransitionResult;
