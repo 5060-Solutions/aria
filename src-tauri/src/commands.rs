@@ -446,6 +446,17 @@ pub async fn get_registration_state(
     }))
 }
 
+/// Probe registration health for all accounts.
+/// Sends an immediate OPTIONS ping; triggers reconnection on failure.
+/// Called by frontend on wake from sleep, network online, or window re-focus.
+#[tauri::command]
+pub async fn probe_registration_health(
+    manager: State<'_, SipManager>,
+) -> Result<(), String> {
+    manager.probe_registration_health().await;
+    Ok(())
+}
+
 /// Audio device information returned to frontend
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

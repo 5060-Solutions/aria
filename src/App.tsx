@@ -8,6 +8,7 @@ import { AppShell } from "./components/layout/AppShell";
 import { SetupWizard } from "./components/wizard/SetupWizard";
 import { DiagnosticPanel } from "./components/diagnostics/DiagnosticPanel";
 import { useSipEvents, useAutoRegister } from "./hooks/useSip";
+import { useNetworkMonitor } from "./hooks/useNetworkMonitor";
 import { log } from "./utils/log";
 import "./i18n";
 
@@ -21,6 +22,7 @@ function MainApp() {
   
   useSipEvents();
   useAutoRegister();
+  useNetworkMonitor();
 
   // Handle tel: and sip: deep links
   useEffect(() => {

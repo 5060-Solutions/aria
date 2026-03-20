@@ -117,6 +117,7 @@ pub struct CallEventPayload {
     pub sip_call_id: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct SipManager {
     state: Arc<RwLock<ManagerState>>,
     event_tx: mpsc::UnboundedSender<SipEvent>,
@@ -1581,6 +1582,58 @@ impl SipManager {
         s.all_active_calls()
             .iter()
             .find_map(|c| c.media().map(|m| (m.tx_audio_level(), m.rx_audio_level())))
+    }
+
+    /// Probe registration health for all registered accounts.
+    ///
+    /// Sends an immediate OPTIONS ping to each account that thinks it is registered.
+    /// If the send fails, triggers transport death and reconnection.
+    /// Called by the frontend on wake from sleep, network online, or window re-focus.
+    pub async fn probe_registration_health(&self) {
+        let accounts_to_probe: Vec<(String, AccountConfig, SocketAddr, SocketAddr, SipTransport, u32)> = {
+            let mut s = self.state.write().await;
+            s.accounts.values_mut()
+                .filter(|a| a.registration.status() == RegistrationState::Registered)
+                .filter_map(|a| {
+                    let la = a.local_addr?;
+                    let sa = a.server_addr?;
+                    let t = a.transport.clone()?;
+                    a.options_cseq += 1;
+                    Some((a.config.id.clone(), a.config.clone(), la, sa, t, a.options_cseq))
+                })
+                .collect()
+        };
+
+        if accounts_to_probe.is_empty() {
+            return;
+        }
+
+        log::info!("Probing registration health for {} account(s)", accounts_to_probe.len());
+
+        for (account_id, config, local_addr, server_addr, transport, cseq) in accounts_to_probe {
+            let call_id = builder::generate_call_id();
+            let from_tag = builder::generate_tag();
+            let msg = build_options(
+                &config.domain,
+                local_addr,
+                &call_id,
+                cseq,
+                &from_tag,
+                &config.username,
+                config.transport.param(),
+            );
+
+            if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+                log::warn!("Health probe failed for {} — triggering reconnect: {}", account_id, e);
+                Self::handle_transport_death(
+                    self.state.clone(),
+                    self.event_tx.clone(),
+                    account_id,
+                ).await;
+            } else {
+                log::info!("Health probe OK for {}", account_id);
+            }
+        }
     }
 
     /// Subscribe to presence/dialog events for a target URI (RFC 6665)

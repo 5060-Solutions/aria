@@ -3,7 +3,7 @@ mod commands;
 mod sip;
 mod system_contacts;
 
-use tauri::Emitter;
+use tauri::{Emitter, Listener, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -93,6 +93,15 @@ pub fn run() {
                 log::warn!("SIP event forwarding loop ended");
             });
             
+            // Listen for health probe requests from frontend (network/visibility changes)
+            let probe_manager = app.state::<sip::SipManager>().inner().clone();
+            app.listen("probe-health", move |_event| {
+                let manager = probe_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    manager.probe_registration_health().await;
+                });
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,6 +123,7 @@ pub fn run() {
             commands::open_recordings_folder,
             commands::play_recording,
             commands::get_registration_state,
+            commands::probe_registration_health,
             commands::get_audio_devices,
             commands::set_audio_devices,
             commands::open_debug_window,
