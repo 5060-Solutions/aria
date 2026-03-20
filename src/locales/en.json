@@ -6,7 +6,7 @@
     "settings": "Settings"
   },
   "status": {
-    "connected": "Connected",
+    "connected": "Registered",
     "connecting": "Connecting...",
     "reconnecting": "Reconnecting...",
     "notConnected": "Not connected",
@@ -112,7 +112,7 @@
     "signOutAll": "Sign out all accounts",
     "developerDiagnostics": "Developer diagnostics",
     "sipTraceRtp": "SIP trace, RTP stats",
-    "about": "Aria v0.2.5",
+    "about": "Aria v0.3.1",
     "aboutDescription": "A modern softphone by 5060 Solutions.",
     "aboutLicense": "Free for non-commercial use.",
     "language": "Language",
@@ -171,7 +171,7 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "version": "Aria v0.2.5",
+    "version": "Aria v0.3.1",
     "connection": "Connection",
     "registered": "Registered",
     "registering": "Registering...",

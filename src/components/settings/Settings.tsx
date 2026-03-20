@@ -557,7 +557,7 @@ export function Settings() {
                 border: `1px solid ${
                   isActive
                     ? alpha(theme.palette.primary.main, 0.2)
-                    : alpha(theme.palette.divider, 0.08)
+                    : alpha(theme.palette.divider, 0.12)
                 }`,
                 mb: 1,
                 cursor: "pointer",
@@ -815,7 +815,7 @@ export function Settings() {
         )}
 
 
-        <Divider sx={{ my: 1.5, opacity: 0.1 }} />
+        <Divider sx={{ my: 1.5, opacity: 0.15 }} />
 
         {/* Preferences */}
         <List disablePadding>
@@ -1116,7 +1116,7 @@ export function Settings() {
           </ListItemButton>
         </List>
 
-        <Divider sx={{ my: 1.5, opacity: 0.1 }} />
+        <Divider sx={{ my: 1.5, opacity: 0.15 }} />
 
         {/* Sign out all */}
         <List disablePadding>
@@ -1155,7 +1155,7 @@ export function Settings() {
           </ListItemButton>
         </List>
 
-        <Divider sx={{ my: 1.5, opacity: 0.1 }} />
+        <Divider sx={{ my: 1.5, opacity: 0.15 }} />
 
         {/* About */}
         <Box

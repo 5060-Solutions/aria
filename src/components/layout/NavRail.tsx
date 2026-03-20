@@ -57,7 +57,7 @@ export function NavRail() {
         py: 2,
         gap: 0.5,
         bgcolor: "background.paper",
-        borderRight: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
+        borderRight: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
       }}
     >
       <Box sx={{ mb: 2 }}>

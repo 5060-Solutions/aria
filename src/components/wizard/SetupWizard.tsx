@@ -23,6 +23,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { useAppStore, saveAccountPassword } from "../../stores/appStore";
 import { sipRegister } from "../../hooks/useSip";
+import { QrScanner } from "./QrScanner";
+import type { QrProvisionData } from "./QrScanner";
 import type { SipAccount, TransportType } from "../../types/sip";
 import { log } from "../../utils/log";
 
@@ -47,6 +49,7 @@ export function SetupWizard() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [showQrScanner, setShowQrScanner] = useState(false);
   const waitingForReg = useRef(false);
   const [form, setForm] = useState({
     server: "",
@@ -213,6 +216,55 @@ export function SetupWizard() {
       handleConnect();
     }
   };
+
+  const handleQrProvisioned = useCallback(async (data: QrProvisionData) => {
+    setShowQrScanner(false);
+    setConnecting(true);
+    setError(null);
+    waitingForReg.current = true;
+
+    const accountId = crypto.randomUUID();
+    registeringAccountId.current = accountId;
+
+    const account: SipAccount = {
+      id: accountId,
+      displayName: data.displayName || data.username,
+      username: data.username,
+      domain: data.server,
+      password: data.password,
+      transport: (data.transport as TransportType) || "udp",
+      port: data.port,
+      registrar: data.server,
+      enabled: true,
+    };
+
+    // Store pending account - will be saved to store only on successful registration
+    pendingAccount.current = account;
+
+    try {
+      log.info("[SetupWizard] QR provisioning - registering account:", {
+        id: accountId,
+        username: data.username,
+        server: data.server,
+      });
+      await sipRegister(account);
+    } catch (e) {
+      waitingForReg.current = false;
+      registeringAccountId.current = null;
+      pendingAccount.current = null;
+      setError(String(e));
+      setConnecting(false);
+    }
+  }, []);
+
+  if (showQrScanner) {
+    return (
+      <QrScanner
+        onProvisioned={handleQrProvisioned}
+        onCancel={() => setShowQrScanner(false)}
+      />
+    );
+  }
 
   return (
     <Box

@@ -96,6 +96,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::provision_from_qr,
             commands::sip_register,
             commands::sip_unregister,
             commands::sip_unregister_account,

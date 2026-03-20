@@ -413,7 +413,7 @@ export function Dialer() {
                         : "2.2rem",
                 fontWeight: 200,
                 fontFamily: '"Google Sans", sans-serif',
-                color: dialInput ? "text.primary" : alpha(theme.palette.text.secondary, 0.4),
+                color: dialInput ? "text.primary" : "text.secondary",
                 letterSpacing: dialInput ? "0.06em" : "0",
                 transition: "font-size 0.15s ease",
                 px: 1,

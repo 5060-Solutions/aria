@@ -83,6 +83,63 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
     buf
 }
 
+/// QR provisioning payload from the frontend
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QrProvisionPayload {
+    pub server: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub display_name: Option<String>,
+    pub transport: Option<String>,
+    pub voicemail: Option<String>,
+}
+
+/// Provision an account from a scanned QR code or pasted aria:// URI.
+/// The frontend parses the URI and sends the structured payload.
+#[tauri::command]
+pub async fn provision_from_qr(
+    payload: QrProvisionPayload,
+    manager: State<'_, SipManager>,
+) -> Result<String, String> {
+    log::info!(
+        "provision_from_qr: server={}, username={}, port={}, transport={:?}",
+        payload.server, payload.username, payload.port, payload.transport
+    );
+
+    let transport = match payload.transport.as_deref().unwrap_or("udp") {
+        "udp" => sip::TransportType::Udp,
+        "tcp" => sip::TransportType::Tcp,
+        "tls" => sip::TransportType::Tls,
+        _ => sip::TransportType::Udp,
+    };
+
+    let account_id = uuid::Uuid::new_v4().to_string();
+    let display_name = payload.display_name.unwrap_or_else(|| payload.username.clone());
+
+    let account = sip::AccountConfig {
+        id: account_id.clone(),
+        display_name,
+        username: payload.username.clone(),
+        domain: payload.server.clone(),
+        password: payload.password,
+        transport,
+        port: payload.port,
+        registrar: Some(payload.server),
+        outbound_proxy: None,
+        auth_username: None,
+        auth_realm: None,
+        enabled: true,
+        auto_record: true,
+        srtp_mode: Default::default(),
+        codecs: sip::account::default_codec_preferences(),
+    };
+
+    manager.register(account).await?;
+    Ok(account_id)
+}
+
 /// Codec configuration from frontend
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

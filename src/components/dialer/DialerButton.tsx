@@ -55,7 +55,7 @@ export function DialerButton({ digit, letters, onPress }: DialerButtonProps) {
               fontSize: "0.55rem",
               fontWeight: 600,
               letterSpacing: "0.18em",
-              opacity: 0.4,
+              opacity: 0.55,
               lineHeight: 1,
               mt: 0.2,
             }}

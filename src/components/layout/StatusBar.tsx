@@ -65,7 +65,7 @@ export function StatusBar() {
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
-        borderBottom: `1px solid ${alpha(theme.palette.divider, 0.06)}`,
+        borderBottom: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
         minHeight: 44,
         WebkitAppRegion: "drag",
         userSelect: "none",
