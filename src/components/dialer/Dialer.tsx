@@ -268,9 +268,10 @@ export function Dialer() {
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          justifyContent: "center",
+          justifyContent: "flex-end",
           width: "100%",
           minHeight: 60,
+          pb: 1.5,
         }}
       >
         {/* Country selector - hidden for extensions/short numbers */}
@@ -436,7 +437,7 @@ export function Dialer() {
           gridTemplateColumns: "repeat(3, 76px)",
           gap: 1.5,
           justifyContent: "center",
-          mb: 3,
+          mb: 2,
         }}
       >
         {keys.map(({ digit, letters }) => (

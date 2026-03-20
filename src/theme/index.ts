@@ -112,11 +112,12 @@ export const darkTheme = createTheme({
     },
     background: {
       default: "#0f1511",
-      paper: "#1a201c",
+      paper: "#1b211d",
     },
+    divider: "rgba(255,255,255,0.10)",
     text: {
-      primary: "#dfe4de",
-      secondary: "#bfc9c0",
+      primary: "#e8ede8",
+      secondary: "#c8d2c9",
     },
   },
 });

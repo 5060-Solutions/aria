@@ -236,7 +236,9 @@ export function CallHistory() {
                   primary={
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                       <CallIcon_ entry={entry} />
-                      <span>{entry.remoteName || numberInfo.formatted}</span>
+                      <span style={{ color: entry.missed ? theme.palette.error.main : undefined }}>
+                        {entry.remoteName || numberInfo.formatted}
+                      </span>
                       {entry.recordingPath && (
                         <FiberManualRecordIcon sx={{ fontSize: 10, color: "error.main", ml: 0.5 }} />
                       )}
@@ -251,6 +253,11 @@ export function CallHistory() {
                       {!entry.missed && (
                         <span>
                           &middot; {formatDuration(entry.duration)}
+                        </span>
+                      )}
+                      {entry.missed && (
+                        <span style={{ color: theme.palette.error.main }}>
+                          &middot; {t("history.missed")}
                         </span>
                       )}
                       {accounts.length > 1 && entry.accountId && (
@@ -271,6 +278,10 @@ export function CallHistory() {
                   sx={{
                     color: "primary.main",
                     borderRadius: "12px",
+                    bgcolor: alpha(theme.palette.primary.main, 0.08),
+                    "&:hover": {
+                      bgcolor: alpha(theme.palette.primary.main, 0.16),
+                    },
                   }}
                 >
                   <CallIcon fontSize="small" />

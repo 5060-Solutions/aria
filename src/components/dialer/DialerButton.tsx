@@ -24,7 +24,7 @@ export function DialerButton({ digit, letters, onPress }: DialerButtonProps) {
           width: 76,
           height: 76,
           borderRadius: "50%",
-          bgcolor: alpha(theme.palette.text.primary, 0.05),
+          bgcolor: alpha(theme.palette.text.primary, 0.07),
           color: "text.primary",
           display: "flex",
           flexDirection: "column",
@@ -32,7 +32,7 @@ export function DialerButton({ digit, letters, onPress }: DialerButtonProps) {
           justifyContent: "center",
           transition: "background-color 0.12s ease",
           "&:hover": {
-            bgcolor: alpha(theme.palette.text.primary, 0.09),
+            bgcolor: alpha(theme.palette.text.primary, 0.12),
           },
           "&:active": {
             bgcolor: alpha(theme.palette.primary.main, 0.12),

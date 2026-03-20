@@ -60,8 +60,8 @@ export function NavRail() {
         borderRight: `1px solid ${alpha(theme.palette.divider, 0.12)}`,
       }}
     >
-      <Box sx={{ mb: 2 }}>
-        <AriaLogo size={40} />
+      <Box sx={{ mb: 1.5 }}>
+        <AriaLogo size={36} />
       </Box>
 
       {navItems.map(({ id, icon: Icon, labelKey }) => {
