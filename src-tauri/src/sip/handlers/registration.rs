@@ -43,6 +43,10 @@ pub async fn handle_register_response(
                 state: RegistrationState::Registered,
                 error: None,
             }));
+
+            // Note: BLF/presence resubscription is triggered by the frontend
+            // when it receives this RegistrationChanged event. The useNetworkMonitor
+            // hook will invoke subscribe_presence for all monitored extensions.
         }
         401 | 407 => {
             // Check current state and auth attempts to prevent infinite loops
@@ -235,7 +239,7 @@ pub async fn handle_register_response(
                 cseq,
                 &reg_from_tag,
                 Some(&auth_header),
-                3600,
+                300,
             );
 
             log::debug!("Sending authenticated REGISTER:\n{}", msg);

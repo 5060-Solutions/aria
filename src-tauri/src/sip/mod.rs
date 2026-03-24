@@ -445,7 +445,7 @@ impl SipManager {
         self.emit_registration_event(&account_id, RegistrationState::Registering, None);
 
         let register_msg =
-            build_register(&account, local_addr, &call_id, cseq, &from_tag, None, 3600);
+            build_register(&account, local_addr, &call_id, cseq, &from_tag, None, 300);
 
         {
             let s = self.state.read().await;
@@ -553,7 +553,9 @@ impl SipManager {
 
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                // Refresh at ~40% of Expires (300s) — well before expiry.
+                // This ensures the binding stays alive even with network jitter.
+                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
 
                 let (account_config, local_addr, server_addr, reg_call_id, reg_from_tag, cseq, transport) = {
                     let mut s = state.write().await;
@@ -591,7 +593,7 @@ impl SipManager {
                     cseq,
                     &reg_from_tag,
                     None,
-                    3600,
+                    300,
                 );
 
                 if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
@@ -2299,7 +2301,7 @@ impl SipManager {
             error: None,
         }));
 
-        let register_msg = build_register(account, local_addr, &call_id, cseq, &from_tag, None, 3600);
+        let register_msg = build_register(account, local_addr, &call_id, cseq, &from_tag, None, 300);
 
         {
             let s = state.read().await;
