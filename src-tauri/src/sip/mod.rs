@@ -447,17 +447,45 @@ impl SipManager {
         let register_msg =
             build_register(&account, local_addr, &call_id, cseq, &from_tag, None, 300);
 
+        // Send initial REGISTER with Timer A retransmission (RFC 3261 §17.1.1).
+        // Retry at 500ms, 1s, 2s, 4s if no response, up to ~8s total.
+        // The 30s registration timeout (spawned below) is the ultimate backstop.
         {
+            let intervals = [500u64, 1000, 2000, 4000];
             let s = self.state.read().await;
             if let Some(account_state) = s.accounts.get(&account_id) {
                 if let Some(ref t) = account_state.transport {
                     t.send_to(register_msg.as_bytes(), server_addr).await?;
+                    log::debug!("Sent REGISTER (attempt 1):\n{}", register_msg);
+
+                    // Spawn retransmission in background — stops when state changes
+                    // from Registering (meaning we got a response).
+                    let transport = t.clone();
+                    let msg_bytes = register_msg.as_bytes().to_vec();
+                    let state_ref = self.state.clone();
+                    let aid = account_id.clone();
+                    tokio::spawn(async move {
+                        for (i, delay_ms) in intervals.iter().enumerate() {
+                            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+                            // Check if we're still registering (no response yet)
+                            let still_registering = {
+                                let s = state_ref.read().await;
+                                s.accounts.get(&aid)
+                                    .map(|a| a.registration.is_registering())
+                                    .unwrap_or(false)
+                            };
+                            if !still_registering {
+                                break; // Got a response, stop retransmitting
+                            }
+                            log::debug!("REGISTER retransmit attempt {} for {}", i + 2, aid);
+                            if transport.send_to(&msg_bytes, server_addr).await.is_err() {
+                                break;
+                            }
+                        }
+                    });
                 }
             }
         }
-
-
-        log::debug!("Sent REGISTER:\n{}", register_msg);
 
         // Start the receive loop for this account
         self.start_receive_loop_for_account(rx, account_id.clone());
@@ -1653,6 +1681,39 @@ impl SipManager {
         }
     }
 
+    /// Re-subscribe to all BLF/presence targets that were active before reconnect.
+    /// Called by the frontend after it sees RegistrationState::Registered.
+    pub async fn process_pending_resubscriptions(&self) -> Vec<String> {
+        let targets: Vec<(String, crate::sip::state::EventType)> = {
+            let mut s = self.state.write().await;
+            let aid = s.active_account_id.clone()
+                .or_else(|| s.accounts.keys().next().cloned());
+            if let Some(ref aid) = aid {
+                if let Some(account) = s.get_account_mut(aid) {
+                    std::mem::take(&mut account.pending_resubscriptions)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        };
+
+        let mut results = Vec::new();
+        for (uri, event_type) in targets {
+            match self.subscribe_presence(&uri, event_type).await {
+                Ok(id) => {
+                    log::info!("Re-subscribed to {} (sub_id={})", uri, id);
+                    results.push(uri);
+                }
+                Err(e) => {
+                    log::warn!("Failed to re-subscribe to {}: {}", uri, e);
+                }
+            }
+        }
+        results
+    }
+
     /// Subscribe to presence/dialog events for a target URI (RFC 6665)
     pub async fn subscribe_presence(
         &self,
@@ -2064,6 +2125,14 @@ impl SipManager {
                     call.direction_str(),
                 ))
                 .collect();
+
+            // Save subscription targets for re-subscription after reconnect
+            let resub_targets: Vec<(String, crate::sip::state::EventType)> = account
+                .subscriptions
+                .iter()
+                .map(|s| (s.target_uri.clone(), s.event_type.clone()))
+                .collect();
+            account.pending_resubscriptions = resub_targets;
 
             // Clear stale transport state
             account.transport = None;

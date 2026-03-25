@@ -44,9 +44,36 @@ pub async fn handle_register_response(
                 error: None,
             }));
 
-            // Note: BLF/presence resubscription is triggered by the frontend
-            // when it receives this RegistrationChanged event. The useNetworkMonitor
-            // hook will invoke subscribe_presence for all monitored extensions.
+            // Re-subscribe to BLF/presence if we have pending resubscriptions
+            // (saved when transport died, before subscriptions were cleared).
+            let resub_targets: Vec<(String, crate::sip::state::EventType)> = {
+                let mut s = state.write().await;
+                if let Some(account) = s.get_account_mut(account_id) {
+                    std::mem::take(&mut account.pending_resubscriptions)
+                } else {
+                    Vec::new()
+                }
+            };
+            if !resub_targets.is_empty() {
+                log::info!(
+                    "Re-subscribing to {} BLF/presence targets after reconnect for {}",
+                    resub_targets.len(),
+                    account_id
+                );
+                // Emit event so frontend knows to re-subscribe
+                // (subscribe_presence requires the Manager which we don't have here)
+                for (uri, event_type) in &resub_targets {
+                    log::info!("  → re-subscribe: {} ({:?})", uri, event_type);
+                }
+                // Store them back temporarily — the frontend will call subscribe_presence
+                // for each via the Tauri command interface when it sees Registered state.
+                {
+                    let mut s = state.write().await;
+                    if let Some(account) = s.get_account_mut(account_id) {
+                        account.pending_resubscriptions = resub_targets;
+                    }
+                }
+            }
         }
         401 | 407 => {
             // Check current state and auth attempts to prevent infinite loops

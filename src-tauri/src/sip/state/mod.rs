@@ -69,6 +69,9 @@ pub struct AccountState {
     pub realm_fallback: Option<String>,
     /// Whether we've exhausted realm fallback attempts
     pub realm_fallback_exhausted: bool,
+    /// Subscription targets to re-subscribe after reconnect.
+    /// Saved when transport dies, consumed when registration succeeds.
+    pub pending_resubscriptions: Vec<(String, EventType)>,
 }
 
 impl AccountState {
@@ -88,6 +91,7 @@ impl AccountState {
             conferences: HashMap::new(),
             realm_fallback: None,
             realm_fallback_exhausted: false,
+            pending_resubscriptions: Vec::new(),
         }
     }
 }
