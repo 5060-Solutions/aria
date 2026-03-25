@@ -31,6 +31,7 @@ pub use call::{CallFSM, CallFSMEvent, EndReason, InboundCallParams};
 pub use registration::{RegistrationFSM, RegistrationState, RegistrationStatus};
 #[allow(unused_imports)]
 pub use registration::RegistrationTransitionResult;
+pub use super::presence::EventType;
 
 /// Per-account state for multi-account support
 ///
