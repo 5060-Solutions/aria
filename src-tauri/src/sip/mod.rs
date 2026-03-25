@@ -596,13 +596,28 @@ impl SipManager {
                     300,
                 );
 
-                if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
-                    log::error!("Re-REGISTER failed for {}: {}", aid, e);
-                    // Trigger transport death — let reconnect loop handle it
+                // Retry up to 3 times with 2s delay before declaring transport dead.
+                // A single UDP send failure doesn't mean the network is gone.
+                let mut sent = false;
+                for attempt in 1..=3 {
+                    match transport.send_to(msg.as_bytes(), server_addr).await {
+                        Ok(_) => {
+                            log::info!("Sent re-REGISTER for {} (cseq={}, attempt={})", aid, cseq, attempt);
+                            sent = true;
+                            break;
+                        }
+                        Err(e) => {
+                            log::warn!("Re-REGISTER attempt {}/3 failed for {}: {}", attempt, aid, e);
+                            if attempt < 3 {
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            }
+                        }
+                    }
+                }
+                if !sent {
+                    log::error!("Re-REGISTER failed after 3 attempts for {} — transport dead", aid);
                     Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone()).await;
-                    return; // Stop this timer
-                } else {
-                    log::info!("Sent re-REGISTER for {} (cseq={})", aid, cseq);
+                    return;
                 }
             }
         });
