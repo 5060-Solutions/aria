@@ -456,6 +456,15 @@ pub async fn probe_registration_health(
     Ok(())
 }
 
+/// Re-subscribe to BLF/presence targets that were active before a reconnect.
+/// Called by frontend after registration state transitions to Registered.
+#[tauri::command]
+pub async fn process_pending_resubscriptions(
+    manager: State<'_, SipManager>,
+) -> Result<Vec<String>, String> {
+    Ok(manager.process_pending_resubscriptions().await)
+}
+
 /// Audio device information returned to frontend
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -19,9 +19,12 @@ export function useNetworkMonitor() {
       if (now - lastProbe.current < 3000) return;
       lastProbe.current = now;
       log.info(`[NetworkMonitor] Probing registration health: ${reason}`);
-      invoke("probe_registration_health").catch((e) =>
-        log.error("[NetworkMonitor] Probe failed:", e)
-      );
+      invoke("probe_registration_health")
+        .then(() => {
+          // After probing, re-subscribe to BLF/presence if we had any
+          invoke("process_pending_resubscriptions").catch(() => {});
+        })
+        .catch((e) => log.error("[NetworkMonitor] Probe failed:", e));
     };
 
     // 1. Visibility change — fires on wake from sleep/hibernate

@@ -124,6 +124,7 @@ pub fn run() {
             commands::play_recording,
             commands::get_registration_state,
             commands::probe_registration_health,
+            commands::process_pending_resubscriptions,
             commands::get_audio_devices,
             commands::set_audio_devices,
             commands::open_debug_window,
