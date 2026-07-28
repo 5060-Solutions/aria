@@ -2,7 +2,10 @@ import { createTheme, type ThemeOptions } from "@mui/material/styles";
 
 const shared: ThemeOptions = {
   typography: {
-    fontFamily: '"Google Sans", "Google Sans Text", "Roboto", sans-serif',
+    // Figtree is bundled (see src/assets/fonts). "Google Sans" was proprietary
+    // and fetched from Google's CDN at runtime; it is deliberately not listed
+    // as a fallback so rendering is identical everywhere, online or not.
+    fontFamily: '"Figtree", system-ui, -apple-system, "Segoe UI", sans-serif',
     h4: { fontWeight: 500, letterSpacing: "-0.02em" },
     h5: { fontWeight: 500, letterSpacing: "-0.01em" },
     h6: { fontWeight: 500 },
