@@ -1,6 +1,6 @@
 [package]
 name = "aria"
-version = "0.3.5"
+version = "0.3.6"
 description = "Aria - A modern SIP softphone by 5060 Solutions"
 authors = ["5060 Solutions"]
 license = "LicenseRef-Proprietary"
@@ -50,6 +50,8 @@ dirs = "6"
 # HTTP client for Google People API
 reqwest = { version = "0.12", features = ["json"] }
 rustls-platform-verifier = "0.7.0"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-process = "2.3.1"
 
 # Secure credential storage - platform-specific keychain backends
 [target.'cfg(target_os = "macos")'.dependencies]

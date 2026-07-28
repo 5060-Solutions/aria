@@ -50,6 +50,7 @@ import SyncIcon from "@mui/icons-material/Sync";
 import CloudIcon from "@mui/icons-material/Cloud";
 import PhoneIphoneIcon from "@mui/icons-material/PhoneIphone";
 import LanguageIcon from "@mui/icons-material/Language";
+import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import Menu from "@mui/material/Menu";
 import InputAdornment from "@mui/material/InputAdornment";
 import { useTranslation } from "react-i18next";
@@ -69,6 +70,7 @@ interface AudioDevices {
 }
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore, saveAccountPassword, loadAccountPassword, deleteAccountPassword, getAccountWithPassword } from "../../stores/appStore";
+import { useUpdateStore } from "../../stores/updateStore";
 import { sipRegister, sipUnregisterAccount, sipSetActiveAccount } from "../../hooks/useSip";
 import type { SipAccount, TransportType, CodecConfig } from "../../types/sip";
 import { DEFAULT_CODECS, CODEC_INFO } from "../../types/sip";
@@ -169,6 +171,18 @@ export function Settings() {
   const importContacts = useAppStore((s) => s.importContacts);
   const removeContactsBySource = useAppStore((s) => s.removeContactsBySource);
   const contacts = useAppStore((s) => s.contacts);
+
+  // Updates — the manual check reports both outcomes, unlike the silent
+  // automatic one on launch.
+  const updateCheckStatus = useUpdateStore((s) => s.checkStatus);
+  const updateAvailableVersion = useUpdateStore((s) => s.availableVersion);
+  const updateCurrentVersion = useUpdateStore((s) => s.currentVersion);
+  const updateErrorMessage = useUpdateStore((s) => s.errorMessage);
+  const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
+  const clearUpdateResult = useUpdateStore((s) => s.clearManualResult);
+  const inCall = useAppStore((s) =>
+    s.activeCalls.some((c) => c.state !== "idle" && c.state !== "ended")
+  );
 
   // Load audio devices and recordings dir on mount
   useEffect(() => {
@@ -513,6 +527,28 @@ export function Settings() {
       setTonePlaying(false);
     }
   };
+
+  // Drop a stale "up to date" / error result when leaving Settings, so the row
+  // reads as a fresh check next time it is opened.
+  useEffect(() => clearUpdateResult, [clearUpdateResult]);
+
+  const updateChecking = updateCheckStatus === "checking";
+  const updateStatusText = (() => {
+    switch (updateCheckStatus) {
+      case "checking":
+        return t("update.checking");
+      case "available":
+        return inCall
+          ? t("update.deferredInCall")
+          : t("update.readyToInstall", { version: updateAvailableVersion ?? "" });
+      case "upToDate":
+        return t("update.upToDate", { version: updateCurrentVersion ?? "" });
+      case "error":
+        return t("update.checkFailed", { error: updateErrorMessage ?? "" });
+      default:
+        return t("update.checkNow");
+    }
+  })();
 
   const systemContactCount = contacts.filter((c) => c.source === "system").length;
   const googleContactCount = contacts.filter((c) => c.source === "google").length;
@@ -1133,6 +1169,34 @@ export function Settings() {
               }}
             />
             <FolderOpenIcon sx={{ fontSize: 20, color: "text.secondary" }} />
+          </ListItemButton>
+
+          {/* Software updates */}
+          <ListItemButton
+            onClick={() => void checkForUpdate(true)}
+            disabled={updateChecking}
+            sx={{ borderRadius: "16px", mb: 0.5 }}
+          >
+            <ListItemIcon sx={{ minWidth: 40 }}>
+              {updateChecking ? (
+                <CircularProgress size={18} />
+              ) : (
+                <SystemUpdateAltIcon sx={{ fontSize: 20 }} />
+              )}
+            </ListItemIcon>
+            <ListItemText
+              primary={t("update.checkForUpdates")}
+              secondary={updateStatusText}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: {
+                  sx: {
+                    fontSize: "0.7rem",
+                    ...(updateCheckStatus === "error" ? { color: "error.main" } : {}),
+                  },
+                },
+              }}
+            />
           </ListItemButton>
         </List>
 

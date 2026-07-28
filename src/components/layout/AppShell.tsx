@@ -2,6 +2,8 @@ import { Box } from "@mui/material";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAppStore } from "../../stores/appStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
+import { useUpdateOnLaunch } from "../../hooks/useUpdater";
+import { UpdateDialog } from "../update/UpdateDialog";
 import { NavRail } from "./NavRail";
 import { StatusBar } from "./StatusBar";
 import { Dialer } from "../dialer/Dialer";
@@ -21,7 +23,8 @@ const views = {
 
 export function AppShell() {
   useKeyboardShortcuts();
-  
+  useUpdateOnLaunch();
+
   const currentView = useAppStore((s) => s.currentView);
   const activeCall = useAppStore((s) => s.activeCall);
 
@@ -77,6 +80,7 @@ export function AppShell() {
           </AnimatePresence>
         </Box>
       </Box>
+      <UpdateDialog />
     </Box>
   );
 }

@@ -19,6 +19,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
+        // Signature-verified updates. The frontend asks before installing —
+        // never silently restart a softphone, which could drop a live call.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Lets the update flow relaunch after installing, so the user gets one
+        // click instead of "now quit and reopen the app yourself".
+        .plugin(tauri_plugin_process::init())
         // On Linux this plugin claims a D-Bus well-known name, which by default
         // is derived from the bundle identifier. D-Bus requires that no
         // dot-separated element begins with a digit, and ours is
