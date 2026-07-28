@@ -75,6 +75,13 @@ pub struct AccountConfig {
     pub enabled: bool,
     /// Whether to automatically record calls for this account
     pub auto_record: bool,
+    /// Disable TLS certificate/hostname verification for this account.
+    ///
+    /// Defaults to `false`. Only for deployments with a private PBX certificate
+    /// that cannot be installed into the OS trust store — with this enabled an
+    /// on-path attacker can read the digest credentials and SDES-SRTP keys.
+    /// Never settable via QR provisioning.
+    pub tls_insecure: bool,
     /// SRTP mode for media encryption
     pub srtp_mode: SrtpMode,
     /// Codec preferences in priority order

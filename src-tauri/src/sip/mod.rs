@@ -363,7 +363,7 @@ impl SipManager {
             TransportType::Tls => {
                 let tls_name = account.registrar.as_deref().unwrap_or(&account.domain);
                 log::info!("Connecting TLS to {} (server name: {})...", server_addr, tls_name);
-                match transport::TlsTransport::connect(server_addr, tls_name).await {
+                match transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure).await {
                     Ok((t, rx)) => {
                         log::info!("TLS transport connected, local addr: {}", t.local_addr());
                         (SipTransport::Tls(t), rx)
@@ -611,6 +611,9 @@ impl SipManager {
                     let cseq = account.registration.next_cseq();
                     let call_id = account.registration.call_id().to_string();
                     let from_tag = account.registration.local_tag().to_string();
+                    // Transition to Registering so the 401 challenge handler will
+                    // process the server's response and send authenticated REGISTER.
+                    account.registration.begin_re_registration();
                     (account.config.clone(), local_addr, server_addr, call_id, from_tag, cseq, transport)
                 };
 
@@ -2045,41 +2048,37 @@ impl SipManager {
         });
     }
 
-    fn start_receive_loop_for_account(&self, mut rx: mpsc::Receiver<SipMessage>, account_id: String) {
+    /// Is this datagram/frame from the peer we are actually talking to?
+    ///
+    /// The UDP socket is unconnected, so `recv_from` will happily hand us
+    /// packets from anywhere on the internet. Without this check any host that
+    /// can reach our ephemeral SIP port can ring the phone, tear down calls
+    /// (BYE), drive outbound dialling (REFER), force auto-answer
+    /// (INVITE/Replaces), or inject responses that redirect our media.
+    ///
+    /// This client only ever talks to one registrar / outbound proxy per
+    /// account, so requiring the source to equal the resolved server address is
+    /// both correct and sufficient.
+    async fn is_expected_peer(
+        state: &Arc<RwLock<ManagerState>>,
+        account_id: &str,
+        remote: SocketAddr,
+    ) -> bool {
+        let s = state.read().await;
+        match s.accounts.get(account_id).and_then(|a| a.server_addr) {
+            Some(server) => server == remote,
+            // No server address resolved yet — nothing legitimate can arrive.
+            None => false,
+        }
+    }
+
+    fn start_receive_loop_for_account(&self, rx: mpsc::Receiver<SipMessage>, account_id: String) {
         let state = self.state.clone();
         let event_tx = self.event_tx.clone();
         let aid = account_id.clone();
 
         tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                let text = match String::from_utf8(msg.data) {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-
-                log::debug!("Received SIP for account {} from {}:\n{}", aid, msg.remote, text);
-
-                let diag = DiagnosticLog {
-                    timestamp: diagnostics::now_millis(),
-                    account_id: aid.clone(),
-                    direction: diagnostics::MessageDirection::Received,
-                    remote_addr: msg.remote.to_string(),
-                    summary: diagnostics::summarize_sip(&text),
-                    raw: text.clone(),
-                    call_id: diagnostics::extract_sip_call_id(&text),
-                };
-                {
-                    let s = state.read().await;
-                    s.diagnostic_store.push(diag.clone()).await;
-                }
-                let _ = event_tx.send(SipEvent::DiagnosticMessage(diag));
-
-                if is_request(&text) {
-                    handlers::handle_incoming_request(&state, &event_tx, &text, msg.remote, &aid).await;
-                } else {
-                    handlers::handle_response(&state, &event_tx, &text, &aid).await;
-                }
-            }
+            Self::run_receive_loop(state.clone(), event_tx.clone(), aid.clone(), rx).await;
 
             // Receive loop ended — transport is dead.
             // Only trigger reconnect if we were registered/registering (not if user unregistered).
@@ -2273,13 +2272,40 @@ impl SipManager {
         account_id: String,
         mut rx: mpsc::Receiver<SipMessage>,
     ) {
+        let mut dropped_from_stranger = 0u64;
+
         while let Some(msg) = rx.recv().await {
+            // Drop anything that did not come from the account's own server.
+            // See `is_expected_peer` — without this, arbitrary internet hosts
+            // can drive the SIP state machine.
+            if !Self::is_expected_peer(&state, &account_id, msg.remote).await {
+                dropped_from_stranger += 1;
+                // Rate-limit the log so a flood cannot fill the disk, and do
+                // not put unsolicited traffic into the diagnostic store.
+                if dropped_from_stranger.is_power_of_two() {
+                    log::warn!(
+                        "Dropped {} SIP message(s) for account {} from unexpected source {} \
+                         (expected the registered server)",
+                        dropped_from_stranger,
+                        account_id,
+                        msg.remote
+                    );
+                }
+                continue;
+            }
+
             let text = match String::from_utf8(msg.data) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
 
-            log::debug!("Received SIP for account {} from {}:\n{}", account_id, msg.remote, text);
+            let redacted = diagnostics::redact_sip(&text);
+            log::debug!(
+                "Received SIP for account {} from {}:\n{}",
+                account_id,
+                msg.remote,
+                redacted
+            );
 
             let diag = DiagnosticLog {
                 timestamp: diagnostics::now_millis(),
@@ -2287,7 +2313,7 @@ impl SipManager {
                 direction: diagnostics::MessageDirection::Received,
                 remote_addr: msg.remote.to_string(),
                 summary: diagnostics::summarize_sip(&text),
-                raw: text.clone(),
+                raw: redacted,
                 call_id: diagnostics::extract_sip_call_id(&text),
             };
             {
@@ -2328,7 +2354,9 @@ impl SipManager {
             }
             TransportType::Tls => {
                 let tls_name = account.registrar.as_deref().unwrap_or(&account.domain);
-                let (t, rx) = transport::TlsTransport::connect(server_addr, tls_name).await?;
+                let (t, rx) =
+                    transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
+                        .await?;
                 (SipTransport::Tls(t), rx)
             }
         };

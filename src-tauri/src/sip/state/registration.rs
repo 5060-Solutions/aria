@@ -517,6 +517,18 @@ impl RegistrationFSM {
         }
     }
 
+    /// Transition from Registered → Registering for re-registration.
+    ///
+    /// The re-register timer sends a REGISTER without auth; the server replies
+    /// with 401.  The 401 handler only processes challenges when in the
+    /// `Registering` state, so we must transition *before* sending the refresh
+    /// REGISTER so the subsequent 401 is handled correctly.
+    pub fn begin_re_registration(&mut self) {
+        if matches!(&self.state, RegistrationState::Registered { .. }) {
+            self.state = RegistrationState::Registering { auth_attempts: 0 };
+        }
+    }
+
     /// Network error occurred
     #[allow(dead_code)]
     pub fn network_error(&mut self, reason: &str) {

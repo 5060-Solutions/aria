@@ -26,7 +26,7 @@ import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import StarIcon from "@mui/icons-material/Star";
 import StarBorderIcon from "@mui/icons-material/StarBorder";
 import SearchIcon from "@mui/icons-material/Search";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlineOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
@@ -121,8 +121,8 @@ function ContactDialog({
       onClose={onClose}
       maxWidth="xs"
       fullWidth
-      PaperProps={{
-        sx: { borderRadius: "20px" },
+      slotProps={{
+        paper: { sx: { borderRadius: "20px" } },
       }}
     >
       <DialogTitle
@@ -319,13 +319,15 @@ function ContactItem({
           </Box>
         }
         secondary={secondary}
-        primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: 500 }}
-        secondaryTypographyProps={{
-          fontSize: "0.75rem",
-          sx: {
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
+        slotProps={{
+          primary: { sx: { fontSize: "0.9rem", fontWeight: 500 } },
+          secondary: {
+            sx: {
+              fontSize: "0.75rem",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            },
           },
         }}
       />

@@ -18,7 +18,7 @@ import {
   ToggleButton,
   ToggleButtonGroup,
 } from "@mui/material";
-import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlineOutlined";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import SignalCellularAltIcon from "@mui/icons-material/SignalCellularAlt";

@@ -49,6 +49,7 @@ dirs = "6"
 
 # HTTP client for Google People API
 reqwest = { version = "0.12", features = ["json"] }
+rustls-platform-verifier = "0.7.0"
 
 # Secure credential storage - platform-specific keychain backends
 [target.'cfg(target_os = "macos")'.dependencies]

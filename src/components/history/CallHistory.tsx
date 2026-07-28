@@ -267,7 +267,9 @@ export function CallHistory() {
                       )}
                     </Box>
                   }
-                  primaryTypographyProps={{ fontSize: "0.9rem", fontWeight: 500 }}
+                  slotProps={{
+                    primary: { sx: { fontSize: "0.9rem", fontWeight: 500 } },
+                  }}
                 />
                 <IconButton
                   size="small"
@@ -298,10 +300,12 @@ export function CallHistory() {
         onClose={() => setSelectedEntry(null)}
         maxWidth="xs"
         fullWidth
-        PaperProps={{
-          sx: {
-            borderRadius: "20px",
-            bgcolor: "background.paper",
+        slotProps={{
+          paper: {
+            sx: {
+              borderRadius: "20px",
+              bgcolor: "background.paper",
+            },
           },
         }}
       >

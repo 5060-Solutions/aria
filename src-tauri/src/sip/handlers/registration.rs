@@ -168,11 +168,9 @@ pub async fn handle_register_response(
                 )
             };
 
-            log::info!("Auth challenge header: {}", www_auth);
-
             let registrar = account_config.registrar.as_deref().unwrap_or(&account_config.domain);
             let uri = format!("sip:{}", registrar);
-            log::info!(
+            log::debug!(
                 "Digest params: auth_user='{}', uri='{}', auth_realm_override={:?}",
                 account_config.effective_auth_username(),
                 uri,

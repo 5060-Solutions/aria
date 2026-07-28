@@ -13,7 +13,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import ContentPasteIcon from "@mui/icons-material/ContentPaste";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
-import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutlineOutlined";
 import { Html5Qrcode } from "html5-qrcode";
 import { useTranslation } from "react-i18next";
 import { log } from "../../utils/log";

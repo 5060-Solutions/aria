@@ -131,6 +131,11 @@ pub async fn provision_from_qr(
         auth_realm: None,
         enabled: true,
         auto_record: true,
+        // Always verify TLS on a provisioned account. Per AccountConfig's
+        // contract this must never be settable from provisioning input, since
+        // disabling it exposes digest credentials and SDES-SRTP keys to an
+        // on-path attacker.
+        tls_insecure: false,
         srtp_mode: Default::default(),
         codecs: sip::account::default_codec_preferences(),
     };
@@ -246,6 +251,10 @@ pub async fn sip_register(
         auth_realm: config.auth_realm,
         enabled: config.enabled,
         auto_record: config.auto_record,
+        // Secure by default. There is deliberately no path from the frontend
+        // config to this flag; enabling it is an explicit, local-only escape
+        // hatch for a private PBX certificate.
+        tls_insecure: false,
         srtp_mode,
         codecs,
     };

@@ -544,10 +544,14 @@ export function CallControls() {
                     </ListItemIcon>
                     <ListItemText
                       primary={device.name}
-                      primaryTypographyProps={{
-                        fontSize: "0.78rem",
-                        fontWeight: isSelected ? 600 : 400,
-                        noWrap: true,
+                      slotProps={{
+                        primary: {
+                          noWrap: true,
+                          sx: {
+                            fontSize: "0.78rem",
+                            fontWeight: isSelected ? 600 : 400,
+                          },
+                        },
                       }}
                     />
                     {isSelected && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}
@@ -594,10 +598,14 @@ export function CallControls() {
                     </ListItemIcon>
                     <ListItemText
                       primary={device.name}
-                      primaryTypographyProps={{
-                        fontSize: "0.78rem",
-                        fontWeight: isSelected ? 600 : 400,
-                        noWrap: true,
+                      slotProps={{
+                        primary: {
+                          noWrap: true,
+                          sx: {
+                            fontSize: "0.78rem",
+                            fontWeight: isSelected ? 600 : 400,
+                          },
+                        },
                       }}
                     />
                     {isSelected && <CheckIcon sx={{ fontSize: 16, color: "primary.main" }} />}

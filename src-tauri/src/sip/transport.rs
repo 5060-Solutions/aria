@@ -169,9 +169,27 @@ impl UdpTransport {
 // SIP message framing helpers for stream transports (TCP / TLS)
 // ---------------------------------------------------------------------------
 
+/// Largest SIP message (headers + body) we are willing to assemble.
+/// RFC 3261 has no hard limit, but real SIP is a few KB; 128 KiB is generous.
+pub(crate) const MAX_SIP_MESSAGE: usize = 128 * 1024;
+
+/// Largest amount of un-framed data we will hold for a stream peer before
+/// giving up. Prevents a peer that never sends a complete message (or never
+/// sends the double-CRLF at all) from exhausting memory.
+pub(crate) const MAX_PENDING: usize = 512 * 1024;
+
+/// Outcome of a framing attempt.
+enum FrameResult {
+    /// Number of bytes consumed from the front of the buffer.
+    Consumed(usize),
+    /// The peer sent something we refuse to parse; the connection must be torn
+    /// down (continuing would desynchronise the stream).
+    Fatal(&'static str),
+}
+
 /// Extract complete SIP messages from a byte buffer using Content-Length
-/// framing. Returns the number of bytes consumed.
-fn extract_sip_messages(buf: &[u8], out: &mut Vec<Vec<u8>>) -> usize {
+/// framing. Returns the number of bytes consumed, or a fatal framing error.
+fn extract_sip_messages(buf: &[u8], out: &mut Vec<Vec<u8>>) -> FrameResult {
     let mut consumed = 0;
 
     loop {
@@ -183,19 +201,36 @@ fn extract_sip_messages(buf: &[u8], out: &mut Vec<Vec<u8>>) -> usize {
         // Find the header/body separator: \r\n\r\n
         let sep = match find_double_crlf(remaining) {
             Some(pos) => pos,
-            None => break, // incomplete headers
+            None => {
+                // No complete header block yet. Refuse to buffer an unbounded
+                // header section.
+                if remaining.len() > MAX_SIP_MESSAGE {
+                    return FrameResult::Fatal("SIP header block exceeds maximum size");
+                }
+                break; // incomplete headers
+            }
         };
 
         let body_start = sep + 4; // past the double-CRLF
 
         let headers = match std::str::from_utf8(&remaining[..sep]) {
             Ok(s) => s,
-            Err(_) => break,
+            Err(_) => return FrameResult::Fatal("non-UTF-8 SIP header block"),
         };
 
-        let content_length = parse_content_length(headers);
+        let content_length = match parse_content_length(headers) {
+            Ok(n) => n,
+            Err(e) => return FrameResult::Fatal(e),
+        };
 
-        let total_len = body_start + content_length;
+        // Checked arithmetic: a hostile Content-Length must not be able to wrap
+        // `total_len` and desynchronise the framer (or panic in debug builds).
+        let total_len = match body_start.checked_add(content_length) {
+            Some(n) if n <= MAX_SIP_MESSAGE => n,
+            Some(_) => return FrameResult::Fatal("SIP message exceeds maximum size"),
+            None => return FrameResult::Fatal("Content-Length overflow"),
+        };
+
         if remaining.len() < total_len {
             break; // incomplete body
         }
@@ -204,25 +239,44 @@ fn extract_sip_messages(buf: &[u8], out: &mut Vec<Vec<u8>>) -> usize {
         consumed += total_len;
     }
 
-    consumed
+    FrameResult::Consumed(consumed)
 }
 
 fn find_double_crlf(data: &[u8]) -> Option<usize> {
     data.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
-fn parse_content_length(headers: &str) -> usize {
+/// Parse the Content-Length header.
+///
+/// Rejects values above `MAX_SIP_MESSAGE` and rejects *conflicting* duplicate
+/// headers: letting a peer supply two different lengths and picking one is a
+/// request-smuggling primitive when a proxy sits in front of us.
+fn parse_content_length(headers: &str) -> Result<usize, &'static str> {
+    let mut found: Option<usize> = None;
+
     for line in headers.lines() {
         let lower = line.to_ascii_lowercase();
-        if lower.starts_with("content-length:") || lower.starts_with("l:") {
-            if let Some(val) = line.split(':').nth(1) {
-                if let Ok(n) = val.trim().parse::<usize>() {
-                    return n;
-                }
-            }
+        if !(lower.starts_with("content-length:") || lower.starts_with("l:")) {
+            continue;
+        }
+        let value = match line.split_once(':') {
+            Some((_, v)) => v.trim(),
+            None => continue,
+        };
+        let n: usize = match value.parse() {
+            Ok(n) => n,
+            Err(_) => return Err("malformed Content-Length"),
+        };
+        if n > MAX_SIP_MESSAGE {
+            return Err("Content-Length exceeds maximum message size");
+        }
+        match found {
+            Some(prev) if prev != n => return Err("conflicting Content-Length headers"),
+            _ => found = Some(n),
         }
     }
-    0
+
+    Ok(found.unwrap_or(0))
 }
 
 /// Shared receive logic for any `AsyncRead` stream.
@@ -244,9 +298,27 @@ async fn stream_receive_loop<R: AsyncReadExt + Unpin>(
             Ok(n) => {
                 pending.extend_from_slice(&buf[..n]);
                 let mut messages = Vec::new();
-                let consumed = extract_sip_messages(&pending, &mut messages);
-                if consumed > 0 {
-                    pending.drain(..consumed);
+                match extract_sip_messages(&pending, &mut messages) {
+                    FrameResult::Consumed(consumed) => {
+                        if consumed > 0 {
+                            pending.drain(..consumed);
+                        }
+                    }
+                    FrameResult::Fatal(reason) => {
+                        log::error!("{} framing error from {}: {}", label, remote, reason);
+                        break;
+                    }
+                }
+                // A peer that keeps sending without ever yielding a complete
+                // message must not be able to grow this buffer without bound.
+                if pending.len() > MAX_PENDING {
+                    log::error!(
+                        "{} peer {} exceeded {} bytes of unframed data — closing",
+                        label,
+                        remote,
+                        MAX_PENDING
+                    );
+                    break;
                 }
                 for data in messages {
                     let msg = SipMessage { data, remote };
@@ -343,9 +415,16 @@ pub struct TlsTransport {
 }
 
 impl TlsTransport {
+    /// Connect a SIP/TLS transport.
+    ///
+    /// `insecure` disables certificate and hostname verification. It exists
+    /// only for deployments with a private PBX certificate that cannot be
+    /// installed into the OS trust store, must be opted into explicitly per
+    /// account, and is never enabled by QR provisioning.
     pub async fn connect(
         server_addr: SocketAddr,
         server_name: &str,
+        insecure: bool,
     ) -> Result<(Self, mpsc::Receiver<SipMessage>), String> {
         // 10 second TCP connection timeout
         let tcp_stream = tokio::time::timeout(
@@ -362,9 +441,8 @@ impl TlsTransport {
 
         configure_tcp_keepalive(&tcp_stream);
 
-        // Build a TLS config that accepts any certificate (many PBXes use self-signed)
         let tls_config =
-            build_permissive_tls_config().map_err(|e| format!("TLS config error: {}", e))?;
+            build_tls_config(insecure).map_err(|e| format!("TLS config error: {}", e))?;
 
         let connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
         let dns_name = rustls_pki_types::ServerName::try_from(server_name.to_string())
@@ -415,21 +493,47 @@ impl TlsTransport {
 }
 
 // ---------------------------------------------------------------------------
-// Permissive TLS config (accepts self-signed certs)
+// TLS configuration
 // ---------------------------------------------------------------------------
 
-fn build_permissive_tls_config() -> Result<rustls::ClientConfig, rustls::Error> {
+/// Build the TLS client config for SIP/TLS.
+///
+/// By default the platform trust store is used, so certificates are validated
+/// against the OS root CAs *and* any CA an administrator has installed —
+/// which is the supported way to run a PBX with a private certificate.
+///
+/// `insecure` restores the legacy "trust anything" behaviour. It is opt-in per
+/// account and logs loudly, because with it enabled any on-path attacker can
+/// read the digest credentials and the SDES-SRTP keys off the wire.
+fn build_tls_config(insecure: bool) -> Result<rustls::ClientConfig, rustls::Error> {
     // Use ring as the crypto provider (must be explicit in rustls 0.23+)
-    let provider = rustls::crypto::ring::default_provider();
-    
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+
+    if insecure {
+        log::error!(
+            "SIP/TLS certificate verification is DISABLED for this account. \
+             The connection is not protected against interception — SIP credentials \
+             and SRTP keys can be read by anyone on the network path."
+        );
+        return Ok(rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
+            .with_no_client_auth());
+    }
+
+    let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
+        .map_err(|e| rustls::Error::General(format!("platform verifier: {e}")))?;
+
+    Ok(rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
-        .with_no_client_auth();
-    Ok(config)
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth())
 }
 
+/// Certificate verifier that accepts anything. Only reachable when an account
+/// explicitly opts into `tls_insecure`.
 #[derive(Debug)]
 struct AcceptAnyCert;
 

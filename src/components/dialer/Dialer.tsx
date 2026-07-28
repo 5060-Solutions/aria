@@ -344,8 +344,9 @@ export function Dialer() {
                   autoFocus
                   placeholder={t("dialer.searchCountry")}
                   slotProps={{
+                    ...params.slotProps,
                     input: {
-                      ...params.InputProps,
+                      ...params.slotProps.input,
                       startAdornment: (
                         <Typography sx={{ fontSize: "1.2rem", ml: 0.5, mr: 0.5 }}>
                           {getFlagEmoji(defaultCountry)}

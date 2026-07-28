@@ -257,9 +257,10 @@ pub async fn handle_invite_response(
                 // Start media session with SRTP if both keys are available
                 let media_result = match (&local_srtp_key, &remote_srtp_key) {
                     (Some(local_key), Some(remote_key)) => {
+                        // NOTE: never log the key material itself — these are the
+                        // SDES-SRTP master keys and would let anyone with the log
+                        // decrypt the call's media.
                         log::info!("Starting SRTP media session with separate TX/RX keys");
-                        log::info!("  TX key (our key, for encrypt outgoing): {}", local_key);
-                        log::info!("  RX key (their key, for decrypt incoming): {}", remote_key);
                         if local_key == remote_key {
                             log::warn!("TX and RX keys are IDENTICAL - remote echoed our key (symmetric mode)");
                         }

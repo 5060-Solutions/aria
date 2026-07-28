@@ -468,12 +468,20 @@ export function Settings() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!showAudioSettings && micTesting) {
+  // Collapsing the audio panel stops an in-progress mic test — the level meter
+  // lives inside the panel, so a test the user can no longer see must not keep
+  // running. This is done here rather than in an effect watching
+  // `showAudioSettings`: the panel only closes in response to this click, and
+  // setting state synchronously inside an effect triggers cascading renders
+  // (react-hooks/set-state-in-effect).
+  const handleToggleAudioSettings = () => {
+    const opening = !showAudioSettings;
+    setShowAudioSettings(opening);
+    if (!opening && micTesting) {
       invoke("stop_audio_test").catch(() => {});
       setMicTesting(false);
     }
-  }, [showAudioSettings, micTesting]);
+  };
 
   const handleToggleMicTest = async () => {
     if (micTesting) {
@@ -765,7 +773,9 @@ export function Settings() {
           onClose={handleCloseMenu}
           anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
           transformOrigin={{ vertical: "top", horizontal: "right" }}
-          PaperProps={{ sx: { borderRadius: "12px", minWidth: 160 } }}
+          slotProps={{
+            paper: { sx: { borderRadius: "12px", minWidth: 160 } },
+          }}
         >
           <MenuItem
             onClick={() => {
@@ -828,7 +838,9 @@ export function Settings() {
             </ListItemIcon>
             <ListItemText
               primary={t("settings.darkMode")}
-              primaryTypographyProps={{ fontSize: "0.9rem" }}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+              }}
             />
             <Switch
               edge="end"
@@ -847,7 +859,9 @@ export function Settings() {
             </ListItemIcon>
             <ListItemText
               primary={t("settings.language")}
-              primaryTypographyProps={{ fontSize: "0.9rem" }}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+              }}
             />
             <Select
               value={selectedLanguage}
@@ -870,7 +884,7 @@ export function Settings() {
 
           {/* Audio devices section */}
           <ListItemButton
-            onClick={() => setShowAudioSettings(!showAudioSettings)}
+            onClick={handleToggleAudioSettings}
             sx={{ borderRadius: "16px", mb: 0.5 }}
           >
             <ListItemIcon sx={{ minWidth: 40 }}>
@@ -879,8 +893,10 @@ export function Settings() {
             <ListItemText
               primary={t("settings.audioDevices")}
               secondary={audioDevices ? t("settings.inputsOutputs", { inputs: audioDevices.inputDevices.length, outputs: audioDevices.outputDevices.length }) : t("common.loading")}
-              primaryTypographyProps={{ fontSize: "0.9rem" }}
-              secondaryTypographyProps={{ fontSize: "0.7rem" }}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: { sx: { fontSize: "0.7rem" } },
+              }}
             />
             {showAudioSettings ? <ExpandLessIcon sx={{ fontSize: 20 }} /> : <ExpandMoreIcon sx={{ fontSize: 20 }} />}
           </ListItemButton>
@@ -1013,8 +1029,10 @@ export function Settings() {
             <ListItemText
               primary={t("settings.contactsSync")}
               secondary={t("settings.syncedContacts", { count: systemContactCount + googleContactCount })}
-              primaryTypographyProps={{ fontSize: "0.9rem" }}
-              secondaryTypographyProps={{ fontSize: "0.7rem" }}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: { sx: { fontSize: "0.7rem" } },
+              }}
             />
             {showContactsSettings ? <ExpandLessIcon sx={{ fontSize: 20 }} /> : <ExpandMoreIcon sx={{ fontSize: 20 }} />}
           </ListItemButton>
@@ -1109,8 +1127,10 @@ export function Settings() {
             <ListItemText
               primary={t("settings.callRecordings")}
               secondary={recordingsDir ? t("settings.savedTo", { path: recordingsDir.split("/").slice(-2).join("/") }) : t("common.loading")}
-              primaryTypographyProps={{ fontSize: "0.9rem" }}
-              secondaryTypographyProps={{ fontSize: "0.7rem", noWrap: true }}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: { noWrap: true, sx: { fontSize: "0.7rem" } },
+              }}
             />
             <FolderOpenIcon sx={{ fontSize: 20, color: "text.secondary" }} />
           </ListItemButton>
@@ -1129,9 +1149,11 @@ export function Settings() {
             </ListItemIcon>
             <ListItemText
               primary={t("settings.signOutAll")}
-              primaryTypographyProps={{
-                fontSize: "0.9rem",
-                color: "error.main",
+              slotProps={{
+                primary: {
+                  color: "error.main",
+                  sx: { fontSize: "0.9rem" },
+                },
               }}
             />
           </ListItemButton>
@@ -1149,8 +1171,10 @@ export function Settings() {
             <ListItemText
               primary={t("settings.developerDiagnostics")}
               secondary={t("settings.sipTraceRtp")}
-              primaryTypographyProps={{ fontSize: "0.9rem" }}
-              secondaryTypographyProps={{ fontSize: "0.7rem" }}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: { sx: { fontSize: "0.7rem" } },
+              }}
             />
           </ListItemButton>
         </List>
@@ -1190,8 +1214,8 @@ export function Settings() {
         onClose={handleCloseDialog}
         maxWidth="xs"
         fullWidth
-        PaperProps={{
-          sx: { borderRadius: "20px" },
+        slotProps={{
+          paper: { sx: { borderRadius: "20px" } },
         }}
       >
         <DialogTitle>
@@ -1225,18 +1249,20 @@ export function Settings() {
               value={form.password}
               onChange={(e) => update("password", e.target.value)}
               sx={inputSx}
-              InputProps={{
-                endAdornment: (
-                  <InputAdornment position="end">
-                    <IconButton
-                      size="small"
-                      onClick={() => setShowPassword(!showPassword)}
-                      edge="end"
-                    >
-                      {showPassword ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
-                    </IconButton>
-                  </InputAdornment>
-                ),
+              slotProps={{
+                input: {
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        size="small"
+                        onClick={() => setShowPassword(!showPassword)}
+                        edge="end"
+                      >
+                        {showPassword ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                },
               }}
             />
 

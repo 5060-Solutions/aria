@@ -19,9 +19,22 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
-            // Handle single instance - argv may contain deep link URL
-        }))
+        // On Linux this plugin claims a D-Bus well-known name, which by default
+        // is derived from the bundle identifier. D-Bus requires that no
+        // dot-separated element begins with a digit, and ours is
+        // `com.5060solutions.aria` — the `5060solutions` element is invalid, so
+        // the plugin's `.unwrap()` on the parsed name panicked at startup and
+        // neither the .deb nor the AppImage could launch. Supply a valid name
+        // explicitly rather than renaming the bundle, which would change the
+        // app's identity and invalidate macOS/Windows signing.
+        .plugin(
+            tauri_plugin_single_instance::Builder::new()
+                .callback(|_app, _argv, _cwd| {
+                    // Handle single instance - argv may contain deep link URL
+                })
+                .dbus_id("com.solutions5060.aria")
+                .build(),
+        )
         .manage(manager)
         .manage(audio_test_manager)
         .setup(move |app| {
