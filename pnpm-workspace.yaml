@@ -1,11 +1,9 @@
-# pnpm 11 no longer reads the "pnpm" field from package.json; settings live
-# here instead. Both packages below run install scripts for legitimate reasons
-# and were already approved via the old package.json setting:
-#   esbuild — fetches its platform binary
-#   sharp   — builds/links libvips bindings
+# pnpm 11 no longer reads the "pnpm" field from package.json; build approvals
+# live here. The pnpm version is pinned via "packageManager" in package.json so
+# CI and local dev agree — an earlier pnpm 9/11 split is what made a previous
+# version of this file fail CI with "packages field missing or empty".
 #
-# Deliberately no `packages:` key: this file carries settings only, so pnpm does
-# not treat the repo as a workspace root (an earlier workspace file broke CI).
+# esbuild fetches its platform binary; sharp builds/links libvips bindings.
 allowBuilds:
   esbuild: true
   sharp: true
