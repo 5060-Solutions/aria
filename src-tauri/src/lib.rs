@@ -1,3 +1,4 @@
+mod ai;
 mod audio_test;
 mod commands;
 mod sip;
@@ -175,6 +176,19 @@ pub fn run() {
             commands::start_audio_test,
             commands::stop_audio_test,
             commands::play_test_tone,
+            commands::ai_available,
+            commands::ai_models,
+            commands::ai_start_download,
+            commands::ai_download_progress,
+            commands::ai_cancel_download,
+            commands::ai_delete_model,
+            commands::ai_transcribe_recording,
+            commands::ai_insights,
+            commands::ai_insight,
+            commands::ai_delete_insight,
+            commands::ai_clear_insights,
+            commands::ai_auto_transcribe,
+            commands::ai_set_auto_transcribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aria");

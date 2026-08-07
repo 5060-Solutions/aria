@@ -256,5 +256,22 @@
     "bytes": "B",
     "kilobytes": "KB",
     "megabytes": "MB"
+  },
+  "transcription": {
+    "unsupported": "Diese Version wurde ohne Transkriptionsunterstützung erstellt.",
+    "intro": "Aufzeichnungen werden auf diesem Computer transkribiert. Nichts wird hochgeladen.",
+    "autoTitle": "Aufgezeichnete Anrufe transkribieren",
+    "autoNote": "Jede Aufzeichnung wird am Ende des Anrufs transkribiert.",
+    "autoNeedsModel": "Laden Sie unten ein Sprachmodell herunter, um dies zu aktivieren.",
+    "models": "Modelle",
+    "kindSpeech": "Transkription",
+    "kindSummaries": "Zusammenfassungen",
+    "download": "Herunterladen",
+    "cancel": "Abbrechen",
+    "transcripts": "Transkripte",
+    "noTranscripts": "Noch keine Transkripte.",
+    "noSpeech": "In diesem Anruf wurde keine Sprache erkannt.",
+    "narrowband": "Dieser Anruf wurde mit 8 kHz übertragen, daher ist das Transkript ungenauer.",
+    "close": "Schließen"
   }
 }

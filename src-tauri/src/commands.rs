@@ -1182,3 +1182,88 @@ mod tests {
         assert!(formatted.contains('.'));
     }
 }
+
+// ── On-device transcription ─────────────────────────────────────────────────
+//
+// Every one of these is `async` so Tauri runs it on a worker rather than the
+// UI thread: `ai_transcribe_recording` in particular blocks for as long as
+// inference takes, which is seconds to minutes.
+
+#[tauri::command]
+pub async fn ai_available() -> bool {
+    crate::ai::ai_available()
+}
+
+#[tauri::command]
+pub async fn ai_models() -> Result<Vec<crate::ai::AiModelDto>, String> {
+    crate::ai::models()
+}
+
+#[tauri::command]
+pub async fn ai_start_download(model_id: String) -> Result<(), String> {
+    crate::ai::start_download(&model_id)
+}
+
+#[tauri::command]
+pub async fn ai_download_progress(
+    model_id: String,
+) -> Result<Option<crate::ai::AiDownloadProgressDto>, String> {
+    crate::ai::download_progress(&model_id)
+}
+
+#[tauri::command]
+pub async fn ai_cancel_download(model_id: String) -> Result<(), String> {
+    crate::ai::cancel_download(&model_id)
+}
+
+#[tauri::command]
+pub async fn ai_delete_model(model_id: String) -> Result<u64, String> {
+    crate::ai::delete_model(&model_id)
+}
+
+/// Transcribe a call recording that is already on disk.
+#[tauri::command]
+pub async fn ai_transcribe_recording(
+    call_id: String,
+    wav_path: String,
+) -> Result<crate::ai::AiInsightDto, String> {
+    let path = std::path::PathBuf::from(wav_path);
+    // Inference is CPU-bound and blocking, so it must not sit on an async
+    // worker that other commands are waiting to use.
+    tokio::task::spawn_blocking(move || crate::ai::transcribe_recording(&call_id, &path))
+        .await
+        .map_err(|e| format!("transcription task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn ai_insights(
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<crate::ai::AiInsightSummaryDto>, String> {
+    crate::ai::insights(limit, offset)
+}
+
+#[tauri::command]
+pub async fn ai_insight(call_id: String) -> Result<Option<crate::ai::AiInsightDto>, String> {
+    crate::ai::insight(&call_id)
+}
+
+#[tauri::command]
+pub async fn ai_delete_insight(call_id: String) -> Result<bool, String> {
+    crate::ai::delete_insight(&call_id)
+}
+
+#[tauri::command]
+pub async fn ai_clear_insights() -> Result<u64, String> {
+    crate::ai::clear_insights()
+}
+
+#[tauri::command]
+pub async fn ai_auto_transcribe() -> bool {
+    crate::ai::auto_transcribe()
+}
+
+#[tauri::command]
+pub async fn ai_set_auto_transcribe(enabled: bool) -> Result<(), String> {
+    crate::ai::set_auto_transcribe(enabled)
+}

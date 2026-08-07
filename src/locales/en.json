@@ -270,5 +270,22 @@
     "bytes": "B",
     "kilobytes": "KB",
     "megabytes": "MB"
+  },
+  "transcription": {
+    "unsupported": "This build was made without transcription support.",
+    "intro": "Call recordings are transcribed on this computer. Nothing is uploaded.",
+    "autoTitle": "Transcribe recorded calls",
+    "autoNote": "Each recording is transcribed when the call ends.",
+    "autoNeedsModel": "Download a speech model below to turn this on.",
+    "models": "Models",
+    "kindSpeech": "Transcription",
+    "kindSummaries": "Summaries",
+    "download": "Download",
+    "cancel": "Cancel",
+    "transcripts": "Transcripts",
+    "noTranscripts": "No transcripts yet.",
+    "noSpeech": "No speech was recognised in this call.",
+    "narrowband": "This call was carried at 8 kHz, so the transcript is less accurate.",
+    "close": "Close"
   }
 }

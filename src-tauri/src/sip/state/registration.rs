@@ -566,6 +566,9 @@ mod tests {
             outbound_proxy: None,
             enabled: true,
             auto_record: false,
+            // The secure default, matching what a real account gets: these
+            // tests exercise registration, not certificate handling.
+            tls_insecure: false,
             srtp_mode: SrtpMode::Disabled,
             codecs: vec![],
         }

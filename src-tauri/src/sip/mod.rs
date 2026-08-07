@@ -1055,6 +1055,10 @@ impl SipManager {
                     if media.is_recording() {
                         if let Ok(Some(path)) = media.stop_recording() {
                             log::info!("Call recording saved: {}", path.display());
+                            // Runs on its own thread and only if the user asked
+                            // for it, so a slow transcription cannot hold up
+                            // tearing the call down.
+                            crate::ai::maybe_transcribe_in_background(call_id, &path);
                         }
                     }
                     media.stop();
@@ -1247,6 +1251,9 @@ impl SipManager {
         if let Some(media) = call.media() {
             let path = media.stop_recording()
                 .map_err(|e| format!("Failed to stop recording: {}", e))?;
+            if let Some(p) = path.as_ref() {
+                crate::ai::maybe_transcribe_in_background(call_id, p);
+            }
             Ok(path.map(|p| p.to_string_lossy().to_string()))
         } else {
             Err("No active media session".into())

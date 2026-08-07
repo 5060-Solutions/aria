@@ -256,5 +256,22 @@
     "bytes": "B",
     "kilobytes": "KB",
     "megabytes": "MB"
+  },
+  "transcription": {
+    "unsupported": "Esta versión se compiló sin compatibilidad con la transcripción.",
+    "intro": "Las grabaciones se transcriben en este equipo. No se sube nada.",
+    "autoTitle": "Transcribir llamadas grabadas",
+    "autoNote": "Cada grabación se transcribe al terminar la llamada.",
+    "autoNeedsModel": "Descargue un modelo de voz para activarlo.",
+    "models": "Modelos",
+    "kindSpeech": "Transcripción",
+    "kindSummaries": "Resúmenes",
+    "download": "Descargar",
+    "cancel": "Cancelar",
+    "transcripts": "Transcripciones",
+    "noTranscripts": "Todavía no hay transcripciones.",
+    "noSpeech": "No se reconoció voz en esta llamada.",
+    "narrowband": "Esta llamada se transmitió a 8 kHz, por lo que la transcripción es menos precisa.",
+    "close": "Cerrar"
   }
 }

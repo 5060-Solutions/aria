@@ -256,5 +256,22 @@
     "bytes": "o",
     "kilobytes": "Ko",
     "megabytes": "Mo"
+  },
+  "transcription": {
+    "unsupported": "Cette version a été compilée sans la prise en charge de la transcription.",
+    "intro": "Les enregistrements sont transcrits sur cet ordinateur. Rien n'est envoyé.",
+    "autoTitle": "Transcrire les appels enregistrés",
+    "autoNote": "Chaque enregistrement est transcrit à la fin de l'appel.",
+    "autoNeedsModel": "Téléchargez un modèle vocal pour l'activer.",
+    "models": "Modèles",
+    "kindSpeech": "Transcription",
+    "kindSummaries": "Résumés",
+    "download": "Télécharger",
+    "cancel": "Annuler",
+    "transcripts": "Transcriptions",
+    "noTranscripts": "Aucune transcription pour l'instant.",
+    "noSpeech": "Aucune parole reconnue dans cet appel.",
+    "narrowband": "Cet appel a été transmis à 8 kHz ; la transcription est donc moins précise.",
+    "close": "Fermer"
   }
 }

@@ -46,6 +46,8 @@ import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import ContactsIcon from "@mui/icons-material/Contacts";
+import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
+import { Transcription } from "./Transcription";
 import SyncIcon from "@mui/icons-material/Sync";
 import CloudIcon from "@mui/icons-material/Cloud";
 import PhoneIphoneIcon from "@mui/icons-material/PhoneIphone";
@@ -156,6 +158,7 @@ export function Settings() {
   const [selectedOutputDevice, setSelectedOutputDeviceLocal] = useState<string>(storeOutputDevice ?? "default");
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showContactsSettings, setShowContactsSettings] = useState(false);
+  const [showTranscription, setShowTranscription] = useState(false);
   const [micTesting, setMicTesting] = useState(false);
   const [tonePlaying, setTonePlaying] = useState(false);
   const [recordingsDir, setRecordingsDir] = useState<string>("");
@@ -1149,6 +1152,33 @@ export function Settings() {
               <Typography variant="caption" sx={{ display: "block", mt: 1, color: "text.disabled" }}>
                 {t("settings.contactsSyncNote")}
               </Typography>
+            </Box>
+          </Collapse>
+
+          {/* On-device transcription */}
+          <ListItemButton
+            onClick={() => setShowTranscription(!showTranscription)}
+            sx={{ borderRadius: "16px", mb: 0.5 }}
+          >
+            <ListItemIcon sx={{ minWidth: 40 }}>
+              <RecordVoiceOverIcon sx={{ fontSize: 20 }} />
+            </ListItemIcon>
+            <ListItemText
+              primary={t("transcription.autoTitle")}
+              secondary={t("transcription.intro")}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: { sx: { fontSize: "0.7rem" } },
+              }}
+            />
+            {showTranscription ? <ExpandLessIcon sx={{ fontSize: 20 }} /> : <ExpandMoreIcon sx={{ fontSize: 20 }} />}
+          </ListItemButton>
+
+          {/* mountOnEnter: opening the panel is what probes for AI support and
+              lists models, so it must not run on every Settings render. */}
+          <Collapse in={showTranscription} mountOnEnter unmountOnExit>
+            <Box sx={{ px: 2, pb: 2 }}>
+              <Transcription />
             </Box>
           </Collapse>
 
