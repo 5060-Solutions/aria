@@ -1487,7 +1487,7 @@ impl SipManager {
             let mut remaining = Vec::new();
             let mut ended = false;
             
-            for (_aid, account) in s.accounts.iter_mut() {
+            for account in s.accounts.values_mut() {
                 if let Some(call_ids) = account.conferences.get_mut(conference_id) {
                     call_ids.retain(|id| id != call_id);
                     remaining = call_ids.clone();
@@ -1545,7 +1545,7 @@ impl SipManager {
         let call_ids_to_hangup = {
             let s = self.state.read().await;
             let mut call_ids = Vec::new();
-            for (_aid, account) in s.accounts.iter() {
+            for account in s.accounts.values() {
                 if let Some(ids) = account.conferences.get(conference_id) {
                     call_ids = ids.clone();
                     break;
@@ -1564,7 +1564,7 @@ impl SipManager {
         // Remove conference
         {
             let mut s = self.state.write().await;
-            for (_aid, account) in s.accounts.iter_mut() {
+            for account in s.accounts.values_mut() {
                 account.conferences.remove(conference_id);
             }
         }
