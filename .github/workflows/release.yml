@@ -72,6 +72,13 @@ jobs:
       - name: Install meson and ninja
         run: pip install meson ninja
 
+      # Without this meson finds mingw's g++ first, and abseil-cpp does not
+      # compile against mingw's windows.foundation.h. MSVC is a first-class
+      # abseil target, so point meson at it.
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install frontend dependencies
         run: pnpm install
 
@@ -201,6 +208,13 @@ jobs:
 
       - name: Install meson and ninja
         run: pip install meson ninja
+
+      # Without this meson finds mingw's g++ first, and abseil-cpp does not
+      # compile against mingw's windows.foundation.h. MSVC is a first-class
+      # abseil target, so point meson at it.
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install frontend dependencies
         run: pnpm install
