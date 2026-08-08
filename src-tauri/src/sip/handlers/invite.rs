@@ -248,10 +248,20 @@ pub async fn handle_invite_response(
                 let negotiated_codec = codec::negotiate_codec(sdp);
                 log::info!("Negotiated codec: {:?}", negotiated_codec);
 
-                // Get preferred audio devices
-                let (input_dev, output_dev) = {
+                // Get preferred audio devices, and whether this account asked
+                // for encryption. srtp_mode was only ever consulted when
+                // *offering* a crypto line; nothing checked it against what came
+                // back, so a peer could strip the line and get cleartext.
+                let (input_dev, output_dev, srtp_required) = {
                     let s = state.read().await;
-                    (s.preferred_input_device.clone(), s.preferred_output_device.clone())
+                    let required = s
+                        .get_account(&account_id)
+                        .is_some_and(|a| a.config.srtp_mode != crate::sip::account::SrtpMode::Disabled);
+                    (
+                        s.preferred_input_device.clone(),
+                        s.preferred_output_device.clone(),
+                        required,
+                    )
                 };
 
                 // Start media session with SRTP if both keys are available
@@ -276,19 +286,45 @@ pub async fn handle_invite_response(
                             }
                             (Err(e), _) | (_, Err(e)) => {
                                 log::error!("Failed to create SRTP context: {:?}", e);
-                                media::MediaSession::start_with_devices(
-                                    local_rtp_port, remote_rtp, negotiated_codec,
-                                    input_dev.clone(), output_dev.clone(),
-                                ).await
+                                if srtp_required {
+                                    Err(rtp_engine::Error::Srtp(
+                                        "could not build the SRTP context and this \
+                                         account requires SRTP"
+                                            .to_string(),
+                                    ))
+                                } else {
+                                    media::MediaSession::start_with_devices(
+                                        local_rtp_port, remote_rtp, negotiated_codec,
+                                        input_dev.clone(), output_dev.clone(),
+                                    ).await
+                                }
                             }
                         }
                     }
                     _ => {
-                        log::info!("Starting plain RTP media session (no SRTP keys)");
-                        media::MediaSession::start_with_devices(
-                            local_rtp_port, remote_rtp, negotiated_codec,
-                            input_dev, output_dev,
-                        ).await
+                        // We offered a crypto line and the answer had none, or
+                        // vice versa. If this account asked for SRTP, that is a
+                        // downgrade, and continuing in the clear is the one
+                        // outcome the user cannot detect — the call screen would
+                        // still be showing whatever the configuration says.
+                        if srtp_required {
+                            log::error!(
+                                "SRTP is configured for this account but the peer \
+                                 answered without usable key material; refusing to \
+                                 place the call in cleartext"
+                            );
+                            Err(rtp_engine::Error::Srtp(
+                                "the peer answered without usable key material and \
+                                 this account requires SRTP"
+                                    .to_string(),
+                            ))
+                        } else {
+                            log::info!("Starting plain RTP media session (no SRTP keys)");
+                            media::MediaSession::start_with_devices(
+                                local_rtp_port, remote_rtp, negotiated_codec,
+                                input_dev, output_dev,
+                            ).await
+                        }
                     }
                 };
 
