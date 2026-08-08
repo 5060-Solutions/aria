@@ -178,3 +178,29 @@ export interface AudioDevice {
   kind: "input" | "output";
   isDefault: boolean;
 }
+
+/** What the user asked the audio processor to do. */
+export interface VoiceProcessingSettings {
+  /** Subtract the speaker signal from the microphone signal. */
+  echoCancellation: boolean;
+  /** Attenuate steady background noise. */
+  noiseSuppression: boolean;
+  /** Normalise a microphone that is too quiet or too loud. */
+  gainControl: boolean;
+}
+
+/** What the backend reports back, including whether any of it is real. */
+export interface VoiceProcessingStatus {
+  settings: VoiceProcessingSettings;
+  /**
+   * Whether this build can do any of it. False means the switches must be
+   * disabled rather than shown as on.
+   */
+  available: boolean;
+  /**
+   * Whether it is running on the call in progress; null when there is no call.
+   * Can be false while `settings.echoCancellation` is true — most often
+   * because the microphone and speaker run at different sample rates.
+   */
+  activeOnCall: boolean | null;
+}

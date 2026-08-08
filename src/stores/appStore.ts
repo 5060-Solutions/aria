@@ -12,11 +12,36 @@ import type {
   AudioDevice,
   Conference,
   PresenceState,
+  VoiceProcessingSettings,
 } from "../types/sip";
 import { storeCredential, getCredential, deleteCredential } from "../utils/credentials";
 import { log } from "../utils/log";
 
 type View = "dialer" | "history" | "contacts" | "settings" | "diagnostics";
+
+/**
+ * Echo cancellation and noise suppression default to on: a desktop softphone
+ * on laptop speakers echoes badly without them, and that is the setup most
+ * users start from. Anyone on a headset who prefers the raw signal can turn
+ * them off.
+ */
+const VOICE_PROCESSING_DEFAULT: VoiceProcessingSettings = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  gainControl: true,
+};
+
+function readVoiceProcessing(): VoiceProcessingSettings {
+  const raw = localStorage.getItem("aria_voice_processing");
+  if (!raw) return VOICE_PROCESSING_DEFAULT;
+  try {
+    // Spread over the default so a stored value written by an older build,
+    // missing a key, does not leave that key undefined.
+    return { ...VOICE_PROCESSING_DEFAULT, ...JSON.parse(raw) };
+  } catch {
+    return VOICE_PROCESSING_DEFAULT;
+  }
+}
 
 interface AppState {
   // Theme
@@ -118,6 +143,12 @@ interface AppState {
   setAudioDevices: (devices: AudioDevice[]) => void;
   setSelectedInputDevice: (id: string) => void;
   setSelectedOutputDevice: (id: string) => void;
+
+  /// Echo cancellation / noise suppression preference. Applies to the next
+  /// call, not the one in progress — swapping the canceller mid-call discards
+  /// the echo path it has adapted to, which is audible.
+  voiceProcessing: VoiceProcessingSettings;
+  setVoiceProcessing: (settings: VoiceProcessingSettings) => void;
 
   // Recordings
   recordingsDirectory: string | null;
@@ -587,6 +618,12 @@ export const useAppStore = create<AppState>((set, get) => {
         localStorage.removeItem("aria_output_device");
       }
       set({ selectedOutputDevice: id });
+    },
+
+    voiceProcessing: readVoiceProcessing(),
+    setVoiceProcessing: (voiceProcessing) => {
+      localStorage.setItem("aria_voice_processing", JSON.stringify(voiceProcessing));
+      set({ voiceProcessing });
     },
 
     // Recordings

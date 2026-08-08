@@ -147,6 +147,8 @@ pub fn run() {
             commands::process_pending_resubscriptions,
             commands::get_audio_devices,
             commands::set_audio_devices,
+            commands::get_voice_processing,
+            commands::set_voice_processing,
             commands::open_debug_window,
             commands::get_sip_diagnostics,
             commands::clear_sip_diagnostics,

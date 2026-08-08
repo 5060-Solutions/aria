@@ -550,6 +550,67 @@ pub async fn get_audio_devices() -> Result<AudioDevicesResponse, String> {
     })
 }
 
+/// Echo cancellation / noise suppression settings, as the UI sees them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceProcessingSettings {
+    /// Subtract the speaker signal from the microphone signal.
+    pub echo_cancellation: bool,
+    /// Attenuate steady background noise.
+    pub noise_suppression: bool,
+    /// Normalise a microphone that is too quiet or too loud.
+    pub gain_control: bool,
+}
+
+/// What the UI needs to render the audio processing controls honestly.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceProcessingStatus {
+    /// What the user asked for.
+    pub settings: VoiceProcessingSettings,
+    /// Whether this build can do any of it. False means the switches must be
+    /// disabled rather than shown as on.
+    pub available: bool,
+    /// Whether it is running on the call in progress. `None` when there is no
+    /// call. This can be false while `settings.echo_cancellation` is true —
+    /// most often because the microphone and speaker run at different sample
+    /// rates — and the UI should say so rather than imply it is working.
+    pub active_on_call: Option<bool>,
+}
+
+#[tauri::command]
+pub async fn set_voice_processing(
+    manager: State<'_, SipManager>,
+    settings: VoiceProcessingSettings,
+) -> Result<VoiceProcessingStatus, String> {
+    rtp_engine::audio_proc::set_default_config(rtp_engine::audio_proc::VoiceProcessorConfig {
+        echo_cancellation: settings.echo_cancellation,
+        noise_suppression: settings.noise_suppression,
+        noise_level: rtp_engine::audio_proc::NoiseLevel::Moderate,
+        gain_control: settings.gain_control,
+    });
+    // Deliberately not applied to a call already in progress: swapping the
+    // canceller mid-call throws away the echo path it has adapted to, which is
+    // audible. It takes effect on the next call.
+    get_voice_processing(manager).await
+}
+
+#[tauri::command]
+pub async fn get_voice_processing(
+    manager: State<'_, SipManager>,
+) -> Result<VoiceProcessingStatus, String> {
+    let config = rtp_engine::audio_proc::default_config();
+    Ok(VoiceProcessingStatus {
+        settings: VoiceProcessingSettings {
+            echo_cancellation: config.echo_cancellation,
+            noise_suppression: config.noise_suppression,
+            gain_control: config.gain_control,
+        },
+        available: rtp_engine::audio_proc::is_available(),
+        active_on_call: manager.voice_processing_active().await,
+    })
+}
+
 #[tauri::command]
 pub async fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
     // Check if window already exists

@@ -52,7 +52,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 rustls-pki-types = "1"
 
 # RTP media engine (local path for development, switch to git for release)
-rtp-engine = { git = "https://github.com/5060-Solutions/rtp-engine.git", features = ["device", "srtp", "opus"] }
+rtp-engine = { git = "https://github.com/5060-Solutions/rtp-engine.git", features = ["device", "srtp", "opus", "audio-proc"] }
 
 # Filesystem utilities (for recordings directory)
 dirs = "6"

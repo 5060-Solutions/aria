@@ -1631,6 +1631,18 @@ impl SipManager {
             .find_map(|c| c.media().map(|m| m.get_stats()))
     }
 
+    /// Whether echo cancellation is actually running on the call in progress.
+    ///
+    /// `None` when there is no call. `Some(false)` while the setting is on
+    /// means it could not start — usually because the microphone and speaker
+    /// report different sample rates; the engine log says which.
+    pub async fn voice_processing_active(&self) -> Option<bool> {
+        let s = self.state.read().await;
+        s.all_active_calls()
+            .iter()
+            .find_map(|c| c.media().map(media::MediaSession::voice_processing_active))
+    }
+
     /// Get live audio levels (TX mic, RX speaker) for the active call.
     pub async fn get_audio_levels(&self) -> Option<(f32, f32)> {
         let s = self.state.read().await;

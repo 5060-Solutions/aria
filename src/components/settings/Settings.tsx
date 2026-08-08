@@ -74,7 +74,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore, saveAccountPassword, loadAccountPassword, deleteAccountPassword, getAccountWithPassword } from "../../stores/appStore";
 import { useUpdateStore } from "../../stores/updateStore";
 import { sipRegister, sipUnregisterAccount, sipSetActiveAccount } from "../../hooks/useSip";
-import type { SipAccount, TransportType, CodecConfig } from "../../types/sip";
+import type {
+  SipAccount,
+  TransportType,
+  CodecConfig,
+  VoiceProcessingSettings,
+  VoiceProcessingStatus,
+} from "../../types/sip";
 import { DEFAULT_CODECS, CODEC_INFO } from "../../types/sip";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
@@ -152,6 +158,9 @@ export function Settings() {
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
   const storeInputDevice = useAppStore((s) => s.selectedInputDevice);
   const storeOutputDevice = useAppStore((s) => s.selectedOutputDevice);
+  const voiceProcessing = useAppStore((s) => s.voiceProcessing);
+  const setVoiceProcessing = useAppStore((s) => s.setVoiceProcessing);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceProcessingStatus | null>(null);
   const storeSetInputDevice = useAppStore((s) => s.setSelectedInputDevice);
   const storeSetOutputDevice = useAppStore((s) => s.setSelectedOutputDevice);
   const [selectedInputDevice, setSelectedInputDeviceLocal] = useState<string>(storeInputDevice ?? "default");
@@ -187,6 +196,23 @@ export function Settings() {
     s.activeCalls.some((c) => c.state !== "idle" && c.state !== "ended")
   );
 
+  // Until the backend answers, assume processing works. Rendering the switches
+  // as unavailable and then flipping them on would be worse than the reverse.
+  const voiceSupported = voiceStatus?.available ?? true;
+
+  const handleVoiceProcessingChange = (
+    key: keyof VoiceProcessingSettings,
+    enabled: boolean
+  ) => {
+    const next = { ...voiceProcessing, [key]: enabled };
+    setVoiceProcessing(next);
+    // The backend echoes back what it will actually do, which is not always
+    // what was asked — keep the warnings below in step with reality.
+    invoke<VoiceProcessingStatus>("set_voice_processing", { settings: next })
+      .then(setVoiceStatus)
+      .catch((e) => log.error("Failed to apply voice processing settings:", e));
+  };
+
   // Load audio devices and recordings dir on mount
   useEffect(() => {
     invoke<AudioDevices>("get_audio_devices")
@@ -203,6 +229,10 @@ export function Settings() {
         }
       })
       .catch((e) => log.error("Failed to load audio devices:", e));
+
+    invoke<VoiceProcessingStatus>("get_voice_processing")
+      .then(setVoiceStatus)
+      .catch((e) => log.error("Failed to load voice processing status:", e));
 
     getDefaultRecordingsDir()
       .then(setRecordingsDir)
@@ -1043,6 +1073,57 @@ export function Settings() {
                       {tonePlaying ? "..." : t("common.test")}
                     </Button>
                   </Box>
+
+                  <Divider sx={{ my: 2 }} />
+
+                  {([
+                    ["echoCancellation", "settings.echoCancellation", "settings.echoCancellationHint"],
+                    ["noiseSuppression", "settings.noiseSuppression", "settings.noiseSuppressionHint"],
+                    ["gainControl", "settings.gainControl", "settings.gainControlHint"],
+                  ] as const).map(([key, label, hint]) => (
+                    <Box
+                      key={key}
+                      sx={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        py: 0.5,
+                      }}
+                    >
+                      <Box sx={{ pr: 2 }}>
+                        <Typography variant="body2">{t(label)}</Typography>
+                        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                          {t(hint)}
+                        </Typography>
+                      </Box>
+                      <Switch
+                        size="small"
+                        checked={voiceProcessing[key] && voiceSupported}
+                        disabled={!voiceSupported}
+                        onChange={(e) =>
+                          handleVoiceProcessingChange(key, e.target.checked)
+                        }
+                      />
+                    </Box>
+                  ))}
+
+                  {/* Say what is actually happening rather than implying the
+                      switches above are always in effect. */}
+                  {!voiceSupported && (
+                    <Typography variant="caption" sx={{ display: "block", mt: 1, color: "warning.main" }}>
+                      {t("settings.voiceProcessingUnavailable")}
+                    </Typography>
+                  )}
+                  {voiceSupported && voiceStatus?.activeOnCall === false && voiceProcessing.echoCancellation && (
+                    <Typography variant="caption" sx={{ display: "block", mt: 1, color: "warning.main" }}>
+                      {t("settings.voiceProcessingInactive")}
+                    </Typography>
+                  )}
+                  {voiceSupported && (
+                    <Typography variant="caption" sx={{ display: "block", mt: 1, color: "text.secondary" }}>
+                      {t("settings.voiceProcessingNote")}
+                    </Typography>
+                  )}
 
                   <Typography variant="caption" sx={{ display: "block", mt: 1.5, color: "text.secondary" }}>
                     {t("settings.audioNote")}
