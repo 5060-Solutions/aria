@@ -119,6 +119,15 @@ export interface ActiveCall {
   recordingPath?: string;
   /** Conference ID if this call is part of a conference */
   conferenceId?: string;
+  /**
+   * Whether this call's media is actually encrypted, as negotiated.
+   *
+   * Not the account's srtpMode: that is a preference, and the indicator used
+   * to read it directly — so it showed a padlock whenever SRTP was configured,
+   * including for DTLS (unimplemented) and whenever the far end answered
+   * without a crypto line.
+   */
+  srtpActive?: boolean;
   /** SIP Call-ID header (for linking to PCAP/diagnostic traces) */
   sipCallId?: string;
 }

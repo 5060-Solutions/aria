@@ -19,7 +19,13 @@ const stateMessageKeys: Record<string, string> = {
   ended: "call.ended",
 };
 
-function EncryptionIndicator({ srtpMode }: { srtpMode: SrtpMode }) {
+function EncryptionIndicator({
+  srtpMode,
+  srtpActive,
+}: {
+  srtpMode: SrtpMode;
+  srtpActive: boolean;
+}) {
   const { t } = useTranslation();
   const theme = useTheme();
 
@@ -32,7 +38,10 @@ function EncryptionIndicator({ srtpMode }: { srtpMode: SrtpMode }) {
   // that strips the crypto line from its answer yields plain RTP while this
   // says SDES. Surfacing the negotiated state needs the backend to report it
   // per call; until then this at least stops claiming a mode that cannot work.
-  const isEncrypted = srtpMode === "sdes";
+  // What was negotiated, not what was configured. SRTP is preferred, not
+  // required, so a call can be perfectly fine and unencrypted — the indicator
+  // just has to say so rather than reading the setting back to the user.
+  const isEncrypted = srtpActive;
   const label = isEncrypted
     ? t("call.encryptionSdes")
     : t("call.notEncrypted");
@@ -186,7 +195,10 @@ export function CallScreen() {
         </Typography>
 
         {isConnected && (
-          <EncryptionIndicator srtpMode={accountSrtpMode} />
+          <EncryptionIndicator
+            srtpMode={accountSrtpMode}
+            srtpActive={activeCall.srtpActive ?? false}
+          />
         )}
 
         {activeCall.recording && (

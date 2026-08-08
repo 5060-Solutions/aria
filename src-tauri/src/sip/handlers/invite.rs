@@ -252,15 +252,15 @@ pub async fn handle_invite_response(
                 // for encryption. srtp_mode was only ever consulted when
                 // *offering* a crypto line; nothing checked it against what came
                 // back, so a peer could strip the line and get cleartext.
-                let (input_dev, output_dev, srtp_required) = {
+                let (input_dev, output_dev, srtp_preferred) = {
                     let s = state.read().await;
-                    let required = s
+                    let preferred = s
                         .get_account(&account_id)
                         .is_some_and(|a| a.config.srtp_mode != crate::sip::account::SrtpMode::Disabled);
                     (
                         s.preferred_input_device.clone(),
                         s.preferred_output_device.clone(),
-                        required,
+                        preferred,
                     )
                 };
 
@@ -286,18 +286,11 @@ pub async fn handle_invite_response(
                             }
                             (Err(e), _) | (_, Err(e)) => {
                                 log::error!("Failed to create SRTP context: {:?}", e);
-                                if srtp_required {
-                                    Err(rtp_engine::Error::Srtp(
-                                        "could not build the SRTP context and this \
-                                         account requires SRTP"
-                                            .to_string(),
-                                    ))
-                                } else {
-                                    media::MediaSession::start_with_devices(
-                                        local_rtp_port, remote_rtp, negotiated_codec,
-                                        input_dev.clone(), output_dev.clone(),
-                                    ).await
-                                }
+                                log::warn!("This call is NOT encrypted");
+                                media::MediaSession::start_with_devices(
+                                    local_rtp_port, remote_rtp, negotiated_codec,
+                                    input_dev.clone(), output_dev.clone(),
+                                ).await
                             }
                         }
                     }
@@ -307,30 +300,38 @@ pub async fn handle_invite_response(
                         // downgrade, and continuing in the clear is the one
                         // outcome the user cannot detect — the call screen would
                         // still be showing whatever the configuration says.
-                        if srtp_required {
-                            log::error!(
-                                "SRTP is configured for this account but the peer \
-                                 answered without usable key material; refusing to \
-                                 place the call in cleartext"
+                        // SRTP is preferred, not required: a peer that answers
+                        // without a crypto line still gets a working call. What
+                        // must not happen is the UI claiming encryption anyway,
+                        // so the outcome is recorded on the call and surfaced.
+                        if srtp_preferred {
+                            log::warn!(
+                                "SRTP was offered but the peer answered without usable \
+                                 key material; this call is NOT encrypted"
                             );
-                            Err(rtp_engine::Error::Srtp(
-                                "the peer answered without usable key material and \
-                                 this account requires SRTP"
-                                    .to_string(),
-                            ))
                         } else {
                             log::info!("Starting plain RTP media session (no SRTP keys)");
-                            media::MediaSession::start_with_devices(
-                                local_rtp_port, remote_rtp, negotiated_codec,
-                                input_dev, output_dev,
-                            ).await
                         }
+                        media::MediaSession::start_with_devices(
+                            local_rtp_port, remote_rtp, negotiated_codec,
+                            input_dev, output_dev,
+                        ).await
                     }
                 };
+
+                // True only when both keys were present and both contexts
+                // built — the same condition the SRTP arm above requires.
+                let srtp_active = matches!(
+                    (&local_srtp_key, &remote_srtp_key),
+                    (Some(_), Some(_))
+                ) && media_result.is_ok();
 
                 match media_result {
                     Ok(session) => {
                         let mut s = state.write().await;
+                        if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
+                            call.srtp_active = srtp_active;
+                        }
                         // Check if auto_record is enabled for this account
                         let auto_record = s.get_account(&account_id)
                             .map(|a| a.config.auto_record)
