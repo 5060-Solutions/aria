@@ -130,7 +130,12 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Aria ${{ github.ref_name }}'
           releaseBody: 'See the assets below to download and install Aria.'
-          releaseDraft: false
+          # Draft: every matrix job publishes to the same release, and
+          # tauri-action writes the latest.json the auto-updater reads. A
+          # job failing after others succeeded would otherwise point every
+          # installed client at a release missing its platform's artifact.
+          # Publish by hand once all the artifacts are present.
+          releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
 
@@ -254,6 +259,11 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Aria ${{ github.ref_name }}'
           releaseBody: 'See the assets below to download and install Aria.'
-          releaseDraft: false
+          # Draft: every matrix job publishes to the same release, and
+          # tauri-action writes the latest.json the auto-updater reads. A
+          # job failing after others succeeded would otherwise point every
+          # installed client at a release missing its platform's artifact.
+          # Publish by hand once all the artifacts are present.
+          releaseDraft: true
           prerelease: false
           args: --target universal-apple-darwin
