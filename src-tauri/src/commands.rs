@@ -1,3 +1,34 @@
+
+/// Resolve a caller-supplied path and confirm it is inside `base`.
+///
+/// The webview is not trusted: a compromised renderer can invoke any command
+/// with any argument, and these paths reach `std::fs::write` and
+/// `std::process::Command`. `open` on macOS launches an arbitrary `.app`, so an
+/// unconfined path turned an XSS into code execution.
+///
+/// Canonicalizes both sides first — comparing the raw strings would be
+/// defeated by `..`, a symlink, or a `.` component.
+fn confine_to(base: &std::path::Path, candidate: &str) -> Result<std::path::PathBuf, String> {
+    let base = base
+        .canonicalize()
+        .map_err(|e| format!("Recordings directory unavailable: {e}"))?;
+    let resolved = std::path::Path::new(candidate)
+        .canonicalize()
+        .map_err(|_| "Recording file not found".to_string())?;
+    if !resolved.starts_with(&base) {
+        return Err("Path is outside the recordings directory".to_string());
+    }
+    Ok(resolved)
+}
+
+/// The one directory recordings may be read from or written to.
+fn recordings_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|d| d.join("recordings"))
+        .map_err(|e| format!("Failed to get app data dir: {e}"))
+}
+
 use serde::Deserialize;
 use tauri::{Manager, State};
 
@@ -411,11 +442,9 @@ pub async fn open_recordings_folder(
 }
 
 #[tauri::command]
-pub async fn play_recording(path: String) -> Result<(), String> {
-    let path = std::path::Path::new(&path);
-    if !path.exists() {
-        return Err("Recording file not found".into());
-    }
+pub async fn play_recording(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let path = confine_to(&recordings_root(&app)?, &path)?;
+    let path = path.as_path();
     
     // Open with default audio player
     #[cfg(target_os = "macos")]
@@ -427,8 +456,12 @@ pub async fn play_recording(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &path.to_string_lossy()])
+        // Not `cmd /C start`: cmd re-parses its command line, so a path
+        // containing & or | would be command injection. rundll32 takes the
+        // path as a single argument with no shell in between.
+        std::process::Command::new("rundll32.exe")
+            .arg("url.dll,FileProtocolHandler")
+            .arg(path.as_os_str())
             .spawn()
             .map_err(|e| format!("Failed to play recording: {}", e))?;
     }

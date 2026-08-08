@@ -23,11 +23,18 @@ function EncryptionIndicator({ srtpMode }: { srtpMode: SrtpMode }) {
   const { t } = useTranslation();
   const theme = useTheme();
 
-  const isEncrypted = srtpMode !== "disabled";
+  // Only SDES actually encrypts today. DTLS-SRTP is not implemented — the
+  // media builder logs "falling back to plain RTP" and returns no keys — so
+  // treating it as encrypted put a padlock over a cleartext call, which is
+  // worse than showing nothing.
+  //
+  // This still reflects configuration rather than what was negotiated: a PBX
+  // that strips the crypto line from its answer yields plain RTP while this
+  // says SDES. Surfacing the negotiated state needs the backend to report it
+  // per call; until then this at least stops claiming a mode that cannot work.
+  const isEncrypted = srtpMode === "sdes";
   const label = isEncrypted
-    ? srtpMode === "dtls"
-      ? t("call.encryptionDtls")
-      : t("call.encryptionSdes")
+    ? t("call.encryptionSdes")
     : t("call.notEncrypted");
 
   return (
