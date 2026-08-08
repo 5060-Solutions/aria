@@ -79,6 +79,15 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # Windows still enforces MAX_PATH (260) for the compiler, and the default
+      # build path is far too deep for the bundled WebRTC sources: the longest
+      # abseil file lands at ~302 characters and fails with C1083, while its
+      # neighbours compile. Debug builds fit at ~204, which is why this only
+      # bites the release target triple. Build somewhere short instead.
+      - name: Shorten the build path
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "CARGO_TARGET_DIR=C:/t" >> $env:GITHUB_ENV
 
       - name: Install frontend dependencies
         run: pnpm install
@@ -149,7 +158,7 @@ jobs:
           endpoint: https://wcus.codesigning.azure.net/
           trusted-signing-account-name: FiftySixty-Solutions
           certificate-profile-name: Aria-Softphone
-          files-folder: src-tauri/target/x86_64-pc-windows-msvc/release/bundle
+          files-folder: ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-msvc/release/bundle
           files-folder-filter: exe,msi
           files-folder-depth: 3
           file-digest: SHA256
@@ -163,7 +172,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${{ github.ref_name }}"
-          bundle="src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          bundle="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/bundle"
           for f in "$bundle"/nsis/*.exe "$bundle"/msi/*.msi; do
             [ -f "$f" ] || continue
             echo "Uploading signed: $f"
