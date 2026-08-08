@@ -79,6 +79,17 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
+      # WebRTC uses designated initializers, which GCC and Clang accept under
+      # C++17 as an extension but MSVC rejects without /std:c++20. The vendored
+      # meson.build hardcodes cpp_std=c++17 and the -sys crate's build script
+      # takes no meson options, so CXXFLAGS is the only lever -- MSVC honours
+      # the last /std: flag on the command line, and meson puts environment
+      # flags after its own.
+      - name: Force C++20 for the audio processing build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "CXXFLAGS=/std:c++20" >> $env:GITHUB_ENV
+
       - name: Install frontend dependencies
         run: pnpm install
 
@@ -215,6 +226,17 @@ jobs:
       - name: Set up MSVC
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+
+      # WebRTC uses designated initializers, which GCC and Clang accept under
+      # C++17 as an extension but MSVC rejects without /std:c++20. The vendored
+      # meson.build hardcodes cpp_std=c++17 and the -sys crate's build script
+      # takes no meson options, so CXXFLAGS is the only lever -- MSVC honours
+      # the last /std: flag on the command line, and meson puts environment
+      # flags after its own.
+      - name: Force C++20 for the audio processing build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "CXXFLAGS=/std:c++20" >> $env:GITHUB_ENV
 
       - name: Install frontend dependencies
         run: pnpm install
