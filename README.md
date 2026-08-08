@@ -76,6 +76,7 @@ No Electron bloat. No WebRTC dependency. Pure Rust SIP stack with native audio.
 - [x] RTP media handling with RTCP sender reports
 - [x] SRTP encryption (AES-128-CM + HMAC-SHA1-80)
 - [x] Native audio I/O via platform APIs
+- [x] Echo cancellation, noise suppression and gain control (WebRTC APM)
 - [x] ICE-lite (host + server reflexive candidates)
 
 ### User Interface
@@ -177,9 +178,13 @@ softphone/
 - [Node.js](https://nodejs.org/) 20+
 - [pnpm](https://pnpm.io/) 9+
 - [Rust](https://rustup.rs/) (stable)
+- `meson` and `ninja` — the echo canceller builds WebRTC's audio processing
+  module from C++ source
 - Platform build tools:
   - **macOS:** Xcode Command Line Tools
-  - **Windows:** Visual Studio Build Tools (C++ workload)
+  - **Windows:** Visual Studio Build Tools (C++ workload). Build from a
+    developer prompt, or meson picks up mingw's `g++` and abseil fails to
+    compile.
   - **Linux:** `build-essential`, `libwebkit2gtk-4.1-dev`, `libasound2-dev`
 
 ### Setup
