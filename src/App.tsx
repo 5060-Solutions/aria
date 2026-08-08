@@ -20,8 +20,6 @@ function MainApp() {
   const setupComplete = useAppStore((s) => s.setupComplete);
   const setDialInput = useAppStore((s) => s.setDialInput);
   const setCurrentView = useAppStore((s) => s.setCurrentView);
-  const voiceProcessing = useAppStore((s) => s.voiceProcessing);
-
   useSipEvents();
   useAutoRegister();
   useNetworkMonitor();
@@ -30,11 +28,15 @@ function MainApp() {
   // process, so the saved preference has to be pushed down on every launch.
   // Without this, echo cancellation would silently be off until the user
   // opened Settings and toggled something.
+  //
+  // Read imperatively rather than subscribing: later changes are pushed by the
+  // Settings screen itself, and subscribing here would send each one twice.
   useEffect(() => {
-    invoke("set_voice_processing", { settings: voiceProcessing }).catch((e) => {
+    const settings = useAppStore.getState().voiceProcessing;
+    invoke("set_voice_processing", { settings }).catch((e) => {
       log.warn("[Audio] Could not apply voice processing settings:", e);
     });
-  }, [voiceProcessing]);
+  }, []);
 
   // Handle tel: and sip: deep links
   useEffect(() => {
