@@ -2850,6 +2850,7 @@ dependencies = [
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.153"
+source = "git+https://github.com/5060-Solutions/aria-vendor.git#8fe72142f8e13182b3abd26b2fe73abfb3908b2c"
 dependencies = [
  "bindgen",
  "cc",
@@ -6328,6 +6329,7 @@ dependencies = [
 [[package]]
 name = "whisper-rs-sys"
 version = "0.15.0"
+source = "git+https://github.com/5060-Solutions/aria-vendor.git#8fe72142f8e13182b3abd26b2fe73abfb3908b2c"
 dependencies = [
  "bindgen",
  "cfg-if",
