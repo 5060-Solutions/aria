@@ -212,6 +212,7 @@ dependencies = [
 [[package]]
 name = "aria-ai-core"
 version = "0.1.0"
+source = "git+https://github.com/5060-Solutions/aria-ai-core.git#684a67f593a28f961ba6581bea417e4b81da6e8b"
 dependencies = [
  "aes-gcm",
  "encoding_rs",

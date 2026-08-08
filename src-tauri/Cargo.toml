@@ -59,7 +59,7 @@ dirs = "6"
 
 # On-device transcription. Optional: a build without `ai` keeps the plain
 # softphone, and the commands report it as unavailable at runtime.
-aria-ai-core = { path = "../../aria-ai-core", optional = true, default-features = false, features = [
+aria-ai-core = { git = "https://github.com/5060-Solutions/aria-ai-core.git", optional = true, default-features = false, features = [
     "net",
     "disk-space",
     "insights",
