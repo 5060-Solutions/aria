@@ -6311,7 +6311,7 @@ checksum = "142cbc598e3dcf1a71e90109b6169ca9ce28ec1910bf74eef30f3c420ce850a4"
 [[package]]
 name = "webrtc-audio-processing-sys"
 version = "2.1.0"
-source = "git+https://github.com/5060-Solutions/webrtc-audio-processing.git?branch=msvc-support#19e3cefb2a931d50d8b962a860ee646877f5fe25"
+source = "git+https://github.com/5060-Solutions/webrtc-audio-processing.git?branch=msvc-support#7d92d1d60f4320f8cb9d20826eb24619eb7b3c69"
 dependencies = [
  "anyhow",
  "autotools",
