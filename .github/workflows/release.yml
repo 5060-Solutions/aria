@@ -60,6 +60,18 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v4
 
+      # rtp-engine's audio-proc feature builds WebRTC's audio processing module
+      # from C++ source, which uses meson and ninja. Installed via pip rather
+      # than each platform's package manager so every runner gets the same
+      # version on PATH. Both build jobs need it -- they each compile the Rust.
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install meson and ninja
+        run: pip install meson ninja
+
       - name: Install frontend dependencies
         run: pnpm install
 
@@ -177,6 +189,18 @@ jobs:
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
+
+      # rtp-engine's audio-proc feature builds WebRTC's audio processing module
+      # from C++ source, which uses meson and ninja. Installed via pip rather
+      # than each platform's package manager so every runner gets the same
+      # version on PATH. Both build jobs need it -- they each compile the Rust.
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install meson and ninja
+        run: pip install meson ninja
 
       - name: Install frontend dependencies
         run: pnpm install
