@@ -93,3 +93,9 @@ keyring = { version = "3", features = ["linux-native"] }
 [patch.crates-io]
 whisper-rs-sys = { git = "https://github.com/5060-Solutions/aria-vendor.git", package = "whisper-rs-sys" }
 llama-cpp-sys-2 = { git = "https://github.com/5060-Solutions/aria-vendor.git", package = "llama-cpp-sys-2" }
+# Upstream 2.1.0 cannot build for windows-msvc: its build script hands cc-rs
+# GCC flag syntax unconditionally, and `-Wno-unused-parameter` reaches MSVC as
+# `/Wno-unused-parameter`, a hard D8021 error. The fork makes the flags and the
+# meson C++ standard compiler-aware and changes nothing for other targets.
+# Remove once https://github.com/tonarino/webrtc-audio-processing takes it.
+webrtc-audio-processing-sys = { git = "https://github.com/5060-Solutions/webrtc-audio-processing.git", branch = "msvc-support" }

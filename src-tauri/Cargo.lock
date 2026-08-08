@@ -6311,8 +6311,7 @@ checksum = "142cbc598e3dcf1a71e90109b6169ca9ce28ec1910bf74eef30f3c420ce850a4"
 [[package]]
 name = "webrtc-audio-processing-sys"
 version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8f6c2b4b20a03b165378172f0dbe23c49b2630b70091026589afbe04e79cd3e"
+source = "git+https://github.com/5060-Solutions/webrtc-audio-processing.git?branch=msvc-support#afb02e3852bdca35d913d0392e71f84786f1f1ad"
 dependencies = [
  "anyhow",
  "autotools",
