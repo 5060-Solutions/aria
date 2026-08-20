@@ -7,6 +7,21 @@
     <link rel="apple-touch-icon" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Aria</title>
+    <!--
+      Any <style> tag here changes the app's Content-Security-Policy.
+
+      At codegen time Tauri stamps a nonce placeholder onto every <style>
+      in this file, and at runtime it swaps that for a real nonce and appends
+      'nonce-N' to the style-src directive. Per CSP3, a directive carrying a
+      nonce ignores 'unsafe-inline' — which silently blocks every <style> tag
+      Emotion injects at runtime, so all MUI styling disappears. It only shows
+      up in a bundled build: `tauri dev` loads from the Vite dev server, which
+      never passes through Tauri's asset protocol, so no CSP is applied there.
+
+      tauri.conf.json sets dangerousDisableAssetCspModification: ["style-src"]
+      to stop that injection. Keep it that way for as long as styling is
+      runtime CSS-in-JS.
+    -->
     <style>
       body {
         margin: 0;
