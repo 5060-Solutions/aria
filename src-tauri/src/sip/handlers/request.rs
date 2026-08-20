@@ -141,11 +141,17 @@ pub async fn handle_incoming_request(
             let mut s = state.write().await;
             if let Some((found_account_id, call)) = s.find_call_by_header_mut(&call_id) {
                 let found_account_id = found_account_id.to_string();
+                // Kept to hand to the frontend on the "ended" event below. The
+                // frontend files call history from that event, so a recording
+                // whose path never reaches it is a WAV on disk that nothing in
+                // the UI can play.
+                let mut recording_path: Option<String> = None;
                 if let Some(media) = call.media() {
                     // Stop recording if active (saves the WAV file)
                     if media.is_recording() {
                         if let Ok(Some(path)) = media.stop_recording() {
                             log::info!("Call recording saved: {}", path.display());
+                            recording_path = Some(path.to_string_lossy().to_string());
                         }
                     }
                     media.stop();
@@ -154,9 +160,23 @@ pub async fn handle_incoming_request(
                 let remote_uri = call.remote_uri.clone();
                 let _ = call.process(CallFSMEvent::RemoteHangup);
 
-                let _ = event_tx.send(SipEvent::CallStateChanged(
-                    CallEvent::new(&found_account_id, &call_id_for_event, "ended", &remote_uri, "inbound")
-                ));
+                // Transcribe exactly as the local-hangup paths do. Without this
+                // a call produced a transcript or not purely according to which
+                // end hung up, which is not a distinction the user can see.
+                if let Some(path) = recording_path.as_ref() {
+                    crate::ai::maybe_transcribe_in_background(
+                        &call_id_for_event,
+                        std::path::Path::new(path),
+                    );
+                }
+
+                let mut ended = CallEvent::new(
+                    &found_account_id, &call_id_for_event, "ended", &remote_uri, "inbound",
+                );
+                if let Some(path) = recording_path {
+                    ended = ended.with_recording_path(path);
+                }
+                let _ = event_tx.send(SipEvent::CallStateChanged(ended));
             }
         }
         "OPTIONS" => {

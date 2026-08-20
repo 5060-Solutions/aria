@@ -72,6 +72,7 @@ impl CallEventPayload {
             remote_name: extract_display_name(&call.remote_uri),
             direction: call.direction_str().to_string(),
             sip_call_id: Some(call.call_id_header.clone()),
+            recording_path: None,
         }
     }
 
@@ -92,12 +93,19 @@ impl CallEventPayload {
             remote_name: extract_display_name(&uri),
             direction: direction.into(),
             sip_call_id: None,
+            recording_path: None,
         }
     }
 
     /// Set the SIP Call-ID header value
     pub fn with_sip_call_id(mut self, sip_call_id: impl Into<String>) -> Self {
         self.sip_call_id = Some(sip_call_id.into());
+        self
+    }
+
+    /// Attach the path of the recording this call produced.
+    pub fn with_recording_path(mut self, path: impl Into<String>) -> Self {
+        self.recording_path = Some(path.into());
         self
     }
 }
@@ -115,6 +123,14 @@ pub struct CallEventPayload {
     /// SIP Call-ID header value (for linking to PCAP/diagnostic traces)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sip_call_id: Option<String>,
+    /// Path of the recording this call produced, on the event that ends it.
+    ///
+    /// The frontend files call history from the "ended" event. When the remote
+    /// party hangs up it has never been told where the recording went, so
+    /// without this the WAV exists on disk with nothing in the UI pointing at
+    /// it. Only the local-hangup path knew the path before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording_path: Option<String>,
 }
 
 #[derive(Clone)]
@@ -215,6 +231,57 @@ pub(crate) struct ManagerState {
 }
 
 impl ManagerState {
+    /// Start auto-recording `media` if the owning account asks for it.
+    ///
+    /// Returns the event to emit once the state lock is released, or None if
+    /// the account has auto-record off or recording could not be started.
+    ///
+    /// This is a method rather than three copies at the call sites because it
+    /// previously was three copies, and one of them — the early-media path in
+    /// handle_invite_response — never got written. Any call whose peer sent a
+    /// 183 with SDP, which is ordinary PSTN ringback, connected on the early
+    /// media session and was silently never recorded.
+    pub(crate) fn start_auto_record(
+        &self,
+        account_id: &str,
+        call_id: &str,
+        media: &media::MediaSession,
+    ) -> Option<RecordingEvent> {
+        let auto_record = self
+            .get_account(account_id)
+            .map(|a| a.config.auto_record)
+            .unwrap_or(false);
+        if !auto_record {
+            return None;
+        }
+
+        // Startup installs this before any call can start; if it is somehow
+        // unset we would have to guess at a path, so skip recording rather
+        // than write to the wrong directory.
+        let Some(recordings_dir) = self.recordings_dir.as_ref() else {
+            log::warn!(
+                "Auto-record enabled but no recordings directory is configured; \
+                 skipping recording for call {}",
+                call_id
+            );
+            return None;
+        };
+
+        let output_path = rtp_engine::generate_recording_filename(call_id, recordings_dir);
+        if let Err(e) = media.start_recording(output_path.clone()) {
+            log::warn!("Failed to start auto-recording: {}", e);
+            return None;
+        }
+
+        log::info!("Auto-recording started for call {}", call_id);
+        Some(RecordingEvent {
+            account_id: account_id.to_string(),
+            call_id: call_id.to_string(),
+            recording: true,
+            path: Some(output_path.to_string_lossy().to_string()),
+        })
+    }
+
     /// Get the active account (first registered or explicitly set)
     pub(crate) fn active_account(&self) -> Option<&AccountState> {
         self.active_account_id
@@ -1172,10 +1239,10 @@ impl SipManager {
 
         transport.send_to(response.as_bytes(), server_addr).await?;
 
-        // Set when auto-record starts. Emitted after the call-state event below,
-        // so the frontend has the call in its list before it is told the call is
-        // being recorded.
-        let mut recording_started: Option<String> = None;
+        // Built when auto-record starts. Emitted after the call-state event
+        // below, so the frontend has the call in its list before it is told the
+        // call is being recorded.
+        let mut recording_event: Option<RecordingEvent> = None;
 
         let sdp = raw_invite.split("\r\n\r\n").nth(1).unwrap_or("");
         if let Some((ip, port)) = parse_sdp_connection(sdp) {
@@ -1197,36 +1264,8 @@ impl SipManager {
                 .map_err(|e| e.to_string())?;
 
             let mut s = self.state.write().await;
-            
-            // Check if auto_record is enabled for this account
-            let auto_record = s.get_account(&account_id)
-                .map(|a| a.config.auto_record)
-                .unwrap_or(false);
-            
-            // Start auto-recording if enabled
-            if auto_record {
-                match s.recordings_dir.as_ref() {
-                    Some(recordings_dir) => {
-                        let output_path =
-                            rtp_engine::generate_recording_filename(call_id, recordings_dir);
-                        if let Err(e) = media.start_recording(output_path.clone()) {
-                            log::warn!("Failed to start auto-recording: {}", e);
-                        } else {
-                            log::info!("Auto-recording started for inbound call {}", call_id);
-                            recording_started =
-                                Some(output_path.to_string_lossy().to_string());
-                        }
-                    }
-                    // Startup sets this before any call can arrive; if it is
-                    // somehow unset we would have to guess at a path, so skip
-                    // recording rather than write to the wrong directory.
-                    None => log::warn!(
-                        "Auto-record enabled but no recordings directory is configured; \
-                         skipping recording for call {}",
-                        call_id
-                    ),
-                }
-            }
+
+            recording_event = s.start_auto_record(&account_id, call_id, &media);
 
             if let Some((_, call)) = s.find_call_mut(call_id) {
                 let _ = call.process(CallFSMEvent::LocalAnswer {
@@ -1241,13 +1280,8 @@ impl SipManager {
             CallEvent::new(&account_id, call_id, "connected", &remote_uri, "inbound")
         ));
 
-        if let Some(path) = recording_started {
-            self.emit(SipEvent::RecordingStateChanged(RecordingEvent {
-                account_id: account_id.clone(),
-                call_id: call_id.to_string(),
-                recording: true,
-                path: Some(path),
-            }));
+        if let Some(event) = recording_event {
+            self.emit(SipEvent::RecordingStateChanged(event));
         }
 
         Ok(())

@@ -220,12 +220,21 @@ pub async fn handle_invite_response(
                 format!("{}:{}", ip, port).parse::<SocketAddr>().ok()
             });
 
+            // Built when auto-record starts. Sent after the call-state event
+            // below, so the frontend has the call in its list before it is told
+            // the call is being recorded.
+            let mut recording_event: Option<crate::sip::RecordingEvent> = None;
+
             let has_media;
             {
                 let mut s = state.write().await;
-                if let Some((_, call)) = s.find_call_by_header_mut(&call_id_header) {
+
+                // Take the early-media session out first, so the mutable borrow
+                // of the call ends before start_auto_record reads the account.
+                let early_media = if let Some((_, call)) =
+                    s.find_call_by_header_mut(&call_id_header)
+                {
                     let early_media = call.take_early_media();
-                    has_media = early_media.is_some();
                     call.set_to_tag(to_tag.clone());
                     let _ = call.process(CallFSMEvent::Answered {
                         to_tag: to_tag.clone(),
@@ -233,19 +242,25 @@ pub async fn handle_invite_response(
                         route_set,
                         session_expires,
                     });
-                    // If we had early media, set it on the now-connected call
-                    if let Some(session) = early_media {
+                    early_media
+                } else {
+                    None
+                };
+                has_media = early_media.is_some();
+
+                // If we had early media, set it on the now-connected call.
+                // Auto-record has to start here too: this branch skips the media
+                // setup below entirely, so a peer that sent a 183 with SDP —
+                // ordinary PSTN ringback — used to connect on the early media
+                // session and was silently never recorded.
+                if let Some(session) = early_media {
+                    recording_event =
+                        s.start_auto_record(&account_id, &call_internal_id, &session);
+                    if let Some((_, call)) = s.find_call_by_header_mut(&call_id_header) {
                         call.set_media(session);
                     }
-                } else {
-                    has_media = false;
                 }
             }
-
-            // Built when auto-record starts. Sent after the call-state event
-            // below, so the frontend has the call in its list before it is told
-            // the call is being recorded.
-            let mut recording_event: Option<crate::sip::RecordingEvent> = None;
 
             if has_media {
                 log::info!("Early media session already active, skipping new media setup");
@@ -337,44 +352,11 @@ pub async fn handle_invite_response(
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.srtp_active = srtp_active;
                         }
-                        // Check if auto_record is enabled for this account
-                        let auto_record = s.get_account(&account_id)
-                            .map(|a| a.config.auto_record)
-                            .unwrap_or(false);
-                        let recordings_dir = s.recordings_dir.clone();
+                        recording_event =
+                            s.start_auto_record(&account_id, &call_internal_id, &session);
 
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.set_remote_rtp(remote_rtp);
-
-                            // Start auto-recording if enabled
-                            if auto_record {
-                                match recordings_dir.as_ref() {
-                                    Some(recordings_dir) => {
-                                        let output_path = rtp_engine::generate_recording_filename(&call_internal_id, recordings_dir);
-                                        if let Err(e) = session.start_recording(output_path.clone()) {
-                                            log::warn!("Failed to start auto-recording: {}", e);
-                                        } else {
-                                            log::info!("Auto-recording started for call {}", call_internal_id);
-                                            recording_event = Some(crate::sip::RecordingEvent {
-                                                account_id: account_id.clone(),
-                                                call_id: call_internal_id.clone(),
-                                                recording: true,
-                                                path: Some(output_path.to_string_lossy().to_string()),
-                                            });
-                                        }
-                                    }
-                                    // Startup sets this before any call can be
-                                    // placed; if it is somehow unset we would
-                                    // have to guess at a path, so skip recording
-                                    // rather than write to the wrong directory.
-                                    None => log::warn!(
-                                        "Auto-record enabled but no recordings directory is \
-                                         configured; skipping recording for call {}",
-                                        call_internal_id
-                                    ),
-                                }
-                            }
-
                             call.set_media(session);
                         }
                     }

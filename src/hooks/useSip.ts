@@ -32,6 +32,8 @@ interface CallPayload {
   remoteName: string | null;
   direction: string;
   sipCallId?: string;
+  /** Set on the "ended" event when the call produced a recording. */
+  recordingPath?: string;
 }
 
 interface RecordingPayload {
@@ -167,6 +169,11 @@ export function useSipEvents() {
               ? Math.floor((Date.now() - activeCall.connectTime) / 1000)
               : 0,
             missed: !activeCall.connectTime,
+            // The backend supplies this when the remote party hangs up, which
+            // is the path that never knew where the recording went. Only local
+            // hangup passed it through before, so a call the other side ended
+            // left its WAV unreachable from history.
+            recordingPath: p.recordingPath ?? activeCall.recordingPath,
             sipCallId: p.sipCallId ?? activeCall.sipCallId,
           });
         }
