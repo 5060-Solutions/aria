@@ -161,7 +161,9 @@ pub async fn provision_from_qr(
         auth_username: None,
         auth_realm: None,
         enabled: true,
-        auto_record: true,
+        // QR provisioning carries no consent to record, so it must not enable
+        // recording. The user can turn it on per-account in Settings.
+        auto_record: false,
         // Always verify TLS on a provisioned account. Per AccountConfig's
         // contract this must never be settable from provisioning input, since
         // disabling it exposes digest credentials and SDES-SRTP keys to an
@@ -212,8 +214,16 @@ fn default_enabled() -> bool {
     true
 }
 
+/// Auto-record must default to OFF.
+///
+/// This is the fallback when a caller omits `autoRecord` from the payload, so
+/// it decides the behaviour for any frontend that has not been updated. It
+/// previously returned `true`, which meant an omitted field silently recorded
+/// every call on every account regardless of the user's setting. In a
+/// two-party-consent jurisdiction that is a legal exposure, so the safe value
+/// is the only acceptable default here.
 fn default_auto_record() -> bool {
-    true // Auto-record enabled by default as per user request
+    false
 }
 
 #[tauri::command]
@@ -362,13 +372,17 @@ pub async fn sip_start_recording(
     manager: State<'_, SipManager>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    // Get the recordings directory (inside app data dir)
-    let recordings_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?
-        .join("recordings");
-    
+    // Prefer the directory resolved at startup so manual and automatic
+    // recordings always land in the same place.
+    let recordings_dir = match manager.recordings_dir().await {
+        Some(dir) => dir,
+        None => app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app data dir: {}", e))?
+            .join("recordings"),
+    };
+
     manager.start_recording(&call_id, &recordings_dir).await
 }
 
@@ -894,9 +908,8 @@ const KEYRING_SERVICE: &str = "aria-softphone";
 /// Get the path to the insecure credentials file (dev only)
 #[cfg(feature = "dev-insecure")]
 fn insecure_creds_path() -> std::path::PathBuf {
-    dirs::data_dir()
+    crate::app_data_root()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("com.5060.aria")
         .join(".dev-credentials.json")
 }
 
@@ -1189,6 +1202,57 @@ mod tests {
             ),
             call_id: call_id.map(String::from),
         }
+    }
+
+    /// A payload with only the fields the frontend has always sent. Used to
+    /// pin down what the optional fields fall back to.
+    fn minimal_config_json() -> serde_json::Value {
+        serde_json::json!({
+            "displayName": "Test User",
+            "username": "testuser",
+            "domain": "example.com",
+            "password": "secret",
+            "transport": "udp",
+            "port": 5060,
+            "registrar": null,
+            "outboundProxy": null,
+            "authUsername": null,
+        })
+    }
+
+    #[test]
+    fn omitted_auto_record_defaults_to_off() {
+        let config: SipAccountConfig = serde_json::from_value(minimal_config_json())
+            .expect("minimal payload should deserialize");
+
+        // Regression: this defaulted to true, so a payload that omitted
+        // autoRecord recorded every call regardless of the user's setting.
+        assert!(!config.auto_record);
+    }
+
+    #[test]
+    fn auto_record_round_trips_when_present() {
+        for enabled in [true, false] {
+            let mut json = minimal_config_json();
+            json["autoRecord"] = serde_json::Value::Bool(enabled);
+            let config: SipAccountConfig =
+                serde_json::from_value(json).expect("payload should deserialize");
+            assert_eq!(config.auto_record, enabled);
+        }
+    }
+
+    #[test]
+    fn auth_realm_round_trips_when_present() {
+        let mut json = minimal_config_json();
+        json["authRealm"] = serde_json::Value::String("teliax.com".into());
+        let config: SipAccountConfig =
+            serde_json::from_value(json).expect("payload should deserialize");
+        assert_eq!(config.auth_realm.as_deref(), Some("teliax.com"));
+
+        // Absent means "no override", not a deserialization error — this is why
+        // dropping the field from the payload failed silently instead of loudly.
+        let absent: SipAccountConfig = serde_json::from_value(minimal_config_json()).unwrap();
+        assert_eq!(absent.auth_realm, None);
     }
 
     #[test]

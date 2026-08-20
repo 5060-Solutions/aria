@@ -6,6 +6,30 @@ mod system_contacts;
 
 use tauri::{Emitter, Listener, Manager};
 
+/// The app's bundle identifier, matching `identifier` in tauri.conf.json.
+///
+/// Code that can reach an `AppHandle` should use `app.path().app_data_dir()`
+/// instead of this — Tauri resolves the identifier and the per-platform data
+/// root together. This exists for the few paths that are computed from static
+/// functions with no handle available, which previously hardcoded their own
+/// copy of the identifier and got it wrong. `bundle_identifier_matches_config`
+/// pins it to tauri.conf.json so the two cannot drift apart again.
+///
+/// Deliberately not cfg-gated to its callers (`ai`, `dev-insecure`), which are
+/// both off in a default build: the drift test is worth running on every
+/// `cargo test`, not only on feature-enabled ones.
+#[allow(dead_code)]
+pub(crate) const BUNDLE_IDENTIFIER: &str = "com.5060solutions.aria";
+
+/// The app's data directory, equivalent to Tauri's `app_data_dir()`.
+///
+/// Only for callers with no `AppHandle`; prefer `app.path().app_data_dir()`.
+/// Unused in a default build — see `BUNDLE_IDENTIFIER`.
+#[allow(dead_code)]
+pub(crate) fn app_data_root() -> Option<std::path::PathBuf> {
+    dirs::data_dir().map(|d| d.join(BUNDLE_IDENTIFIER))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -99,6 +123,9 @@ pub fn run() {
                                 });
                                 let _ = app_handle.emit("sip-conference-ended", payload);
                             }
+                            sip::SipEvent::RecordingStateChanged(rec) => {
+                                let _ = app_handle.emit("sip-recording", rec);
+                            }
                             sip::SipEvent::VoicemailStatus(vm) => {
                                 let payload = serde_json::json!({
                                     "accountId": vm.account_id,
@@ -113,6 +140,27 @@ pub fn run() {
                 log::warn!("SIP event forwarding loop ended");
             });
             
+            // Resolve the recordings directory once, here, where the app data
+            // dir is available. The auto-record paths used to build their own
+            // from a hardcoded identifier that did not match the bundle's, so
+            // auto-recordings were written somewhere the UI never looked.
+            match app.path().app_data_dir() {
+                Ok(data_dir) => {
+                    let recordings_manager = app.state::<sip::SipManager>().inner().clone();
+                    let recordings_dir = data_dir.join("recordings");
+                    // Block rather than spawn: this must be in place before any
+                    // call can be placed or answered, or auto-record would skip
+                    // the first call of the session.
+                    tauri::async_runtime::block_on(
+                        recordings_manager.set_recordings_dir(recordings_dir),
+                    );
+                }
+                Err(e) => log::error!(
+                    "Could not resolve app data dir; call recording is disabled: {}",
+                    e
+                ),
+            }
+
             // Listen for health probe requests from frontend (network/visibility changes)
             let probe_manager = app.state::<sip::SipManager>().inner().clone();
             app.listen("probe-health", move |_event| {
@@ -194,4 +242,37 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Aria");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `BUNDLE_IDENTIFIER` decides where data written outside Tauri's own path
+    /// APIs lands. If it stops matching tauri.conf.json, those files silently
+    /// move to a directory nothing else reads — which is exactly how
+    /// auto-recordings ended up invisible.
+    #[test]
+    fn bundle_identifier_matches_config() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json"))
+                .expect("tauri.conf.json should be valid JSON");
+        let identifier = config["identifier"]
+            .as_str()
+            .expect("tauri.conf.json should have a string identifier");
+
+        assert_eq!(
+            identifier, BUNDLE_IDENTIFIER,
+            "BUNDLE_IDENTIFIER must match tauri.conf.json's identifier"
+        );
+    }
+
+    #[test]
+    fn app_data_root_ends_with_bundle_identifier() {
+        let root = app_data_root().expect("test platforms have a data dir");
+        assert_eq!(
+            root.file_name().and_then(|n| n.to_str()),
+            Some(BUNDLE_IDENTIFIER)
+        );
+    }
 }

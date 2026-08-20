@@ -151,6 +151,23 @@ pub enum SipEvent {
     ConferenceSplit { conference_id: String, call_id: String },
     ConferenceEnded { conference_id: String },
     VoicemailStatus(VoicemailStatusEvent),
+    RecordingStateChanged(RecordingEvent),
+}
+
+/// Emitted when the backend starts or stops recording a call on its own.
+///
+/// Manual recording is driven from the UI, which already knows the state it
+/// asked for. Auto-record is not: without this event the call's `recording`
+/// flag stayed false, so the recording indicator never appeared and hangup
+/// never stopped the recording or filed its path into call history.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingEvent {
+    pub account_id: String,
+    pub call_id: String,
+    pub recording: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// MWI (Message Waiting Indicator) status from a message-summary NOTIFY.
@@ -184,6 +201,17 @@ pub(crate) struct ManagerState {
     pub(crate) preferred_input_device: Option<String>,
     /// Preferred output (speaker) device name (None = system default)
     pub(crate) preferred_output_device: Option<String>,
+
+    // === Recording ===
+    /// Directory recordings are written to, resolved from the Tauri app data
+    /// dir at startup.
+    ///
+    /// The auto-record paths used to build this themselves from
+    /// `dirs::data_dir()` joined with a hardcoded `com.5060.aria`, which is not
+    /// the bundle identifier (`com.5060solutions.aria`). Auto-recordings
+    /// therefore landed in a directory that nothing in the UI ever opened.
+    /// Resolving it once at startup keeps every recording path in agreement.
+    pub(crate) recordings_dir: Option<std::path::PathBuf>,
 }
 
 impl ManagerState {
@@ -303,6 +331,7 @@ impl SipManager {
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
                 preferred_input_device: None,
                 preferred_output_device: None,
+                recordings_dir: None,
             })),
             event_tx,
         };
@@ -849,6 +878,20 @@ impl SipManager {
         s.preferred_output_device = output_device;
     }
 
+    /// Set the directory recordings are written to. Called once at startup with
+    /// the Tauri app data dir, which is the only component that can resolve it
+    /// correctly for the current bundle identifier and platform.
+    pub async fn set_recordings_dir(&self, dir: std::path::PathBuf) {
+        let mut s = self.state.write().await;
+        log::info!("Recordings directory set: {}", dir.display());
+        s.recordings_dir = Some(dir);
+    }
+
+    /// Get the configured recordings directory, if startup has set it.
+    pub async fn recordings_dir(&self) -> Option<std::path::PathBuf> {
+        self.state.read().await.recordings_dir.clone()
+    }
+
     /// Get current preferred audio devices.
     #[allow(dead_code)]
     pub async fn get_preferred_audio_devices(&self) -> (Option<String>, Option<String>) {
@@ -1129,6 +1172,11 @@ impl SipManager {
 
         transport.send_to(response.as_bytes(), server_addr).await?;
 
+        // Set when auto-record starts. Emitted after the call-state event below,
+        // so the frontend has the call in its list before it is told the call is
+        // being recorded.
+        let mut recording_started: Option<String> = None;
+
         let sdp = raw_invite.split("\r\n\r\n").nth(1).unwrap_or("");
         if let Some((ip, port)) = parse_sdp_connection(sdp) {
             let remote_rtp: SocketAddr = format!("{}:{}", ip, port)
@@ -1157,17 +1205,29 @@ impl SipManager {
             
             // Start auto-recording if enabled
             if auto_record {
-                if let Some(data_dir) = dirs::data_dir() {
-                    let recordings_dir = data_dir.join("com.5060.aria").join("recordings");
-                    let output_path = rtp_engine::generate_recording_filename(call_id, &recordings_dir);
-                    if let Err(e) = media.start_recording(output_path) {
-                        log::warn!("Failed to start auto-recording: {}", e);
-                    } else {
-                        log::info!("Auto-recording started for inbound call {}", call_id);
+                match s.recordings_dir.as_ref() {
+                    Some(recordings_dir) => {
+                        let output_path =
+                            rtp_engine::generate_recording_filename(call_id, recordings_dir);
+                        if let Err(e) = media.start_recording(output_path.clone()) {
+                            log::warn!("Failed to start auto-recording: {}", e);
+                        } else {
+                            log::info!("Auto-recording started for inbound call {}", call_id);
+                            recording_started =
+                                Some(output_path.to_string_lossy().to_string());
+                        }
                     }
+                    // Startup sets this before any call can arrive; if it is
+                    // somehow unset we would have to guess at a path, so skip
+                    // recording rather than write to the wrong directory.
+                    None => log::warn!(
+                        "Auto-record enabled but no recordings directory is configured; \
+                         skipping recording for call {}",
+                        call_id
+                    ),
                 }
             }
-            
+
             if let Some((_, call)) = s.find_call_mut(call_id) {
                 let _ = call.process(CallFSMEvent::LocalAnswer {
                     media,
@@ -1180,6 +1240,15 @@ impl SipManager {
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&account_id, call_id, "connected", &remote_uri, "inbound")
         ));
+
+        if let Some(path) = recording_started {
+            self.emit(SipEvent::RecordingStateChanged(RecordingEvent {
+                account_id: account_id.clone(),
+                call_id: call_id.to_string(),
+                recording: true,
+                path: Some(path),
+            }));
+        }
 
         Ok(())
     }

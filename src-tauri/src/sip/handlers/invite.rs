@@ -242,6 +242,11 @@ pub async fn handle_invite_response(
                 }
             }
 
+            // Built when auto-record starts. Sent after the call-state event
+            // below, so the frontend has the call in its list before it is told
+            // the call is being recorded.
+            let mut recording_event: Option<crate::sip::RecordingEvent> = None;
+
             if has_media {
                 log::info!("Early media session already active, skipping new media setup");
             } else if let Some(remote_rtp) = remote_rtp_addr {
@@ -336,23 +341,40 @@ pub async fn handle_invite_response(
                         let auto_record = s.get_account(&account_id)
                             .map(|a| a.config.auto_record)
                             .unwrap_or(false);
-                        
+                        let recordings_dir = s.recordings_dir.clone();
+
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.set_remote_rtp(remote_rtp);
-                            
+
                             // Start auto-recording if enabled
                             if auto_record {
-                                if let Some(data_dir) = dirs::data_dir() {
-                                    let recordings_dir = data_dir.join("com.5060.aria").join("recordings");
-                                    let output_path = rtp_engine::generate_recording_filename(&call_internal_id, &recordings_dir);
-                                    if let Err(e) = session.start_recording(output_path) {
-                                        log::warn!("Failed to start auto-recording: {}", e);
-                                    } else {
-                                        log::info!("Auto-recording started for call {}", call_internal_id);
+                                match recordings_dir.as_ref() {
+                                    Some(recordings_dir) => {
+                                        let output_path = rtp_engine::generate_recording_filename(&call_internal_id, recordings_dir);
+                                        if let Err(e) = session.start_recording(output_path.clone()) {
+                                            log::warn!("Failed to start auto-recording: {}", e);
+                                        } else {
+                                            log::info!("Auto-recording started for call {}", call_internal_id);
+                                            recording_event = Some(crate::sip::RecordingEvent {
+                                                account_id: account_id.clone(),
+                                                call_id: call_internal_id.clone(),
+                                                recording: true,
+                                                path: Some(output_path.to_string_lossy().to_string()),
+                                            });
+                                        }
                                     }
+                                    // Startup sets this before any call can be
+                                    // placed; if it is somehow unset we would
+                                    // have to guess at a path, so skip recording
+                                    // rather than write to the wrong directory.
+                                    None => log::warn!(
+                                        "Auto-record enabled but no recordings directory is \
+                                         configured; skipping recording for call {}",
+                                        call_internal_id
+                                    ),
                                 }
                             }
-                            
+
                             call.set_media(session);
                         }
                     }
@@ -366,6 +388,10 @@ pub async fn handle_invite_response(
                 CallEvent::new(&account_id, call_internal_id, "connected", remote_uri, "outbound")
                     .with_sip_call_id(&call_id_header)
             ));
+
+            if let Some(event) = recording_event {
+                let _ = event_tx.send(SipEvent::RecordingStateChanged(event));
+            }
         }
         486 | 600 | 603 => {
             log::info!("Call rejected ({})", status);

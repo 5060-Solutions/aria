@@ -97,7 +97,12 @@ interface AppState {
   toggleMute: () => void;
   toggleHold: () => void;
   toggleRecording: () => void;
-  
+  /**
+   * Set the recording state of a specific call, for recording the backend
+   * started on its own (auto-record) rather than at the UI's request.
+   */
+  setCallRecording: (callId: string, recording: boolean, path?: string) => void;
+
   // Conference management
   createConference: (callIds: string[]) => string;
   addToConference: (conferenceId: string, callId: string) => void;
@@ -428,7 +433,25 @@ export const useAppStore = create<AppState>((set, get) => {
           activeCall: activeCalls.find((c) => c.id === callId) ?? null,
         };
       }),
-    
+
+    setCallRecording: (callId, recording, path) =>
+      set((s) => {
+        if (!s.activeCalls.some((c) => c.id === callId)) return s;
+        const activeCalls = s.activeCalls.map((c) =>
+          c.id === callId
+            ? { ...c, recording, recordingPath: path ?? c.recordingPath }
+            : c
+        );
+        return {
+          activeCalls,
+          // Keep the legacy single-call view pointing at the primary call, not
+          // at whichever call this event happened to be about.
+          activeCall:
+            activeCalls.find((c) => c.id === s.primaryCallId) ?? s.activeCall,
+        };
+      }),
+
+
     // Conference management
     createConference: (callIds) => {
       const conferenceId = `conf-${Date.now()}`;

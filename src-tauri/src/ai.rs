@@ -104,9 +104,15 @@ mod enabled {
     }
 
     /// Where models and the insight database live.
+    ///
+    /// This used to join a hardcoded `com.5060.aria`, which is not the bundle
+    /// identifier, so it sat outside the app data directory Tauri manages.
+    /// Correcting it moves the location: any models or insights written by an
+    /// earlier build stay at the old path and are not read from here. They can
+    /// be deleted, and models will be re-downloaded on demand.
     fn storage_root() -> Result<PathBuf, String> {
-        dirs::data_dir()
-            .map(|d| d.join("com.5060.aria").join("ai"))
+        crate::app_data_root()
+            .map(|d| d.join("ai"))
             .ok_or_else(|| "no data directory on this platform".to_string())
     }
 

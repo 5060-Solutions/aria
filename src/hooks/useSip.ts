@@ -34,6 +34,13 @@ interface CallPayload {
   sipCallId?: string;
 }
 
+interface RecordingPayload {
+  accountId: string;
+  callId: string;
+  recording: boolean;
+  path?: string;
+}
+
 /** Auto-registers ALL enabled accounts on app launch. */
 export function useAutoRegister() {
   const accounts = useAppStore((s) => s.accounts);
@@ -100,6 +107,7 @@ export function useSipEvents() {
   const addCallHistory = useAppStore((s) => s.addCallHistory);
   const setCurrentView = useAppStore((s) => s.setCurrentView);
   const setPresenceBulk = useAppStore((s) => s.setPresenceBulk);
+  const setCallRecording = useAppStore((s) => s.setCallRecording);
 
   const isIncoming = activeCall?.state === "incoming";
   const isRinging = activeCall?.state === "ringing" || activeCall?.state === "dialing";
@@ -198,12 +206,22 @@ export function useSipEvents() {
       }
     });
 
+    // Auto-record is started by the backend, so the UI only learns a call is
+    // being recorded from this event. Without it the recording indicator stays
+    // hidden and hangup never stops the recording or files its path.
+    const unlistenRecording = listen<RecordingPayload>("sip-recording", (event) => {
+      const { callId, recording, path } = event.payload;
+      log.info("[useSipEvents] Recording event received:", { callId, recording });
+      setCallRecording(callId, recording, path);
+    });
+
     return () => {
       unlistenReg.then((fn_) => fn_());
       unlistenCall.then((fn_) => fn_());
       unlistenPresence.then((fn_) => fn_());
+      unlistenRecording.then((fn_) => fn_());
     };
-  }, [activeCall, setAccountRegistrationState, setActiveCall, addCallHistory, setCurrentView, setPresenceBulk]);
+  }, [activeCall, setAccountRegistrationState, setActiveCall, addCallHistory, setCurrentView, setPresenceBulk, setCallRecording]);
 }
 
 export async function sipRegister(account: SipAccount): Promise<string> {
@@ -227,7 +245,13 @@ export async function sipRegister(account: SipAccount): Promise<string> {
       registrar: account.registrar ?? null,
       outboundProxy: account.outboundProxy ?? null,
       authUsername: account.authUsername ?? null,
+      authRealm: account.authRealm ?? null,
       enabled: account.enabled,
+      // Every field the backend reads must be listed here. Omitting one does
+      // not fall back to the stored account — it falls back to whatever serde
+      // default the Rust struct declares, which silently discarded the user's
+      // choice for both of these.
+      autoRecord: account.autoRecord ?? false,
       srtpMode: account.srtpMode ?? null,
       codecs: account.codecs ?? null,
     },
