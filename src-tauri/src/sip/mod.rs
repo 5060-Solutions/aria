@@ -13,6 +13,8 @@ pub mod srtp;
 pub mod state;
 pub mod transfer;
 pub mod transport;
+#[cfg(test)]
+mod voip_stack_harness;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -1001,9 +1003,18 @@ impl SipManager {
             .await
             .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
 
-        // Use STUN-discovered public IP for SDP, fallback to registration-discovered public IP
-        let public_ip = Some(stun_public_ip.to_string())
-            .or_else(|| public_addr.map(|a| a.ip().to_string()));
+        // STUN first, then what the registrar reported; for a server on a
+        // private network, neither (see `media::sdp_address`). This was
+        // `Some(stun).or_else(..)`, which is always Some — so the fallback never
+        // ran, and a failed STUN lookup's `0.0.0.0` went into the SDP (#4).
+        let public_ip = Some(
+            media::sdp_address(
+                local_addr.ip(),
+                stun_public_ip.or_else(|| public_addr.map(|a| a.ip())),
+                Some(server_addr.ip()),
+            )
+            .to_string(),
+        );
         let (invite, local_srtp_key) = builder::build_invite_with_public_ip(
             &account_config, uri, local_addr, rtp_port, &call_id, 1, &from_tag, None,
             public_ip.as_deref(),
@@ -1219,13 +1230,22 @@ impl SipManager {
         };
 
         // Discover public IP via STUN for NAT traversal in SDP
-        let public_ip = match media::discover_public_ip().await {
-            Ok(ip) => Some(ip.to_string()),
-            Err(e) => {
-                log::warn!("STUN discovery failed for answer: {}", e);
-                None
+        // A server on a private network is answered with the local address:
+        // don't even ask STUN, whose answer it could not use.
+        let stun_ip = if media::is_private_network(server_addr.ip()) {
+            None
+        } else {
+            match media::discover_public_ip().await {
+                Ok(ip) => Some(ip),
+                Err(e) => {
+                    log::warn!("STUN discovery failed for answer: {}", e);
+                    None
+                }
             }
         };
+        let public_ip = Some(
+            media::sdp_address(local_addr.ip(), stun_ip, Some(server_addr.ip())).to_string(),
+        );
 
         let response = build_200_ok_invite_with_public_ip(
             &raw_invite,

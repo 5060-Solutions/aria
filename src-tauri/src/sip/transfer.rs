@@ -163,7 +163,7 @@ pub async fn handle_incoming_refer(
         let new_from_tag = builder::generate_tag();
         // Allocate RTP port and discover public IP via STUN for NAT traversal
         let (rtp_port, stun_public_ip) = match super::media::allocate_port_with_stun().await {
-            Ok((port, ip, _)) => (port, Some(ip)),
+            Ok((port, ip, _)) => (port, ip),
             Err(e) => {
                 log::error!("Failed to allocate RTP port with STUN: {}", e);
                 return;
@@ -171,8 +171,14 @@ pub async fn handle_incoming_refer(
         };
 
         // Use STUN-discovered public IP for SDP, fallback to registration-discovered public IP
-        let public_ip = stun_public_ip.map(|ip| ip.to_string())
-            .or_else(|| public_addr.map(|a| a.ip().to_string()));
+        let public_ip = Some(
+            super::media::sdp_address(
+                local_addr.ip(),
+                stun_public_ip.or_else(|| public_addr.map(|a| a.ip())),
+                Some(server_addr.ip()),
+            )
+            .to_string(),
+        );
         let (invite, local_srtp_key) = builder::build_invite_with_public_ip(
             &account_config,
             &refer_to,

@@ -540,7 +540,16 @@ pub async fn handle_invite_response(
             };
 
             // Use public IP in SDP for NAT traversal if discovered during registration
-            let public_ip = public_addr.map(|a| a.ip().to_string());
+            // The same decision as the INVITE being retried, so the offer
+            // does not change address between the two attempts.
+            let public_ip = Some(
+                crate::sip::media::sdp_address(
+                    local_addr.ip(),
+                    public_addr.map(|a| a.ip()),
+                    Some(server_addr.ip()),
+                )
+                .to_string(),
+            );
             let (invite, new_srtp_key) = build_invite_with_public_ip(
                 &account_config,
                 &remote_uri,

@@ -159,6 +159,24 @@ pub enum AuthHeaderType {
 // INVITE
 // ---------------------------------------------------------------------------
 
+/// The address an offer or answer advertises: `public_ip` when it is a real
+/// address, else the local one.
+///
+/// Last line of defence for #4: an unspecified address in the SDP tells the far
+/// end not to send media (RFC 3264), so one arriving here is discarded and
+/// logged rather than advertised.
+fn sdp_ip(local_addr: SocketAddr, public_ip: Option<&str>) -> String {
+    match public_ip.map(str::parse::<std::net::IpAddr>) {
+        Some(Ok(ip)) if !ip.is_unspecified() => ip.to_string(),
+        Some(Ok(ip)) => {
+            log::error!("refusing to advertise {} for media; using the local address", ip);
+            local_addr.ip().to_string()
+        }
+        Some(Err(_)) => public_ip.unwrap_or_default().to_string(),
+        None => local_addr.ip().to_string(),
+    }
+}
+
 /// Build an INVITE request with SDP, optionally using a public IP for NAT traversal.
 /// Returns (invite_message, local_srtp_key) where local_srtp_key is Some if SRTP is enabled.
 #[allow(clippy::too_many_arguments)]
@@ -177,7 +195,7 @@ pub fn build_invite_with_public_ip(
     let branch = generate_branch();
 
     // Use public IP for SDP if available (for NAT traversal), otherwise use local IP
-    let sdp_ip = public_ip.map(|s| s.to_string()).unwrap_or_else(|| local_addr.ip().to_string());
+    let sdp_ip = sdp_ip(local_addr, public_ip);
 
     // Generate SRTP key if account has SRTP enabled
     log::info!("Building INVITE for account {} with SRTP mode: {:?}", account.username, account.srtp_mode);
@@ -420,7 +438,7 @@ pub fn build_200_ok_invite_with_public_ip(
     };
 
     // Use public IP for SDP if available (for NAT traversal), otherwise use local IP
-    let sdp_ip = public_ip.map(|s| s.to_string()).unwrap_or_else(|| local_addr.ip().to_string());
+    let sdp_ip = sdp_ip(local_addr, public_ip);
 
     // If the request has SDP, generate an answer; otherwise generate an offer
     let remote_sdp = request_raw.split("\r\n\r\n").nth(1).unwrap_or("");

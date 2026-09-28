@@ -7,35 +7,79 @@ pub use rtp_engine::{CodecType, MediaSession, discover_public_address};
 
 /// Allocate an RTP port and discover the public address via STUN.
 ///
-/// Returns (local_port, public_ip, public_port) where public_ip/port are from STUN discovery.
-/// If STUN fails, falls back to local address.
-pub async fn allocate_port_with_stun() -> Result<(u16, IpAddr, u16), String> {
-    // First allocate a port
+/// Returns `(local_port, public_ip, public_port)`. The public half is `None`
+/// when STUN fails or answers with an unspecified address — never a made-up
+/// address. It used to fall back to the probe socket's own address, and that
+/// socket is bound to `0.0.0.0`, so a failed STUN lookup put `c=IN IP4 0.0.0.0`
+/// in the SDP. RFC 3264 reads that as "do not send me media", and a PBX that
+/// follows it withholds audio for the whole call (#4).
+pub async fn allocate_port_with_stun() -> Result<(u16, Option<IpAddr>, Option<u16>), String> {
     let rtp_port = MediaSession::allocate_port()
         .await
         .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
-    
-    // Create a socket to use for STUN discovery (we'll drop it after discovery)
+
+    // A throwaway socket on the same port, for the STUN probe only.
     let socket = UdpSocket::bind(format!("0.0.0.0:{}", rtp_port))
         .await
         .map_err(|e| format!("Failed to bind RTP socket for STUN: {}", e))?;
-    
-    // Try STUN discovery
+
     match discover_public_address(&socket).await {
-        Ok(result) => {
+        Ok(result) if !result.public_ip.is_unspecified() => {
             log::info!(
                 "STUN discovery: local {}:{} -> public {}:{}",
                 result.local_ip, result.local_port, result.public_ip, result.public_port
             );
-            // Note: Due to symmetric NAT, the public port may change when we bind again.
-            // However, we'll use the public IP which should be consistent.
-            Ok((rtp_port, result.public_ip, result.public_port))
+            // Symmetric NAT may change the port when the media socket binds
+            // again; the public IP is what the SDP uses.
+            Ok((rtp_port, Some(result.public_ip), Some(result.public_port)))
+        }
+        Ok(result) => {
+            log::warn!("STUN answered with an unspecified address ({}); ignoring it", result.public_ip);
+            Ok((rtp_port, None, None))
         }
         Err(e) => {
-            log::warn!("STUN discovery failed (will use local IP): {}", e);
-            let local_addr = socket.local_addr()
-                .map_err(|e| format!("Failed to get local address: {}", e))?;
-            Ok((rtp_port, local_addr.ip(), rtp_port))
+            log::warn!("STUN discovery failed; the SDP will carry the local interface address: {}", e);
+            Ok((rtp_port, None, None))
+        }
+    }
+}
+
+/// The address to advertise for media (the SDP `c=` and `o=` lines).
+///
+/// `local` is the interface address that reaches the SIP server; `public` is
+/// what STUN or the registrar reported we look like from outside.
+///
+/// A server on a private network is reached directly, so it must be given the
+/// local address: a STUN-discovered public address would have it send RTP out
+/// to the internet and back, which most NATs drop. Only a server on a public
+/// address is given the public one. An unspecified address is never returned
+/// while a real one is known — `0.0.0.0` means "hold" to the far end.
+pub fn sdp_address(local: IpAddr, public: Option<IpAddr>, server: Option<IpAddr>) -> IpAddr {
+    let public = public.filter(|ip| !ip.is_unspecified());
+    if server.is_some_and(is_private_network) {
+        return if local.is_unspecified() { public.unwrap_or(local) } else { local };
+    }
+    match public {
+        Some(ip) => ip,
+        None => local,
+    }
+}
+
+/// Whether `ip` is only reachable inside a private network: RFC 1918, loopback,
+/// link-local, carrier-grade NAT (100.64/10 — also Tailscale), or IPv6
+/// unique-local / link-local.
+pub fn is_private_network(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || (a == 100 && (64..=127).contains(&b))
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
         }
     }
 }
@@ -101,5 +145,62 @@ impl MediaSessionExt for MediaSession {
 
     fn get_codec(&self) -> CodecType {
         self.codec()
+    }
+}
+
+#[cfg(test)]
+mod sdp_address_tests {
+    use super::{is_private_network, sdp_address};
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    /// The reported case (#4): a LAN PBX, and STUN failed. The SDP must carry
+    /// the interface address, never 0.0.0.0.
+    #[test]
+    fn a_lan_server_gets_the_local_address_when_stun_failed() {
+        let got = sdp_address(ip("10.2.0.124"), None, Some(ip("10.2.0.3")));
+        assert_eq!(got, ip("10.2.0.124"));
+    }
+
+    /// Had STUN succeeded, a LAN PBX would have been told the WAN address and
+    /// sent RTP out to the internet and back. It gets the local one.
+    #[test]
+    fn a_lan_server_gets_the_local_address_even_when_stun_succeeded() {
+        let got = sdp_address(ip("192.168.1.20"), Some(ip("203.0.113.7")), Some(ip("192.168.1.1")));
+        assert_eq!(got, ip("192.168.1.20"));
+    }
+
+    #[test]
+    fn a_public_server_behind_nat_gets_the_public_address() {
+        let got = sdp_address(ip("192.168.1.20"), Some(ip("203.0.113.7")), Some(ip("159.203.80.231")));
+        assert_eq!(got, ip("203.0.113.7"));
+    }
+
+    #[test]
+    fn a_public_server_with_no_public_address_known_gets_the_local_one() {
+        let got = sdp_address(ip("192.168.1.20"), None, Some(ip("159.203.80.231")));
+        assert_eq!(got, ip("192.168.1.20"));
+    }
+
+    /// An unspecified "public" address is discarded, not advertised.
+    #[test]
+    fn an_unspecified_public_address_is_never_advertised() {
+        for server in [Some(ip("159.203.80.231")), Some(ip("10.0.0.1")), None] {
+            let got = sdp_address(ip("192.168.1.20"), Some(ip("0.0.0.0")), server);
+            assert_eq!(got, ip("192.168.1.20"), "server {server:?}");
+        }
+    }
+
+    #[test]
+    fn private_networks_are_recognised() {
+        for p in ["10.2.0.3", "172.16.5.5", "192.168.0.1", "127.0.0.1", "169.254.1.1", "100.64.0.1", "100.127.255.1", "fd00::1", "fe80::1", "::1"] {
+            assert!(is_private_network(ip(p)), "{p} should be private");
+        }
+        for p in ["159.203.80.231", "8.8.8.8", "100.128.0.1", "172.32.0.1", "2001:db8::1", "2606:4700::1111"] {
+            assert!(!is_private_network(ip(p)), "{p} should be public");
+        }
     }
 }

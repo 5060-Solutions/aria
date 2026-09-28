@@ -191,7 +191,10 @@ export function SetupWizard() {
       registrar: form.registrar || form.server,
       outboundProxy: form.outboundProxy || undefined,
       authUsername: form.authUsername || undefined,
-      authRealm: form.authRealm || effectiveDomain,
+      // Blank means "use the realm the server announces". Filling in the
+      // domain here saved it as an override, which beat the server's own realm
+      // and failed every registration against a PBX whose realm differs (#4).
+      authRealm: form.authRealm || undefined,
       enabled: true,
     };
 

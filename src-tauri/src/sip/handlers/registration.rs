@@ -177,14 +177,36 @@ pub async fn handle_register_response(
                 account_config.auth_realm
             );
 
-            // Use realm override: explicit config > fallback from 403 retry > challenge realm
+            // Explicit override, then the 403 server-IP fallback, then the
+            // announced realm — except that an override the server has just
+            // rejected gives way to the announced realm. See
+            // `auth::registration_realm`.
+            let challenge_realm = crate::sip::auth::extract_challenge_realm(&www_auth);
             let realm_override = {
-                let s = state.read().await;
-                if let Some(account) = s.get_account(account_id) {
-                    account.config.auth_realm.clone()
-                        .or_else(|| account.realm_fallback.clone())
-                } else {
-                    account_config.auth_realm.clone()
+                let mut s = state.write().await;
+                match s.get_account_mut(account_id) {
+                    Some(account) => {
+                        let (realm, override_rejected) = crate::sip::auth::registration_realm(
+                            account.config.auth_realm.as_deref(),
+                            account.realm_fallback.as_deref(),
+                            challenge_realm.as_deref(),
+                            attempts,
+                        );
+                        if override_rejected {
+                            log::warn!(
+                                "realm override {:?} was rejected; retrying with the server's realm {:?} \
+                                 and using it for the rest of this session",
+                                account.config.auth_realm,
+                                challenge_realm
+                            );
+                            // Calls, presence and refreshes read the same
+                            // config, so they follow what the server accepts.
+                            account.config.auth_realm = None;
+                            account.registration.forget_realm_override();
+                        }
+                        realm
+                    }
+                    None => account_config.auth_realm.clone(),
                 }
             };
 
@@ -199,7 +221,6 @@ pub async fn handle_register_response(
 
             // Emit auth debug info as a diagnostic message visible in the UI
             {
-                let challenge_realm = crate::sip::auth::extract_challenge_realm(&www_auth);
                 let effective_realm = realm_override.as_deref()
                     .unwrap_or(challenge_realm.as_deref().unwrap_or("(unknown)"));
                 let debug_summary = format!(

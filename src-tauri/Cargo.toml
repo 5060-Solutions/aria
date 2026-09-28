@@ -99,3 +99,7 @@ llama-cpp-sys-2 = { git = "https://github.com/5060-Solutions/aria-vendor.git", p
 # meson C++ standard compiler-aware and changes nothing for other targets.
 # Remove once https://github.com/tonarino/webrtc-audio-processing takes it.
 webrtc-audio-processing-sys = { git = "https://github.com/5060-Solutions/webrtc-audio-processing.git", branch = "msvc-support" }
+
+[dev-dependencies]
+md-5 = "0.10"
+hex = "0.4"

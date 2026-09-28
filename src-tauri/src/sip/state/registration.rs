@@ -286,6 +286,17 @@ impl RegistrationFSM {
     }
 
     /// Increment auth attempts counter
+    /// Stop using the account's realm override for this session.
+    ///
+    /// Called when the server rejects it and accepts its own announced realm
+    /// instead, so re-registrations use what worked. Not persisted: the saved
+    /// setting is the user's, and a restart tries it again.
+    pub fn forget_realm_override(&mut self) {
+        if let Some(account) = self.account.as_mut() {
+            account.auth_realm = None;
+        }
+    }
+
     pub fn increment_auth_attempts(&mut self) {
         if let RegistrationState::Registering { auth_attempts } = &mut self.state {
             *auth_attempts += 1;
