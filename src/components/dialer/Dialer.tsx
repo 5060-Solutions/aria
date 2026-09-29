@@ -5,7 +5,7 @@ import BackspaceOutlinedIcon from "@mui/icons-material/BackspaceOutlined";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
-import { sipMakeCall } from "../../hooks/useSip";
+import { placeCall } from "../../hooks/useSip";
 import { DialerButton } from "./DialerButton";
 import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
 
@@ -40,7 +40,6 @@ export function Dialer() {
   const appendDigit = useAppStore((s) => s.appendDigit);
   const clearDialInput = useAppStore((s) => s.clearDialInput);
   const setDialInput = useAppStore((s) => s.setDialInput);
-  const setActiveCall = useAppStore((s) => s.setActiveCall);
   const defaultCountry = useAppStore((s) => s.defaultCountry) as CountryCode;
   const setDefaultCountry = useAppStore((s) => s.setDefaultCountry);
   const theme = useTheme();
@@ -151,37 +150,13 @@ export function Dialer() {
       ? `sip:${dialInput}`
       : `sip:${numberToCall}@${domain}`;
 
-    setActiveCall({
-      id: crypto.randomUUID(),
+    // placeCall removes the call again if it could not be placed.
+    await placeCall({
+      uri,
       accountId: activeAccountId,
-      remoteUri: uri,
       remoteName: formattedNumber || dialInput,
-      state: "dialing",
-      direction: "outbound",
-      startTime: Date.now(),
-      muted: false,
-      held: false,
-      recording: false,
-    });
-
-    try {
-      const callId = await sipMakeCall(uri);
-      setActiveCall({
-        id: callId,
-        accountId: activeAccountId,
-        remoteUri: uri,
-        remoteName: formattedNumber || dialInput,
-        state: "dialing",
-        direction: "outbound",
-        startTime: Date.now(),
-        muted: false,
-        held: false,
-        recording: false,
-      });
-    } catch {
-      setActiveCall(null);
-    }
-  }, [dialInput, activeAccountId, activeAccount, defaultCountry, formattedNumber, setActiveCall]);
+    }).catch(() => {});
+  }, [dialInput, activeAccountId, activeAccount, defaultCountry, formattedNumber]);
 
   const handleBackspace = useCallback(() => {
     setDialInput(dialInput.slice(0, -1));

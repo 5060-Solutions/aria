@@ -413,7 +413,6 @@ export function ContactList() {
   const setCurrentView = useAppStore((s) => s.setCurrentView);
   const accounts = useAppStore((s) => s.accounts);
   const activeAccountId = useAppStore((s) => s.activeAccountId);
-  const setActiveCall = useAppStore((s) => s.setActiveCall);
   const theme = useTheme();
 
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
@@ -434,39 +433,15 @@ export function ContactList() {
       const number = uri.replace(/^sip:/, "").split("@")[0];
       const fullUri = uri.startsWith("sip:") ? uri : `sip:${number}@${activeAccount.domain}`;
 
-      setActiveCall({
-        id: crypto.randomUUID(),
+      const { placeCall } = await import("../../hooks/useSip");
+      // placeCall removes the call again if it could not be placed.
+      await placeCall({
+        uri: fullUri,
         accountId: activeAccountId,
-        remoteUri: fullUri,
         remoteName: name || number,
-        state: "dialing",
-        direction: "outbound",
-        startTime: Date.now(),
-        muted: false,
-        held: false,
-        recording: false,
-      });
-
-      try {
-        const { sipMakeCall } = await import("../../hooks/useSip");
-        const callId = await sipMakeCall(fullUri);
-        setActiveCall({
-          id: callId,
-          accountId: activeAccountId,
-          remoteUri: fullUri,
-          remoteName: name || number,
-          state: "dialing",
-          direction: "outbound",
-          startTime: Date.now(),
-          muted: false,
-          held: false,
-          recording: false,
-        });
-      } catch {
-        setActiveCall(null);
-      }
+      }).catch(() => {});
     },
-    [activeAccountId, activeAccount, setDialInput, setCurrentView, setActiveCall],
+    [activeAccountId, activeAccount, setDialInput, setCurrentView],
   );
 
   const handleAddContact = useCallback(

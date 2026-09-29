@@ -102,16 +102,6 @@ interface AppState {
    * started on its own (auto-record) rather than at the UI's request.
    */
   setCallRecording: (callId: string, recording: boolean, path?: string) => void;
-  /**
-   * Recording events that arrived before their call was in `activeCalls`.
-   *
-   * The dialer inserts a placeholder call under a temporary id and only swaps
-   * in the backend's id once `sipMakeCall` resolves. If the peer answers inside
-   * that window — an auto-answer extension, or a PBX on the LAN — the recording
-   * event names an id the store does not have yet, and dropping it loses the
-   * indicator and the path for the rest of the call.
-   */
-  pendingRecordings: Record<string, { recording: boolean; path?: string }>;
 
   // Conference management
   createConference: (callIds: string[]) => string;
@@ -338,6 +328,7 @@ export const useAppStore = create<AppState>((set, get) => {
           activeCalls,
           primaryCallId,
           activeCall: activeCalls.find((c) => c.id === primaryCallId) ?? null,
+          conferences: activeCalls.length === 0 ? [] : s.conferences,
         };
       }),
     
@@ -348,74 +339,27 @@ export const useAppStore = create<AppState>((set, get) => {
       })),
     
     // Legacy single-call interface (operates on primary call)
-    setActiveCall: (rawCall) =>
+    setActiveCall: (call) =>
       set((s) => {
-        if (rawCall === null) {
+        if (call === null) {
           return {
             activeCalls: [],
             primaryCallId: null,
             conferences: [],
             activeCall: null,
-            pendingRecordings: {},
           };
         }
 
-        // Apply any recording event that arrived before this call existed, or
-        // before it was known under the backend's id. Every branch below
-        // replaces the call object wholesale, so without this a recording flag
-        // set moments earlier would also be discarded here.
-        const pending = s.pendingRecordings[rawCall.id];
-        const call = pending
-          ? {
-              ...rawCall,
-              recording: pending.recording,
-              recordingPath: pending.path ?? rawCall.recordingPath,
-            }
-          : rawCall;
-        const pendingRecordings = pending
-          ? Object.fromEntries(
-              Object.entries(s.pendingRecordings).filter(([id]) => id !== call.id)
-            )
-          : s.pendingRecordings;
-
-        // Check if there's an existing call with the same ID
-        const existingById = s.activeCalls.find((c) => c.id === call.id);
-        if (existingById) {
-          const activeCalls = s.activeCalls.map((c) => (c.id === call.id ? call : c));
-          return {
-            activeCalls,
-            primaryCallId: call.id,
-            activeCall: call,
-            pendingRecordings,
-          };
-        }
-        
-        // Check if there's a pending outbound call to the same URI that should be replaced
-        // (handles the case where dialer creates a temp call before getting real call ID)
-        const pendingOutbound = s.activeCalls.find(
-          (c) => c.remoteUri === call.remoteUri && 
-                 c.direction === "outbound" && 
-                 c.state === "dialing"
-        );
-        if (pendingOutbound) {
-          const activeCalls = s.activeCalls.map((c) => 
-            c.id === pendingOutbound.id ? call : c
-          );
-          return {
-            activeCalls,
-            primaryCallId: call.id,
-            activeCall: call,
-            pendingRecordings,
-          };
-        }
-        
-        // Add new call
-        const activeCalls = [...s.activeCalls, call];
+        // Calls are created under their final id (see `placeCall`), so a call
+        // with this id is always the same call, never a placeholder for it.
+        const exists = s.activeCalls.some((c) => c.id === call.id);
+        const activeCalls = exists
+          ? s.activeCalls.map((c) => (c.id === call.id ? call : c))
+          : [...s.activeCalls, call];
         return {
           activeCalls,
           primaryCallId: call.id,
           activeCall: call,
-          pendingRecordings,
         };
       }),
     
@@ -471,19 +415,8 @@ export const useAppStore = create<AppState>((set, get) => {
         };
       }),
 
-    pendingRecordings: {},
-
     setCallRecording: (callId, recording, path) =>
       set((s) => {
-        if (!s.activeCalls.some((c) => c.id === callId)) {
-          // Hold it until the call shows up; setActiveCall applies it.
-          return {
-            pendingRecordings: {
-              ...s.pendingRecordings,
-              [callId]: { recording, path },
-            },
-          };
-        }
         const activeCalls = s.activeCalls.map((c) =>
           c.id === callId
             ? { ...c, recording, recordingPath: path ?? c.recordingPath }
@@ -587,7 +520,13 @@ export const useAppStore = create<AppState>((set, get) => {
     callHistory: loadCallHistory(),
     addCallHistory: (entry) =>
       set((s) => {
-        const callHistory = [entry, ...s.callHistory].slice(0, 200);
+        // One row per call. A call can be reported ended more than once (the
+        // backend's event, plus a local fallback when the backend could not be
+        // reached), and each report used to add a row.
+        const callHistory = [
+          entry,
+          ...s.callHistory.filter((e) => e.id !== entry.id),
+        ].slice(0, 200);
         localStorage.setItem("aria_call_history", JSON.stringify(callHistory));
         return { callHistory };
       }),

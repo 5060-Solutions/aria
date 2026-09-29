@@ -179,12 +179,13 @@ pub async fn handle_invite_response(
                         call.local_rtp_port,
                         call.account_id.clone(),
                         call.local_srtp_key.clone(),
+                        call.is_established() || call.is_ended(),
                     )
                 })
             };
 
-            let (transport, server_addr, local_addr, transport_param, remote_uri, sip_call_id, cseq, from_tag, call_internal_id, local_rtp_port, account_id, local_srtp_key) = match call_data {
-                Some((Some(t), Some(sa), la, tp, ru, sci, cs, ft, cid, rp, aid, lsk)) => (t, sa, la, tp, ru, sci, cs, ft, cid, rp, aid, lsk),
+            let (transport, server_addr, local_addr, transport_param, remote_uri, sip_call_id, cseq, from_tag, call_internal_id, local_rtp_port, account_id, local_srtp_key, already_answered) = match call_data {
+                Some((Some(t), Some(sa), la, tp, ru, sci, cs, ft, cid, rp, aid, lsk, done)) => (t, sa, la, tp, ru, sci, cs, ft, cid, rp, aid, lsk, done),
                 _ => return,
             };
 
@@ -215,6 +216,16 @@ pub async fn handle_invite_response(
             );
 
             let _ = transport.send_to(ack.as_bytes(), server_addr).await;
+
+            // Aria never sends a re-INVITE, so a 200 for a call already past
+            // ringing is a retransmission: the peer did not see our ACK. It
+            // needs the ACK above and nothing else. Running the rest again
+            // started a second media session, and a second auto-recording
+            // that split the call's audio across two files.
+            if already_answered {
+                log::info!("Retransmitted 200 OK for {}, re-sent ACK", call_internal_id);
+                return;
+            }
 
             let remote_rtp_addr = rtp_target.and_then(|(ip, port)| {
                 format!("{}:{}", ip, port).parse::<SocketAddr>().ok()
@@ -254,11 +265,15 @@ pub async fn handle_invite_response(
                 // ordinary PSTN ringback — used to connect on the early media
                 // session and was silently never recorded.
                 if let Some(session) = early_media {
-                    recording_event =
-                        s.start_auto_record(&account_id, &call_internal_id, &session);
                     if let Some((_, call)) = s.find_call_by_header_mut(&call_id_header) {
                         call.set_media(session);
                     }
+                    recording_event = s
+                        .find_call_by_header(&call_id_header)
+                        .and_then(|(_, call)| call.media())
+                        .and_then(|media| {
+                            s.start_auto_record(&account_id, &call_internal_id, media)
+                        });
                 }
             }
 
@@ -351,19 +366,38 @@ pub async fn handle_invite_response(
                         let mut s = state.write().await;
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.srtp_active = srtp_active;
-                        }
-                        recording_event =
-                            s.start_auto_record(&account_id, &call_internal_id, &session);
-
-                        if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.set_remote_rtp(remote_rtp);
                             call.set_media(session);
                         }
+
+                        // Only once the session is on the call. Media startup
+                        // ran without the lock, and a call hung up in that
+                        // window is gone; recording it would leave an orphaned
+                        // WAV and announce a recording for a dead call.
+                        recording_event = s
+                            .find_call(&call_internal_id)
+                            .and_then(|(_, call)| call.media())
+                            .and_then(|media| {
+                                s.start_auto_record(&account_id, &call_internal_id, media)
+                            });
                     }
                     Err(e) => {
                         log::error!("Failed to start media: {}", e);
                     }
                 }
+            }
+
+            // Hung up while media was starting: the call has already sent its
+            // ended event, and a late "connected" would bring it back to life
+            // in the UI.
+            let still_live = state
+                .read()
+                .await
+                .find_call(&call_internal_id)
+                .is_some_and(|(_, call)| call.is_established());
+            if !still_live {
+                log::info!("Call {} ended while media was starting", call_internal_id);
+                return;
             }
 
             let _ = event_tx.send(SipEvent::CallStateChanged(

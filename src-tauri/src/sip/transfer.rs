@@ -313,23 +313,29 @@ pub async fn handle_notify_refer(
         status: sipfrag_status,
         message,
     }));
+    // The transfer succeeded, so our leg of the call is over.
     if sipfrag_status == 200 {
-        let _ = event_tx.send(SipEvent::CallStateChanged(
-            CallEvent::new(account_id, &call_id, "ended", &call_remote_uri, &call_direction)
-        ));
-    }
+        let media = {
+            let mut s = state.write().await;
+            s.get_account_mut(account_id).and_then(|account| {
+                account
+                    .calls
+                    .iter_mut()
+                    .find(|c| c.call_id_header == call_id_header)
+                    .and_then(|call| {
+                        let media = call.take_media();
+                        let _ = call.process(CallFSMEvent::LocalHangup);
+                        media
+                    })
+            })
+        };
+        let recording_path = crate::sip::finish_call_media(&call_id, media).await;
 
-    // If transfer succeeded, clean up the call
-    if sipfrag_status == 200 {
-        let mut s = state.write().await;
-        if let Some(account) = s.get_account_mut(account_id) {
-            if let Some(call) = account.calls.iter_mut().find(|c| c.call_id_header == call_id_header) {
-                if let Some(media) = call.media() {
-                    media.stop();
-                }
-                let _ = call.process(CallFSMEvent::LocalHangup);
-            }
+        let mut ended = CallEvent::new(account_id, &call_id, "ended", &call_remote_uri, &call_direction);
+        if let Some(path) = recording_path {
+            ended = ended.with_recording_path(path);
         }
+        let _ = event_tx.send(SipEvent::CallStateChanged(ended));
     }
 }
 
@@ -408,23 +414,28 @@ pub async fn handle_invite_with_replaces(
     };
 
     // Terminate the replaced call
-    {
+    let replaced = {
         let mut s = state.write().await;
-        if let Some(account) = s.get_account_mut(account_id) {
-            if let Some(call) = account.calls.iter_mut().find(|c| c.id == replaced_id) {
-                if let Some(media) = call.media() {
-                    media.stop();
-                }
-                let call_id = call.id.clone();
-                let remote_uri = call.remote_uri.clone();
-                let direction = call.direction_str().to_string();
+        s.get_account_mut(account_id).and_then(|account| {
+            account.calls.iter_mut().find(|c| c.id == replaced_id).map(|call| {
+                let media = call.take_media();
                 let _ = call.process(CallFSMEvent::LocalHangup);
-
-                let _ = event_tx.send(SipEvent::CallStateChanged(
-                    CallEvent::new(account_id, &call_id, "ended", &remote_uri, &direction)
-                ));
-            }
+                (
+                    call.id.clone(),
+                    call.remote_uri.clone(),
+                    call.direction_str().to_string(),
+                    media,
+                )
+            })
+        })
+    };
+    if let Some((call_id, remote_uri, direction, media)) = replaced {
+        let recording_path = crate::sip::finish_call_media(&call_id, media).await;
+        let mut ended = CallEvent::new(account_id, &call_id, "ended", &remote_uri, &direction);
+        if let Some(path) = recording_path {
+            ended = ended.with_recording_path(path);
         }
+        let _ = event_tx.send(SipEvent::CallStateChanged(ended));
     }
 
     // Now handle this INVITE as a new incoming call

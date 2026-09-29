@@ -325,8 +325,15 @@ pub async fn sip_set_active_account(
 }
 
 #[tauri::command]
-pub async fn sip_make_call(uri: String, manager: State<'_, SipManager>) -> Result<String, String> {
-    manager.make_call(&uri).await
+pub async fn sip_make_call(
+    uri: String,
+    call_id: Option<String>,
+    manager: State<'_, SipManager>,
+) -> Result<String, String> {
+    match call_id {
+        Some(id) => manager.make_call_with_id(&uri, &id).await,
+        None => manager.make_call(&uri).await,
+    }
 }
 
 #[tauri::command]
@@ -710,10 +717,14 @@ pub async fn get_audio_levels(
 #[tauri::command]
 pub async fn sip_add_call(
     uri: String,
+    call_id: Option<String>,
     manager: State<'_, SipManager>,
 ) -> Result<String, String> {
     // This creates a second call - the frontend should have already put the first call on hold
-    manager.make_call(&uri).await
+    match call_id {
+        Some(id) => manager.make_call_with_id(&uri, &id).await,
+        None => manager.make_call(&uri).await,
+    }
 }
 
 /// Merge two or more calls into a local conference

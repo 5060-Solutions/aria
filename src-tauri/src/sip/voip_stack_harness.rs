@@ -35,6 +35,18 @@ struct Seen {
     register_ok: Vec<bool>,
     /// Every INVITE, raw.
     invites: Vec<String>,
+    /// How many ACKs arrived.
+    acks: usize,
+}
+
+/// How the fake PBX answers an INVITE.
+#[derive(Clone, Copy, PartialEq)]
+enum InviteReply {
+    /// 486, ending the attempt; for tests that only care about the INVITE.
+    Busy,
+    /// 200 OK, the same 200 again as a retransmission (as a peer does when it
+    /// has not seen the ACK yet), then a BYE from the far end.
+    AnswerTwiceThenHangUp,
 }
 
 fn md5_hex(s: &str) -> String {
@@ -83,8 +95,12 @@ fn respond(req: &str, code: u16, reason: &str, extra: &[String]) -> String {
 
 /// Start the fake PBX on loopback; returns its address and what it records.
 async fn start_pbx() -> (SocketAddr, Arc<Mutex<Seen>>) {
+    start_pbx_with(InviteReply::Busy).await
+}
+
+async fn start_pbx_with(invite_reply: InviteReply) -> (SocketAddr, Arc<Mutex<Seen>>) {
     let _ = env_logger::builder().is_test(true).try_init();
-    let sock = UdpSocket::bind("127.0.0.1:0").await.expect("bind fake PBX");
+    let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind fake PBX"));
     let addr = sock.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
     let rec = seen.clone();
@@ -136,12 +152,42 @@ async fn start_pbx() -> (SocketAddr, Arc<Mutex<Seen>>) {
                         }
                     }
                 },
+                "INVITE" if invite_reply == InviteReply::AnswerTwiceThenHangUp => {
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    // No SDP in the answer, so no audio device is opened.
+                    let ok = respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")]);
+                    let bye = format!(
+                        "BYE sip:{USER}@{from} SIP/2.0\r\n\
+                         Via: SIP/2.0/UDP {addr};branch=z9hG4bKbye1\r\n\
+                         From: {};tag=pbx1\r\n\
+                         To: {}\r\n\
+                         Call-ID: {}\r\n\
+                         CSeq: 1 BYE\r\n\
+                         Content-Length: 0\r\n\r\n",
+                        header(&msg, "To").unwrap_or_default(),
+                        header(&msg, "From").unwrap_or_default(),
+                        header(&msg, "Call-ID").unwrap_or_default(),
+                    );
+                    let sock = sock.clone();
+                    tokio::spawn(async move {
+                        // Spaced like real retransmissions (T1 = 500 ms).
+                        for msg in [&ok, &ok, &bye] {
+                            let _ = sock.send_to(msg.as_bytes(), from).await;
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    });
+                    continue;
+                }
                 "INVITE" => {
                     rec.lock().unwrap().invites.push(msg.clone());
                     // Enough to end the attempt cleanly; the SDP is the point.
                     respond(&msg, 486, "Busy Here", &[])
                 }
-                "ACK" => continue,
+                "ACK" => {
+                    rec.lock().unwrap().acks += 1;
+                    continue;
+                }
                 _ => respond(&msg, 200, "OK", &[]),
             };
             let _ = sock.send_to(reply.as_bytes(), from).await;
@@ -254,4 +300,41 @@ async fn an_invite_to_a_lan_pbx_advertises_the_local_address() {
     assert!(!c_line.contains("0.0.0.0"), "voip_stack would withhold audio: {c_line}");
     assert!(!o_line.contains("0.0.0.0"), "{o_line}");
     assert_eq!(c_line, "c=IN IP4 127.0.0.1", "a LAN PBX must get the local address");
+}
+
+/// A retransmitted 200 OK must be acknowledged again and nothing more. Handling
+/// it as a new answer used to restart media and auto-recording, splitting the
+/// call's audio across two files and announcing the call connected twice. The
+/// far end then hangs up, and the ended event must describe the call as it
+/// was: this one is outbound, and the BYE path used to report every call as
+/// inbound.
+#[tokio::test]
+async fn a_retransmitted_200_is_acked_but_not_answered_twice() {
+    let (pbx, seen) = start_pbx_with(InviteReply::AnswerTwiceThenHangUp).await;
+    let (mgr, mut rx) = SipManager::new_with_receiver();
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+
+    let mut states = Vec::new();
+    let mut ended_direction = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while ended_direction.is_none() {
+        let event = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("the call ended within 10s")
+            .expect("event channel open");
+        if let super::SipEvent::CallStateChanged(e) = event {
+            if e.call_id == call_id {
+                if e.state == "ended" {
+                    ended_direction = Some(e.direction.clone());
+                }
+                states.push(e.state);
+            }
+        }
+    }
+
+    let connected = states.iter().filter(|s| *s == "connected").count();
+    assert_eq!(connected, 1, "connected reported {connected} times: {states:?}");
+    assert_eq!(seen.lock().unwrap().acks, 2, "each 200 needs its own ACK");
+    assert_eq!(ended_direction.as_deref(), Some("outbound"));
 }

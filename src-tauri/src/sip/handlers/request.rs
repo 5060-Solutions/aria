@@ -137,42 +137,31 @@ pub async fn handle_incoming_request(
                 }
             }
 
-            // End the call
-            let mut s = state.write().await;
-            if let Some((found_account_id, call)) = s.find_call_by_header_mut(&call_id) {
-                let found_account_id = found_account_id.to_string();
-                // Kept to hand to the frontend on the "ended" event below. The
-                // frontend files call history from that event, so a recording
-                // whose path never reaches it is a WAV on disk that nothing in
-                // the UI can play.
-                let mut recording_path: Option<String> = None;
-                if let Some(media) = call.media() {
-                    // Stop recording if active (saves the WAV file)
-                    if media.is_recording() {
-                        if let Ok(Some(path)) = media.stop_recording() {
-                            log::info!("Call recording saved: {}", path.display());
-                            recording_path = Some(path.to_string_lossy().to_string());
-                        }
-                    }
-                    media.stop();
-                }
-                let call_id_for_event = call.id.clone();
-                let remote_uri = call.remote_uri.clone();
-                let _ = call.process(CallFSMEvent::RemoteHangup);
+            // End the call. The media comes out under the lock and is finished
+            // after it is released, so saving a long recording cannot stall
+            // every other SIP task.
+            let ended_call = {
+                let mut s = state.write().await;
+                s.find_call_by_header_mut(&call_id).map(|(found_account_id, call)| {
+                    let found_account_id = found_account_id.to_string();
+                    let media = call.take_media();
+                    let _ = call.process(CallFSMEvent::RemoteHangup);
+                    (
+                        found_account_id,
+                        call.id.clone(),
+                        call.remote_uri.clone(),
+                        call.direction_str().to_string(),
+                        media,
+                    )
+                })
+            };
 
-                // Transcribe exactly as the local-hangup paths do. Without this
-                // a call produced a transcript or not purely according to which
-                // end hung up, which is not a distinction the user can see.
-                if let Some(path) = recording_path.as_ref() {
-                    crate::ai::maybe_transcribe_in_background(
-                        &call_id_for_event,
-                        std::path::Path::new(path),
-                    );
-                }
-
-                let mut ended = CallEvent::new(
-                    &found_account_id, &call_id_for_event, "ended", &remote_uri, "inbound",
-                );
+            if let Some((found_account_id, internal_id, remote_uri, direction, media)) = ended_call {
+                // The frontend files call history from the ended event, so the
+                // recording path has to ride on it or the WAV is unreachable.
+                let recording_path = crate::sip::finish_call_media(&internal_id, media).await;
+                let mut ended =
+                    CallEvent::new(&found_account_id, &internal_id, "ended", &remote_uri, &direction);
                 if let Some(path) = recording_path {
                     ended = ended.with_recording_path(path);
                 }

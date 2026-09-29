@@ -2,7 +2,13 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore, getAccountWithPassword } from "../stores/appStore";
-import type { SipAccount, RegistrationState, PresenceState } from "../types/sip";
+import type {
+  ActiveCall,
+  CallState,
+  SipAccount,
+  RegistrationState,
+  PresenceState,
+} from "../types/sip";
 import { useRingtone } from "./useRingtone";
 import { useRingback } from "./useRingback";
 import { log } from "../utils/log";
@@ -102,14 +108,52 @@ export function useAutoRegister() {
   }, []);
 }
 
+/** How long an ended call stays on screen before it is removed. */
+const ENDED_DISPLAY_MS = 1200;
+
+/**
+ * Take a call out of service: file it in history, show it as ended briefly,
+ * then remove it.
+ *
+ * The single place a call ends in the UI, whichever side hung up. Hangup used
+ * to be handled here and again by each hangup button, so a local hangup filed
+ * two history rows, and a button's delayed cleanup could wipe out a call
+ * placed in the meantime. Calling this twice for one call is harmless.
+ */
+function finishCall(
+  callId: string,
+  details: { remoteUri?: string; remoteName?: string; recordingPath?: string; sipCallId?: string } = {},
+) {
+  const store = useAppStore.getState();
+  const call = store.activeCalls.find((c) => c.id === callId);
+  if (!call || call.state === "ended") return;
+
+  const endTime = Date.now();
+  store.addCallHistory({
+    id: call.id,
+    accountId: call.accountId,
+    remoteUri: details.remoteUri || call.remoteUri,
+    remoteName: details.remoteName ?? call.remoteName,
+    direction: call.direction,
+    startTime: call.startTime ?? endTime,
+    duration: call.connectTime ? Math.floor((endTime - call.connectTime) / 1000) : 0,
+    missed: !call.connectTime,
+    // The backend attaches the path on every ended event, however the call
+    // ended, because it is the one that finishes the recording.
+    recordingPath: details.recordingPath ?? call.recordingPath,
+    sipCallId: details.sipCallId ?? call.sipCallId,
+  });
+  store.updateCall(callId, { state: "ended", endTime, recording: false });
+  setTimeout(() => useAppStore.getState().removeCall(callId), ENDED_DISPLAY_MS);
+}
+
+/** Whether any call is still in progress. */
+function hasLiveCall(): boolean {
+  return useAppStore.getState().activeCalls.some((c) => c.state !== "ended");
+}
+
 export function useSipEvents() {
-  const setAccountRegistrationState = useAppStore((s) => s.setAccountRegistrationState);
-  const setActiveCall = useAppStore((s) => s.setActiveCall);
   const activeCall = useAppStore((s) => s.activeCall);
-  const addCallHistory = useAppStore((s) => s.addCallHistory);
-  const setCurrentView = useAppStore((s) => s.setCurrentView);
-  const setPresenceBulk = useAppStore((s) => s.setPresenceBulk);
-  const setCallRecording = useAppStore((s) => s.setCallRecording);
 
   const isIncoming = activeCall?.state === "incoming";
   const isRinging = activeCall?.state === "ringing" || activeCall?.state === "dialing";
@@ -119,20 +163,23 @@ export function useSipEvents() {
   // Track which accounts we've already subscribed presence for
   const subscribedAccounts = useRef<Set<string>>(new Set());
 
+  // Registered once for the life of the app. Handlers read the store when an
+  // event arrives rather than closing over it: this effect used to depend on
+  // the active call, so every call-state change tore the listeners down and
+  // re-registered them over IPC, and any event landing in that gap — often
+  // the recording event that immediately follows "connected" — was lost.
   useEffect(() => {
     const unlistenReg = listen<RegistrationPayload>(
       "sip-registration",
       (event) => {
         const { accountId, state, error } = event.payload;
         log.info("[useSipEvents] Registration event received:", { accountId, state, error });
-        setAccountRegistrationState(accountId, state, error ?? undefined);
+        useAppStore.getState().setAccountRegistrationState(accountId, state, error ?? undefined);
 
         // Auto-subscribe to presence for internal contacts after registration success
         if (state === "registered" && !subscribedAccounts.current.has(accountId)) {
           subscribedAccounts.current.add(accountId);
-          // Read contacts from store at the time of registration (not stale closure)
-          const currentContacts = useAppStore.getState().contacts;
-          autoSubscribePresence(currentContacts);
+          autoSubscribePresence(useAppStore.getState().contacts);
         }
       },
     );
@@ -143,7 +190,7 @@ export function useSipEvents() {
       (event) => {
         const { entries } = event.payload;
         if (entries && entries.length > 0) {
-          setPresenceBulk(
+          useAppStore.getState().setPresenceBulk(
             entries.map((e) => ({
               extension: e.extension,
               state: mapPresenceState(e.state),
@@ -155,34 +202,21 @@ export function useSipEvents() {
 
     const unlistenCall = listen<CallPayload>("sip-call", (event) => {
       const p = event.payload;
+      const store = useAppStore.getState();
 
       if (p.state === "ended") {
-        if (activeCall && activeCall.id === p.callId) {
-          addCallHistory({
-            id: p.callId,
-            accountId: activeCall.accountId,
-            remoteUri: p.remoteUri || activeCall.remoteUri,
-            remoteName: p.remoteName ?? activeCall.remoteName,
-            direction: activeCall.direction,
-            startTime: activeCall.startTime ?? Date.now(),
-            duration: activeCall.connectTime
-              ? Math.floor((Date.now() - activeCall.connectTime) / 1000)
-              : 0,
-            missed: !activeCall.connectTime,
-            // The backend supplies this when the remote party hangs up, which
-            // is the path that never knew where the recording went. Only local
-            // hangup passed it through before, so a call the other side ended
-            // left its WAV unreachable from history.
-            recordingPath: p.recordingPath ?? activeCall.recordingPath,
-            sipCallId: p.sipCallId ?? activeCall.sipCallId,
-          });
-        }
-        setActiveCall(null);
+        finishCall(p.callId, {
+          remoteUri: p.remoteUri,
+          remoteName: p.remoteName ?? undefined,
+          recordingPath: p.recordingPath,
+          sipCallId: p.sipCallId,
+        });
         return;
       }
 
-      if (p.state === "incoming" && !activeCall) {
-        setActiveCall({
+      if (p.state === "incoming") {
+        if (hasLiveCall()) return;
+        store.setActiveCall({
           id: p.callId,
           accountId: p.accountId,
           remoteUri: p.remoteUri,
@@ -195,31 +229,28 @@ export function useSipEvents() {
           recording: false,
           sipCallId: p.sipCallId,
         });
-        setCurrentView("dialer");
+        store.setCurrentView("dialer");
         return;
       }
 
-      // Update existing call state
-      if (activeCall && activeCall.id === p.callId) {
-        setActiveCall({
-          ...activeCall,
-          state: p.state as typeof activeCall.state,
-          connectTime:
-            p.state === "connected" && !activeCall.connectTime
-              ? Date.now()
-              : activeCall.connectTime,
-          sipCallId: p.sipCallId ?? activeCall.sipCallId,
-        });
-      }
+      // Any call we know about, not only the one on screen: a held call in a
+      // three-way still changes state.
+      const call = store.activeCalls.find((c) => c.id === p.callId);
+      if (!call || call.state === "ended") return;
+      store.updateCall(p.callId, {
+        state: p.state as CallState,
+        connectTime:
+          p.state === "connected" && !call.connectTime ? Date.now() : call.connectTime,
+        sipCallId: p.sipCallId ?? call.sipCallId,
+      });
     });
 
     // Auto-record is started by the backend, so the UI only learns a call is
-    // being recorded from this event. Without it the recording indicator stays
-    // hidden and hangup never stops the recording or files its path.
+    // being recorded from this event.
     const unlistenRecording = listen<RecordingPayload>("sip-recording", (event) => {
       const { callId, recording, path } = event.payload;
       log.info("[useSipEvents] Recording event received:", { callId, recording });
-      setCallRecording(callId, recording, path);
+      useAppStore.getState().setCallRecording(callId, recording, path);
     });
 
     return () => {
@@ -228,7 +259,68 @@ export function useSipEvents() {
       unlistenPresence.then((fn_) => fn_());
       unlistenRecording.then((fn_) => fn_());
     };
-  }, [activeCall, setAccountRegistrationState, setActiveCall, addCallHistory, setCurrentView, setPresenceBulk, setCallRecording]);
+  }, []);
+}
+
+/**
+ * Place an outbound call and show it immediately.
+ *
+ * The call's id is chosen here and handed to the backend, so the call is in
+ * the store under its real id before the INVITE goes out. The backend used to
+ * pick the id, and events it sent before `sipMakeCall` resolved named an id
+ * the UI had never seen; a peer that answered instantly left the call stuck
+ * on "dialing" and filed as missed.
+ *
+ * With `asAdditionalCall`, the call joins the existing ones (three-way
+ * calling) instead of replacing the primary call's slot.
+ */
+export async function placeCall(
+  call: { uri: string; accountId: string; remoteName?: string },
+  { asAdditionalCall = false }: { asAdditionalCall?: boolean } = {},
+): Promise<void> {
+  const store = useAppStore.getState();
+  const id = crypto.randomUUID();
+  const newCall: ActiveCall = {
+    id,
+    accountId: call.accountId,
+    remoteUri: call.uri,
+    remoteName: call.remoteName,
+    state: "dialing",
+    direction: "outbound",
+    startTime: Date.now(),
+    muted: false,
+    held: false,
+    recording: false,
+  };
+
+  if (asAdditionalCall) {
+    store.addCall(newCall);
+    store.setPrimaryCall(id);
+  } else {
+    store.setActiveCall(newCall);
+  }
+
+  try {
+    await (asAdditionalCall ? sipAddCall(call.uri, id) : sipMakeCall(call.uri, id));
+  } catch (e) {
+    log.error("[placeCall] Failed to place call:", e);
+    useAppStore.getState().removeCall(id);
+    throw e;
+  }
+}
+
+/**
+ * Hang up `call`. The backend saves any recording and reports the call ended,
+ * which is what files it in history; this only does so itself when the
+ * backend could not be reached, since no ended event will come then.
+ */
+export async function hangupCall(call: ActiveCall): Promise<void> {
+  try {
+    await sipHangup(call.id);
+  } catch (e) {
+    log.error("[hangupCall] Backend hangup failed, ending locally:", e);
+    finishCall(call.id);
+  }
 }
 
 export async function sipRegister(account: SipAccount): Promise<string> {
@@ -277,8 +369,8 @@ export async function sipSetActiveAccount(accountId: string): Promise<void> {
   return invoke("sip_set_active_account", { accountId });
 }
 
-export async function sipMakeCall(uri: string): Promise<string> {
-  return invoke<string>("sip_make_call", { uri });
+export async function sipMakeCall(uri: string, callId?: string): Promise<string> {
+  return invoke<string>("sip_make_call", { uri, callId });
 }
 
 export async function sipHangup(callId: string): Promise<void> {
@@ -319,8 +411,8 @@ export async function sipIsRecording(callId: string): Promise<boolean> {
 // ── Conference Calling ─────────────────────────────────────────────────────
 
 /** Start a second call (for three-way calling) - first call should be on hold */
-export async function sipAddCall(uri: string): Promise<string> {
-  return invoke<string>("sip_add_call", { uri });
+export async function sipAddCall(uri: string, callId?: string): Promise<string> {
+  return invoke<string>("sip_add_call", { uri, callId });
 }
 
 /** Merge multiple calls into a conference */

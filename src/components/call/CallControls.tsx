@@ -23,7 +23,7 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 import CallIcon from "@mui/icons-material/Call";
-import { sipHangup, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipAddCall, sipConferenceMerge, sipSwapCalls, sipSendDtmf } from "../../hooks/useSip";
+import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceMerge, sipSwapCalls, sipSendDtmf } from "../../hooks/useSip";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
 
@@ -94,11 +94,10 @@ export function CallControls() {
   const conferences = useAppStore((s) => s.conferences);
   const toggleMute = useAppStore((s) => s.toggleMute);
   const toggleHold = useAppStore((s) => s.toggleHold);
-  const setActiveCall = useAppStore((s) => s.setActiveCall);
+  const setCallRecording = useAppStore((s) => s.setCallRecording);
   const updateCall = useAppStore((s) => s.updateCall);
   const setPrimaryCall = useAppStore((s) => s.setPrimaryCall);
   const createConference = useAppStore((s) => s.createConference);
-  const addCallHistory = useAppStore((s) => s.addCallHistory);
 
   const selectedInputDevice = useAppStore((s) => s.selectedInputDevice);
   const selectedOutputDevice = useAppStore((s) => s.selectedOutputDevice);
@@ -133,12 +132,7 @@ export function CallControls() {
   };
 
   const handleDecline = async () => {
-    try {
-      await sipHangup(activeCall.id);
-    } catch {
-      // ignore
-    }
-    setActiveCall(null);
+    await hangupCall(activeCall);
   };
 
   if (isIncoming) {
@@ -201,43 +195,10 @@ export function CallControls() {
   const canAddCall = activeCall.state === "connected" && !isInConference;
   const canMerge = hasMultipleCalls && !isInConference;
 
+  // Stopping the recording and filing history both happen when the backend
+  // reports the call ended, so hangup is the same whichever side ends it.
   const handleHangup = async () => {
-    let recordingPath = activeCall.recordingPath;
-    if (activeCall.recording) {
-      try {
-        const path = await sipStopRecording(activeCall.id);
-        if (path) recordingPath = path;
-      } catch {
-        // Recording stop failed, but continue with hangup
-      }
-    }
-
-    try {
-      await sipHangup(activeCall.id);
-    } catch {
-      // Fallback: end locally even if backend fails
-    }
-
-    const endTime = Date.now();
-    const duration = activeCall.connectTime
-      ? Math.floor((endTime - activeCall.connectTime) / 1000)
-      : 0;
-
-    addCallHistory({
-      id: activeCall.id,
-      accountId: activeCall.accountId,
-      remoteUri: activeCall.remoteUri,
-      remoteName: activeCall.remoteName,
-      direction: activeCall.direction,
-      startTime: activeCall.startTime ?? endTime,
-      duration,
-      missed: !activeCall.connectTime,
-      recordingPath,
-      sipCallId: activeCall.sipCallId,
-    });
-
-    setActiveCall({ ...activeCall, state: "ended", endTime });
-    setTimeout(() => setActiveCall(null), 1200);
+    await hangupCall(activeCall);
   };
 
   const handleMute = async () => {
@@ -262,10 +223,10 @@ export function CallControls() {
     try {
       if (activeCall.recording) {
         await sipStopRecording(activeCall.id);
-        setActiveCall({ ...activeCall, recording: false });
+        setCallRecording(activeCall.id, false);
       } else {
         const path = await sipStartRecording(activeCall.id);
-        setActiveCall({ ...activeCall, recording: true, recordingPath: path });
+        setCallRecording(activeCall.id, true, path);
       }
     } catch (e) {
       log.error("Recording toggle failed:", e);
@@ -278,8 +239,10 @@ export function CallControls() {
     try {
       await sipHold(activeCall.id, true);
       updateCall(activeCall.id, { held: true, state: "held" });
-      const newCallId = await sipAddCall(newCallUri.trim());
-      setPrimaryCall(newCallId);
+      await placeCall(
+        { uri: newCallUri.trim(), accountId: activeCall.accountId },
+        { asAdditionalCall: true },
+      );
       setAddCallDialogOpen(false);
       setNewCallUri("");
     } catch (e) {

@@ -232,6 +232,60 @@ pub(crate) struct ManagerState {
     pub(crate) recordings_dir: Option<std::path::PathBuf>,
 }
 
+/// Save the recording in progress on `media`, if any, and queue it for
+/// transcription when the user has turned that on.
+///
+/// This writes the whole recording to disk synchronously, so teardown paths
+/// must not call it with the state lock held; they go through
+/// `finish_call_media` instead.
+pub(crate) fn save_recording(
+    call_id: &str,
+    media: &media::MediaSession,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let path = media
+        .stop_recording()
+        .map_err(|e| format!("Failed to stop recording: {}", e))?;
+    if let Some(p) = path.as_ref() {
+        log::info!("Call recording saved: {}", p.display());
+        // Runs on its own thread, so a slow transcription cannot hold up
+        // whatever called this.
+        crate::ai::maybe_transcribe_in_background(call_id, p);
+    }
+    Ok(path)
+}
+
+/// Stop a call's media and finish its recording. Returns the recording's path
+/// for the call's `ended` event, so history can link to it.
+///
+/// Every way a call ends goes through here: local hangup, BYE, transfer,
+/// Replaces, transport loss. Each used to carry its own copy of this, and all
+/// but two forgot the recording, so whether a call got a transcript depended
+/// on how it ended.
+///
+/// Callers take the session out of the call with `take_media` and release the
+/// state lock first. Saving a long call writes tens of megabytes, and doing it
+/// under the lock stalled every other SIP task until it finished.
+pub(crate) async fn finish_call_media(
+    call_id: &str,
+    media: Option<media::MediaSession>,
+) -> Option<String> {
+    let media = media?;
+    let call_id = call_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let path = save_recording(&call_id, &media).unwrap_or_else(|e| {
+            log::warn!("{} for call {}", e, call_id);
+            None
+        });
+        media.stop();
+        path.map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .unwrap_or_else(|e| {
+        log::error!("Media teardown task failed: {}", e);
+        None
+    })
+}
+
 impl ManagerState {
     /// Start auto-recording `media` if the owning account asks for it.
     ///
@@ -972,10 +1026,34 @@ impl SipManager {
     }
 
     pub async fn make_call(&self, uri: &str) -> Result<String, String> {
-        self.make_call_on_account(uri, None).await
+        self.make_call_on_account(uri, None, None).await
     }
 
-    pub async fn make_call_on_account(&self, uri: &str, account_id: Option<&str>) -> Result<String, String> {
+    /// Place a call under an id the caller chose.
+    ///
+    /// The frontend shows the call the moment the user dials, before this
+    /// returns, and events for the call are emitted before it returns too. When
+    /// the backend picked the id, the frontend could not match those early
+    /// events to the call it was showing and dropped them; a call answered
+    /// instantly then sat on "dialing" and was filed as missed.
+    pub async fn make_call_with_id(&self, uri: &str, call_id: &str) -> Result<String, String> {
+        // The id ends up in the recording's filename, so it must not be able
+        // to carry a path.
+        let call_id = uuid::Uuid::parse_str(call_id)
+            .map_err(|_| "Call id must be a UUID".to_string())?
+            .to_string();
+        if self.state.read().await.find_call(&call_id).is_some() {
+            return Err("Call id already in use".into());
+        }
+        self.make_call_on_account(uri, None, Some(call_id)).await
+    }
+
+    pub async fn make_call_on_account(
+        &self,
+        uri: &str,
+        account_id: Option<&str>,
+        call_id_override: Option<String>,
+    ) -> Result<String, String> {
         let (account_config, local_addr, server_addr, transport, aid, public_addr) = {
             let s = self.state.read().await;
             let aid = match account_id {
@@ -1025,6 +1103,9 @@ impl SipManager {
         let local_uri = format!("sip:{}@{}", account_config.username, account_config.domain);
         let mut call = CallFSM::new_outbound(&aid, uri, call_id, from_tag, rtp_port, branch, local_uri);
         call.local_srtp_key = local_srtp_key;
+        if let Some(id) = call_id_override {
+            call.id = id;
+        }
         let id = call.id.clone();
 
         transport.send_to(invite.as_bytes(), server_addr).await?;
@@ -1168,29 +1249,21 @@ impl SipManager {
 
         transport.send_to(msg.as_bytes(), server_addr).await?;
 
-        {
+        let media = {
             let mut s = self.state.write().await;
-            if let Some((_, call)) = s.find_call_mut(call_id) {
-                if let Some(media) = call.media() {
-                    // Stop recording if active (saves the WAV file)
-                    if media.is_recording() {
-                        if let Ok(Some(path)) = media.stop_recording() {
-                            log::info!("Call recording saved: {}", path.display());
-                            // Runs on its own thread and only if the user asked
-                            // for it, so a slow transcription cannot hold up
-                            // tearing the call down.
-                            crate::ai::maybe_transcribe_in_background(call_id, &path);
-                        }
-                    }
-                    media.stop();
-                }
+            s.find_call_mut(call_id).and_then(|(_, call)| {
+                let media = call.take_media();
                 let _ = call.process(CallFSMEvent::LocalHangup);
-            }
-        }
+                media
+            })
+        };
+        let recording_path = finish_call_media(call_id, media).await;
 
-        self.emit(SipEvent::CallStateChanged(
-            CallEvent::new(&account_id, call_id, "ended", &remote_uri, &direction)
-        ));
+        let mut ended = CallEvent::new(&account_id, call_id, "ended", &remote_uri, &direction);
+        if let Some(path) = recording_path {
+            ended = ended.with_recording_path(path);
+        }
+        self.emit(SipEvent::CallStateChanged(ended));
 
         let state = self.state.clone();
         let id = call_id.to_string();
@@ -1285,8 +1358,6 @@ impl SipManager {
 
             let mut s = self.state.write().await;
 
-            recording_event = s.start_auto_record(&account_id, call_id, &media);
-
             if let Some((_, call)) = s.find_call_mut(call_id) {
                 let _ = call.process(CallFSMEvent::LocalAnswer {
                     media,
@@ -1294,6 +1365,14 @@ impl SipManager {
                 });
                 call.set_to_tag(to_tag.clone());
             }
+
+            // Only once the session is on the call. Media startup runs without
+            // the lock, and a caller who gave up in that window has already
+            // been torn down; recording then would leave an orphaned WAV.
+            recording_event = s
+                .find_call(call_id)
+                .and_then(|(_, call)| call.media())
+                .and_then(|media| s.start_auto_record(&account_id, call_id, media));
         }
 
         self.emit(SipEvent::CallStateChanged(
@@ -1371,16 +1450,9 @@ impl SipManager {
         log::info!("Stopping recording for call {}", call_id);
         let s = self.state.read().await;
         let (_, call) = s.find_call(call_id).ok_or("Call not found")?;
-        if let Some(media) = call.media() {
-            let path = media.stop_recording()
-                .map_err(|e| format!("Failed to stop recording: {}", e))?;
-            if let Some(p) = path.as_ref() {
-                crate::ai::maybe_transcribe_in_background(call_id, p);
-            }
-            Ok(path.map(|p| p.to_string_lossy().to_string()))
-        } else {
-            Err("No active media session".into())
-        }
+        let media = call.media().ok_or("No active media session")?;
+        let path = save_recording(call_id, media)?;
+        Ok(path.map(|p| p.to_string_lossy().into_owned()))
     }
 
     /// Check if the call is being recorded
@@ -2236,7 +2308,7 @@ impl SipManager {
         account_id: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(async move {
-        let should_reconnect = {
+        let (should_reconnect, ended_calls) = {
             let mut s = state.write().await;
             let account = match s.accounts.get_mut(&account_id) {
                 Some(a) => a,
@@ -2256,15 +2328,21 @@ impl SipManager {
             // Transition to reconnecting
             account.registration.transport_lost();
 
-            // End all active calls for this account
-            let call_events: Vec<CallEventPayload> = account.calls.drain(..)
-                .map(|call| CallEventPayload::new(
-                    &account_id,
-                    &call.id,
-                    "ended",
-                    &call.remote_uri,
-                    call.direction_str(),
-                ))
+            // End all active calls for this account. Their media is finished
+            // after the lock is released, below.
+            let ended_calls: Vec<(CallEventPayload, Option<media::MediaSession>)> = account
+                .calls
+                .drain(..)
+                .map(|mut call| {
+                    let event = CallEventPayload::new(
+                        &account_id,
+                        &call.id,
+                        "ended",
+                        &call.remote_uri,
+                        call.direction_str(),
+                    );
+                    (event, call.take_media())
+                })
                 .collect();
 
             // Save subscription targets for re-subscription after reconnect
@@ -2284,13 +2362,15 @@ impl SipManager {
             account.realm_fallback = None;
             account.realm_fallback_exhausted = false;
 
-            // Emit call ended events
-            for evt in call_events {
-                let _ = event_tx.send(SipEvent::CallStateChanged(evt));
-            }
-
-            was_active
+            (was_active, ended_calls)
         };
+
+        for (mut event, media) in ended_calls {
+            if let Some(path) = finish_call_media(&event.call_id, media).await {
+                event = event.with_recording_path(path);
+            }
+            let _ = event_tx.send(SipEvent::CallStateChanged(event));
+        }
 
         if !should_reconnect {
             return;
@@ -2572,3 +2652,22 @@ impl SipManager {
     }
 }
 
+
+#[cfg(test)]
+mod call_id_tests {
+    use super::SipManager;
+
+    // The id becomes part of the recording filename, so anything that is not
+    // a UUID must be refused before a call is created.
+    #[tokio::test]
+    async fn make_call_with_id_rejects_non_uuid_ids() {
+        let (manager, _rx) = SipManager::new_with_receiver();
+        for bad in ["../../etc/passwd", "call-1", ""] {
+            let err = manager
+                .make_call_with_id("sip:100@example.com", bad)
+                .await
+                .expect_err("non-UUID id must be rejected");
+            assert!(err.contains("UUID"), "unexpected error for {:?}: {}", bad, err);
+        }
+    }
+}

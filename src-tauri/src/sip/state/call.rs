@@ -760,6 +760,20 @@ impl CallFSM {
         }
     }
 
+    /// Remove the media session, including unanswered early media, and hand
+    /// it to the caller.
+    ///
+    /// Teardown uses this instead of `stop_media` so the session is dropped
+    /// outside the state lock: dropping it saves any active recording, which
+    /// is a synchronous write of the whole call to disk.
+    pub fn take_media(&mut self) -> Option<MediaSession> {
+        match &mut self.state {
+            CallState::Connected { media, .. } | CallState::Held { media, .. } => media.take(),
+            CallState::Ringing { early_media, .. } => early_media.take(),
+            _ => None,
+        }
+    }
+
     /// Stop and remove the media session
     pub fn stop_media(&mut self) {
         match &mut self.state {

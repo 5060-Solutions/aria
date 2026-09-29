@@ -115,7 +115,6 @@ export function CallHistory() {
 
   const accounts = useAppStore((s) => s.accounts);
   const activeAccountId = useAppStore((s) => s.activeAccountId);
-  const setActiveCall = useAppStore((s) => s.setActiveCall);
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
   
   const dateTimeFormatter = useMemo(() => {
@@ -141,37 +140,13 @@ export function CallHistory() {
     const numberInfo = getNumberInfo(uri, defaultCountry);
     const fullUri = uri.startsWith("sip:") ? uri : `sip:${number}@${activeAccount.domain}`;
 
-    setActiveCall({
-      id: crypto.randomUUID(),
+    const { placeCall } = await import("../../hooks/useSip");
+    // placeCall removes the call again if it could not be placed.
+    await placeCall({
+      uri: fullUri,
       accountId: activeAccountId,
-      remoteUri: fullUri,
       remoteName: name || numberInfo.formatted,
-      state: "dialing",
-      direction: "outbound",
-      startTime: Date.now(),
-      muted: false,
-      held: false,
-      recording: false,
-    });
-
-    try {
-      const { sipMakeCall } = await import("../../hooks/useSip");
-      const callId = await sipMakeCall(fullUri);
-      setActiveCall({
-        id: callId,
-        accountId: activeAccountId,
-        remoteUri: fullUri,
-        remoteName: name || numberInfo.formatted,
-        state: "dialing",
-        direction: "outbound",
-        startTime: Date.now(),
-        muted: false,
-        held: false,
-        recording: false,
-      });
-    } catch {
-      setActiveCall(null);
-    }
+    }).catch(() => {});
   };
 
   const selectedInfo = useMemo(() => {
