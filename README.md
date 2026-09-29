@@ -48,6 +48,7 @@ stays light.
 
 **Everyday use**
 - Contacts with favorites and search, plus macOS Contacts import
+- Presence (BLF) for colleagues' extensions, shown live in Contacts
 - Call history with callback and CSV export
 - Keyboard-driven: ⌘D dialer, ⌘↵ call / answer, ⌘K hang up, ⌘M mute, ⌘H hold, ⌘, settings
 - Dark and light themes; English, Spanish, German and French
