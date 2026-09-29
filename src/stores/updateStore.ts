@@ -68,8 +68,10 @@ interface UpdateState {
   errorMessage: string | null;
   downloadedBytes: number;
   totalBytes: number | null;
-  /** Set when the user picks "Later" — suppresses the prompt for this session. */
+  /** Set when the user picks "Later". Cleared by `checkForUpdate` — see there. */
   dismissed: boolean;
+  /** When "Later" was picked, for re-prompting a long-running session. */
+  dismissedAt: number | null;
 
   checkForUpdate: (manual: boolean) => Promise<void>;
   installUpdate: () => Promise<void>;
@@ -79,6 +81,9 @@ interface UpdateState {
   dismiss: () => void;
   clearManualResult: () => void;
 }
+
+/** How long "Later" holds before the same update is offered again. */
+const REMIND_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The plugin's Update is a native resource handle, so it lives outside the
@@ -112,11 +117,15 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
   downloadedBytes: 0,
   totalBytes: null,
   dismissed: false,
+  dismissedAt: null,
 
   checkForUpdate: async (manual) => {
     if (get().checkStatus === "checking") return;
-    // Never interrupt an install that is already running.
-    if (get().installStatus === "downloading" || get().installStatus === "installing") {
+    // Never interrupt an install that is already running, or one waiting on
+    // a restart: a fresh check would find the same version still "available"
+    // and reset the prompt back to Install.
+    const { installStatus } = get();
+    if (installStatus === "downloading" || installStatus === "installing" || installStatus === "installed") {
       return;
     }
 
@@ -148,7 +157,17 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       }
 
       pendingUpdate = update;
+
+      // "Later" should not mean "never" for an app that stays open for weeks.
+      // Ask again for a newer release, or for the same one a day later.
+      const { dismissed, dismissedAt, availableVersion } = get();
+      const remind =
+        dismissed &&
+        (update.version !== availableVersion ||
+          (dismissedAt !== null && Date.now() - dismissedAt >= REMIND_AFTER_MS));
+
       set({
+        ...(remind ? { dismissed: false, dismissedAt: null } : {}),
         checkStatus: "available",
         availableVersion: update.version,
         releaseNotes: update.body?.trim() ? update.body.trim() : null,
@@ -224,7 +243,7 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     }
   },
 
-  dismiss: () => set({ dismissed: true }),
+  dismiss: () => set({ dismissed: true, dismissedAt: Date.now() }),
 
   clearManualResult: () =>
     set((s) =>
