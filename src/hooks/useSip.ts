@@ -49,14 +49,55 @@ interface RecordingPayload {
   path?: string;
 }
 
+/** Registers all enabled accounts with retry backoff (crucial for launch at boot). */
+export async function registerAllEnabledAccounts() {
+  const store = useAppStore.getState();
+  const enabledAccounts = store.accounts.filter((a) => a.enabled);
+  if (enabledAccounts.length === 0) return;
+
+  log.info("[useAutoRegister] Enabled accounts to register:", enabledAccounts.map(a => ({
+    id: a.id,
+    username: a.username,
+    transport: a.transport,
+    port: a.port,
+  })));
+
+  for (const account of enabledAccounts) {
+    log.info("[useAutoRegister] Registering account:", account.id);
+    store.setAccountRegistrationState(account.id, "registering");
+
+    let attempts = 0;
+    const maxAttempts = 5;
+    const retryDelays = [2000, 4000, 6000, 10000, 15000];
+
+    const tryRegister = async () => {
+      try {
+        const accountWithPassword = await getAccountWithPassword(account);
+        await sipRegister(accountWithPassword);
+        log.info(`[useAutoRegister] Registration successful for ${account.id}`);
+      } catch (e) {
+        attempts++;
+        log.error(`Auto-registration failed for ${account.id} (attempt ${attempts}/${maxAttempts}):`, e);
+        store.setAccountRegistrationState(account.id, "error", String(e));
+        if (attempts < maxAttempts) {
+          const delay = retryDelays[attempts - 1] || 15000;
+          log.info(`[useAutoRegister] Retrying registration in ${delay}ms...`);
+          setTimeout(tryRegister, delay);
+        }
+      }
+    };
+
+    tryRegister();
+  }
+
+  if (store.activeAccountId) {
+    await sipSetActiveAccount(store.activeAccountId).catch(() => {});
+  }
+}
+
 /** Auto-registers ALL enabled accounts on app launch. */
 export function useAutoRegister() {
-  const accounts = useAppStore((s) => s.accounts);
-  const activeAccountId = useAppStore((s) => s.activeAccountId);
   const setupComplete = useAppStore((s) => s.setupComplete);
-  const setAccountRegistrationState = useAppStore(
-    (s) => s.setAccountRegistrationState
-  );
   const hasRegistered = useRef(false);
 
   useEffect(() => {
@@ -64,48 +105,9 @@ export function useAutoRegister() {
     if (hasRegistered.current) return;
     if (!setupComplete) return;
 
-    const enabledAccounts = accounts.filter((a) => a.enabled);
-    if (enabledAccounts.length === 0) return;
-
     hasRegistered.current = true;
-
-    // Register all enabled accounts concurrently
-    const registerAll = async () => {
-      log.info("[useAutoRegister] Enabled accounts to register:", enabledAccounts.map(a => ({
-        id: a.id,
-        username: a.username,
-        transport: a.transport,
-        port: a.port,
-      })));
-
-      for (const account of enabledAccounts) {
-        log.info("[useAutoRegister] Registering account:", account.id, "transport:", account.transport, "port:", account.port);
-        setAccountRegistrationState(account.id, "registering");
-        try {
-          const accountWithPassword = await getAccountWithPassword(account);
-          log.info("[useAutoRegister] Account with password:", {
-            id: accountWithPassword.id,
-            username: accountWithPassword.username,
-            transport: accountWithPassword.transport,
-            port: accountWithPassword.port,
-          });
-          await sipRegister(accountWithPassword);
-        } catch (e) {
-          log.error(`Auto-registration failed for ${account.id}:`, e);
-          setAccountRegistrationState(account.id, "error", String(e));
-        }
-      }
-
-      // Set active account in backend if we have one
-      if (activeAccountId) {
-        await sipSetActiveAccount(activeAccountId).catch(() => {});
-      }
-    };
-
-    registerAll();
-    // Only run once on mount — accounts/activeAccountId are initial values
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    registerAllEnabledAccounts();
+  }, [setupComplete]);
 }
 
 /** How long an ended call stays on screen before it is removed. */

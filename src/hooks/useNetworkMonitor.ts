@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useAppStore } from "../stores/appStore";
+import { registerAllEnabledAccounts } from "./useSip";
 import { log } from "../utils/log";
 
 /**
@@ -25,6 +27,16 @@ export function useNetworkMonitor() {
           invoke("process_pending_resubscriptions").catch(() => {});
         })
         .catch((e) => log.error("[NetworkMonitor] Probe failed:", e));
+
+      // If any enabled account is not registered, trigger re-registration
+      const store = useAppStore.getState();
+      const hasUnregistered = store.accounts.some(
+        (a) => a.enabled && store.accountStates[a.id]?.registrationState !== "registered"
+      );
+      if (hasUnregistered) {
+        log.info("[NetworkMonitor] Detected unregistered enabled accounts, triggering auto-register");
+        registerAllEnabledAccounts().catch(() => {});
+      }
     };
 
     // 1. Visibility change — fires on wake from sleep/hibernate
