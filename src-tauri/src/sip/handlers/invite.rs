@@ -28,8 +28,8 @@ pub async fn handle_invite_response(
         100 => {
             log::info!("Call trying (100)");
         }
-        180 | 183 => {
-            log::info!("Call ringing ({})", status);
+        180 | 181 | 183 => {
+            log::info!("Call ringing/progress ({})", status);
 
             // Check for SDP in 183 (early media)
             let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
@@ -202,8 +202,20 @@ pub async fn handle_invite_response(
                 }
             };
 
+            // Extract remote Contact header URI from 200 OK (RFC 3261 Section 13.2.2.4)
+            let remote_contact_uri = extract_header(text, "Contact").and_then(|c| {
+                let trimmed = c.trim();
+                if let Some(start) = trimmed.find('<') {
+                    if let Some(end) = trimmed.find('>') {
+                        return Some(trimmed[start + 1..end].to_string());
+                    }
+                }
+                Some(trimmed.to_string())
+            });
+            let ack_target_uri = remote_contact_uri.as_deref().unwrap_or(&remote_uri);
+
             let ack = build_ack(
-                &remote_uri,
+                ack_target_uri,
                 local_addr,
                 &sip_call_id,
                 cseq,
@@ -245,6 +257,7 @@ pub async fn handle_invite_response(
                 let early_media = if let Some((_, call)) =
                     s.find_call_by_header_mut(&call_id_header)
                 {
+                    call.remote_contact = remote_contact_uri.clone();
                     let early_media = call.take_early_media();
                     call.set_to_tag(to_tag.clone());
                     let _ = call.process(CallFSMEvent::Answered {
@@ -411,6 +424,7 @@ pub async fn handle_invite_response(
         }
         486 | 600 | 603 => {
             log::info!("Call rejected ({})", status);
+            send_non_2xx_ack(state, &call_id_header, text).await;
             let mut s = state.write().await;
             if let Some((account_id, call)) = s.find_call_by_header_mut(&call_id_header) {
                 let account_id = account_id.to_string();
@@ -614,6 +628,7 @@ pub async fn handle_invite_response(
         }
         _ if status >= 400 => {
             log::warn!("Call failed ({})", status);
+            send_non_2xx_ack(state, &call_id_header, text).await;
             let mut s = state.write().await;
             if let Some((account_id, call)) = s.find_call_by_header_mut(&call_id_header) {
                 let account_id = account_id.to_string();
@@ -628,5 +643,52 @@ pub async fn handle_invite_response(
             }
         }
         _ => {}
+    }
+}
+
+/// Send a hop-by-hop ACK request for non-2xx final responses (RFC 3261 Section 17.1.1.3).
+async fn send_non_2xx_ack(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id_header: &str,
+    text: &str,
+) {
+    let ack_info = {
+        let s = state.read().await;
+        s.find_call_by_header(call_id_header).and_then(|(account, call)| {
+            let transport = account.transport.clone()?;
+            let server_addr = account.server_addr?;
+            let local_addr = account.local_addr.unwrap_or_else(|| transport.local_addr());
+            let transport_param = account.config.transport.param().to_string();
+            let via_branch = call.last_invite_branch.clone().unwrap_or_else(builder::generate_branch);
+            Some((
+                transport,
+                server_addr,
+                local_addr,
+                transport_param,
+                call.remote_uri.clone(),
+                call.call_id_header.clone(),
+                call.cseq,
+                call.from_tag.clone(),
+                call.local_uri.clone(),
+                via_branch,
+            ))
+        })
+    };
+
+    if let Some((transport, server_addr, local_addr, transport_param, remote_uri, sip_call_id, cseq, from_tag, local_uri, via_branch)) = ack_info {
+        let to_tag = extract_to_tag(text).unwrap_or_default();
+        let ack = build_ack(
+            &remote_uri,
+            local_addr,
+            &sip_call_id,
+            cseq,
+            &from_tag,
+            &to_tag,
+            &transport_param,
+            &via_branch,
+            &local_uri,
+            &remote_uri,
+        );
+        let _ = transport.send_to(ack.as_bytes(), server_addr).await;
     }
 }

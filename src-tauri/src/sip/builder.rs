@@ -15,8 +15,8 @@ pub use rsip::sip_parser::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-const USER_AGENT: &str = "Aria/0.2.0";
-const ALLOW: &str = "INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, REFER, INFO";
+pub const USER_AGENT: &str = "Aria/0.4.5";
+const ALLOW: &str = "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE";
 
 /// Build an `rsip::Request` from parts and convert to `String`.
 fn request_to_string(
@@ -226,10 +226,11 @@ pub fn build_invite_with_public_ip(
     let request_uri = parse_uri(target_uri);
 
     let via = via_value(transport_param, local_addr, &branch);
-    let from_hdr = format!(
-        "\"{}\" <sip:{}@{}>;tag={}",
-        account.display_name, account.username, account.domain, from_tag,
-    );
+    let from_hdr = if account.display_name.trim().is_empty() {
+        format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag)
+    } else {
+        format!("\"{}\" <sip:{}@{}>;tag={}", account.display_name, account.username, account.domain, from_tag)
+    };
     let to_hdr = format!("<{}>", target_uri);
     let cseq_hdr = format!("{} INVITE", cseq);
 
@@ -287,6 +288,7 @@ pub fn build_ack(
     let cseq_hdr = format!("{} ACK", cseq);
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     request_to_string(rsip::Method::Ack, request_uri, headers, vec![])
@@ -346,6 +348,7 @@ pub fn build_bye_with_routes(
     let cseq_hdr = format!("{} BYE", cseq);
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
+    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
 
     for route in route_set {
         headers.push(rsip::headers::Route::new(route.as_str()).into());

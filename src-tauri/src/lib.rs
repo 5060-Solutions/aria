@@ -69,6 +69,11 @@ pub fn run() {
         .manage(manager)
         .manage(audio_test_manager)
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            {
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            }
+
             // Set up event forwarding from SIP manager to frontend ONCE at startup
             let app_handle = app.handle().clone();
             
@@ -240,8 +245,19 @@ pub fn run() {
             commands::ai_auto_transcribe,
             commands::ai_set_auto_transcribe,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Aria");
+        .build(tauri::generate_context!())
+        .expect("error while building Aria")
+        .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
 
 #[cfg(test)]

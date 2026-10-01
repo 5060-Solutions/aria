@@ -692,14 +692,14 @@ impl SipManager {
     ) -> Result<SocketAddr, String> {
         // Try SRV lookup pattern: _sip._udp.domain, _sip._tcp.domain, _sips._tcp.domain
         let srv_name = match transport {
-            TransportType::Udp => format!("_sip._udp.{}:{}", registrar, port),
-            TransportType::Tcp => format!("_sip._tcp.{}:{}", registrar, port),
-            TransportType::Tls => format!("_sips._tcp.{}:{}", registrar, port),
+            TransportType::Udp => format!("_sip._udp.{}", registrar),
+            TransportType::Tcp => format!("_sip._tcp.{}", registrar),
+            TransportType::Tls => format!("_sips._tcp.{}", registrar),
         };
 
-        // 5 second timeout for SRV lookup
+        // 3 second timeout for SRV lookup
         if let Ok(Ok(mut addrs)) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(3),
             tokio::net::lookup_host(&srv_name)
         ).await {
             if let Some(addr) = addrs.next() {
@@ -712,10 +712,10 @@ impl SipManager {
             srv_name
         );
 
-        // Fallback: direct A-record lookup with 5 second timeout
+        // Fallback: direct A-record lookup with 3 second timeout
         let addr_str = format!("{}:{}", registrar, port);
         let server_addr = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(3),
             tokio::net::lookup_host(&addr_str)
         )
             .await
@@ -1188,25 +1188,26 @@ impl SipManager {
     }
 
     pub async fn hangup(&self, call_id: &str) -> Result<(), String> {
-        let (call_info, local_addr, server_addr, transport, account_id) = {
+        let (action_msg, server_addr, transport, account_id, remote_uri, direction) = {
             let mut s = self.state.write().await;
-            let (aid, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
-            let aid = aid.to_string();
-
-            let cseq = call.next_cseq();
-            let needs_cancel = call.is_dialing() || call.is_ringing();
-            let info = (
-                call.remote_uri.clone(),
-                call.call_id_header.clone(),
-                cseq,
-                call.from_tag.clone(),
-                call.to_tag.clone().unwrap_or_default(),
-                needs_cancel,
-                call.last_invite_branch.clone(),
-                call.route_set().to_vec(),
-                call.direction_str().to_string(),
-                call.local_uri.clone(),
-            );
+            let (aid, cseq, remote_uri, direction, to_tag, from_tag, call_id_header, last_invite_branch, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact) = {
+                let (aid, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
+                let aid = aid.to_string();
+                let cseq = call.next_cseq();
+                let remote_uri = call.remote_uri.clone();
+                let direction = call.direction_str().to_string();
+                let to_tag = call.to_tag.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()[..8].to_string());
+                let from_tag = call.from_tag.clone();
+                let call_id_header = call.call_id_header.clone();
+                let last_invite_branch = call.last_invite_branch.clone();
+                let local_uri = call.local_uri.clone();
+                let route_set = call.route_set().to_vec();
+                let is_incoming = call.is_incoming();
+                let is_dialing_or_ringing = call.is_dialing() || call.is_ringing();
+                let raw_invite = call.raw_invite().map(|str_| str_.to_string());
+                let remote_contact = call.remote_contact.clone();
+                (aid, cseq, remote_uri, direction, to_tag, from_tag, call_id_header, last_invite_branch, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact)
+            };
 
             let account = s.get_account(&aid).ok_or("Account not found")?;
             let la = account.local_addr.ok_or("No local addr")?;
@@ -1214,40 +1215,70 @@ impl SipManager {
             let transport = account.transport.clone().ok_or("No transport")?;
             let transport_str = account.config.transport.param().to_string();
 
-            (info, la, sa, (transport, transport_str), aid)
+            let msg = if is_incoming && is_dialing_or_ringing {
+                // Reject incoming call while ringing with 486 Busy Here (RFC 3261 Section 21.4.17)
+                if let Some(ref raw_inv) = raw_invite {
+                    let mut resp = builder::build_simple_response(raw_inv, 486, "Busy Here")
+                        .unwrap_or_default();
+                    if !resp.contains(";tag=") && !resp.contains(";tag =") {
+                        if let Some(to_hdr) = builder::extract_header(raw_inv, "To") {
+                            resp = resp.replace(&to_hdr, &format!("{};tag={}", to_hdr, to_tag));
+                        }
+                    }
+                    Some(resp)
+                } else {
+                    None
+                }
+            } else if is_dialing_or_ringing {
+                // Outbound call not answered yet: cancel INVITE (RFC 3261 Section 9.1)
+                let cancel_msg = build_cancel(
+                    &remote_uri,
+                    la,
+                    &call_id_header,
+                    1,
+                    &from_tag,
+                    &transport_str,
+                    &last_invite_branch.unwrap_or_default(),
+                    &local_uri,
+                    &remote_uri,
+                );
+                Some(cancel_msg)
+            } else {
+                // Established dialog: send BYE
+                // RFC 3261 Section 15: The sender of the BYE puts its own tag in From,
+                // and the remote party's tag in To.
+                let is_inbound = direction == "inbound";
+                let (bye_from_tag, bye_to_tag) = if is_inbound {
+                    // For inbound call: to_tag is Aria's tag in dialog, from_tag is caller's tag
+                    (&to_tag, &from_tag)
+                } else {
+                    // For outbound call: from_tag is Aria's tag in dialog, to_tag is callee's tag
+                    (&from_tag, &to_tag)
+                };
+
+                let target_uri = remote_contact.as_deref().unwrap_or(&remote_uri);
+
+                let bye = build_bye_with_routes(
+                    target_uri,
+                    la,
+                    &call_id_header,
+                    cseq,
+                    bye_from_tag,
+                    bye_to_tag,
+                    &transport_str,
+                    &route_set,
+                    &local_uri,
+                    &remote_uri,
+                );
+                Some(bye)
+            };
+
+            (msg, sa, transport, aid, remote_uri, direction)
         };
 
-        let (remote_uri, sip_call_id, cseq, from_tag, to_tag, needs_cancel, branch, route_set, direction, local_uri) = call_info;
-        let (transport, transport_str) = transport;
-
-        let msg = if needs_cancel {
-            build_cancel(
-                &remote_uri,
-                local_addr,
-                &sip_call_id,
-                1,
-                &from_tag,
-                &transport_str,
-                &branch.unwrap_or_default(),
-                &local_uri,
-                &remote_uri,
-            )
-        } else {
-            build_bye_with_routes(
-                &remote_uri,
-                local_addr,
-                &sip_call_id,
-                cseq,
-                &from_tag,
-                &to_tag,
-                &transport_str,
-                &route_set,
-                &local_uri,
-                &remote_uri,
-            )
-        };
-
-        transport.send_to(msg.as_bytes(), server_addr).await?;
+        if let Some(msg) = action_msg {
+            transport.send_to(msg.as_bytes(), server_addr).await?;
+        }
 
         let media = {
             let mut s = self.state.write().await;
