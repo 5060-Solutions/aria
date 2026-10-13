@@ -203,15 +203,8 @@ pub async fn handle_invite_response(
             };
 
             // Extract remote Contact header URI from 200 OK (RFC 3261 Section 13.2.2.4)
-            let remote_contact_uri = extract_header(text, "Contact").and_then(|c| {
-                let trimmed = c.trim();
-                if let Some(start) = trimmed.find('<') {
-                    if let Some(end) = trimmed.find('>') {
-                        return Some(trimmed[start + 1..end].to_string());
-                    }
-                }
-                Some(trimmed.to_string())
-            });
+            let remote_contact_uri =
+                extract_header(text, "Contact").map(|c| builder::contact_uri(&c));
             let ack_target_uri = remote_contact_uri.as_deref().unwrap_or(&remote_uri);
 
             let ack = build_ack(

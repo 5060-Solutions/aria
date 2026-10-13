@@ -34,55 +34,94 @@ pub async fn handle_incoming_request(
                 log::info!("Incoming INVITE from {}", remote);
                 let call_id = extract_header(text, "Call-ID").unwrap_or_default();
 
-                // RFC 3261 Section 14: Check if this is an in-dialog re-INVITE for an existing call
-                let existing_call_info = {
+                // An INVITE whose Call-ID we already have is not a new call.
+                // Creating one for it used to put a second, phantom call on
+                // screen.
+                let existing = {
                     let s = state.read().await;
-                    if let Some((_, c)) = s.find_call_by_header(&call_id) {
-                        Some({
-                            let local_tag = if c.is_incoming() {
-                                c.to_tag.clone().unwrap_or_default()
-                            } else {
-                                c.from_tag.clone()
-                            };
-                            (local_tag, c.local_rtp_port, c.id.clone())
-                        })
-                    } else {
-                        None
-                    }
+                    s.find_call_by_header(&call_id).map(|(_, c)| {
+                        (
+                            c.id.clone(),
+                            c.local_rtp_port,
+                            c.is_incoming(),
+                            c.is_established(),
+                            c.to_tag.clone().unwrap_or_default(),
+                        )
+                    })
                 };
 
-                if let Some((local_tag, existing_rtp_port, call_internal_id)) = existing_call_info {
-                    log::info!("In-dialog re-INVITE for Call-ID {}, sending 200 OK without creating duplicate call", call_id);
-
-                    // Check if re-INVITE carries a new remote SDP / RTP target
-                    let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
-                    if !sdp.trim().is_empty() && sdp.contains("m=audio") {
-                        if let Some((ip, port)) = parse_sdp_connection(sdp) {
-                            if let Ok(new_remote_rtp) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-                                log::info!("Updating remote RTP to {} from in-dialog re-INVITE SDP", new_remote_rtp);
-                                let mut s = state.write().await;
-                                if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
-                                    call.set_remote_rtp(new_remote_rtp);
-                                }
-                            }
-                        }
-                    }
-
+                if let Some((call_internal_id, rtp_port, ringing_here, established, our_tag)) = existing {
+                    let in_dialog = extract_header(text, "To").is_some_and(|to| to.contains("tag="));
                     let s = state.read().await;
-                    if let Some(account) = s.get_account(account_id) {
-                        if let Some(ref transport) = account.transport {
-                            if let Some(la) = account.local_addr {
-                                if let Some(ok_resp) = builder::build_200_ok_invite_with_user(
-                                    text,
-                                    la,
-                                    existing_rtp_port,
-                                    &local_tag,
-                                    Some(&account.config.username),
-                                ) {
-                                    let _ = transport.send_to(ok_resp.as_bytes(), remote).await;
-                                }
+                    let Some(account) = s.get_account(account_id) else { return };
+                    let Some(ref transport) = account.transport else { return };
+
+                    let response = if !in_dialog {
+                        // No To tag: the caller is resending its first INVITE
+                        // because our 180 has not reached it yet. Repeat the 180.
+                        // Answering it would pick up a call the user has not.
+                        if ringing_here {
+                            log::info!("Retransmitted INVITE for {}, re-sending 180", call_id);
+                            build_ringing_response(text, &our_tag)
+                        } else {
+                            None
+                        }
+                    } else if established {
+                        // RFC 3261 §14: a re-INVITE within an established call,
+                        // e.g. a session refresh or the PBX moving media.
+                        let Some(la) = account.local_addr else { return };
+                        let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
+                        let new_target = if sdp.contains("m=audio") {
+                            parse_sdp_connection(sdp)
+                                .and_then(|(ip, port)| format!("{}:{}", ip, port).parse::<SocketAddr>().ok())
+                        } else {
+                            None
+                        };
+                        if let Some(target) = new_target {
+                            // Recorded on the call only. The running media
+                            // session keeps sending to the address it started
+                            // with; redirecting it needs support in rtp-engine.
+                            log::info!("re-INVITE offers RTP target {} for call {}", target, call_internal_id);
+                        }
+                        // The same address rules as the original offer/answer,
+                        // so a re-INVITE behind NAT does not advertise a
+                        // private address the PBX cannot reach.
+                        let media_ip = crate::sip::media::sdp_address(
+                            la.ip(),
+                            account.public_addr.map(|a| a.ip()),
+                            account.server_addr.map(|a| a.ip()),
+                        )
+                        .to_string();
+                        let resp = builder::build_200_ok_invite_with_public_ip(
+                            text,
+                            la,
+                            rtp_port,
+                            &our_tag,
+                            Some(&account.config.username),
+                            Some(&media_ip),
+                        );
+                        drop(s);
+                        if let Some(target) = new_target {
+                            let mut s = state.write().await;
+                            if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
+                                call.set_remote_rtp(target);
                             }
                         }
+                        let s = state.read().await;
+                        if let (Some(resp), Some(transport)) = (
+                            resp,
+                            s.get_account(account_id).and_then(|a| a.transport.clone()),
+                        ) {
+                            let _ = transport.send_to(resp.as_bytes(), remote).await;
+                        }
+                        return;
+                    } else {
+                        // A re-INVITE for a dialog that has already ended.
+                        build_simple_response(text, 481, "Call/Transaction Does Not Exist")
+                    };
+
+                    if let Some(resp) = response {
+                        let _ = transport.send_to(resp.as_bytes(), remote).await;
                     }
                     return;
                 }
@@ -138,13 +177,8 @@ pub async fn handle_incoming_request(
                     raw_invite: text.to_string(),
                     local_uri,
                 });
-                call.remote_contact = extract_header(text, "Contact").and_then(|c| {
-                    if let Some(start) = c.find('<') {
-                        c[start + 1..].find('>').map(|end| c[start + 1..start + 1 + end].to_string())
-                    } else {
-                        Some(c.trim().to_string())
-                    }
-                });
+                call.remote_contact =
+                    extract_header(text, "Contact").map(|c| builder::contact_uri(&c));
 
                 let call_id_for_event = call.id.clone();
                 let remote_uri_for_event = call.remote_uri.clone();
@@ -310,9 +344,15 @@ pub async fn handle_incoming_request(
                 }
             }
 
-            // 2. Terminate the ringing inbound call and send 487 Request Terminated for the INVITE
+            // 2. Terminate the ringing inbound call and send 487 Request Terminated for the INVITE.
+            // Only while it is still ringing: a CANCEL that crosses our 200 OK
+            // has no effect on an answered call (RFC 3261 §9.2), and ending it
+            // here would drop the UI's view of a call that is still up.
             let mut s = state.write().await;
-            if let Some((_, call)) = s.find_call_by_header_mut(&call_id) {
+            if let Some((_, call)) = s
+                .find_call_by_header_mut(&call_id)
+                .filter(|(_, call)| call.is_incoming())
+            {
                 let call_internal_id = call.id.clone();
                 let raw_invite = call.raw_invite().map(|s| s.to_string());
                 let to_tag = call.to_tag.clone().unwrap_or_default();
@@ -373,8 +413,9 @@ pub fn build_terminated_response(request: &str, to_tag: &str) -> Option<String> 
          To: {to}\r\n\
          Call-ID: {call_id}\r\n\
          CSeq: {cseq}\r\n\
-         User-Agent: Aria/0.4.5\r\n\
+         User-Agent: {ua}\r\n\
          Content-Length: 0\r\n\r\n",
+        ua = builder::USER_AGENT,
     ))
 }
 
@@ -399,8 +440,9 @@ pub fn build_ringing_response(request: &str, to_tag: &str) -> Option<String> {
          To: {to}\r\n\
          Call-ID: {call_id}\r\n\
          CSeq: {cseq}\r\n\
-         User-Agent: Aria/0.4.5\r\n\
+         User-Agent: {ua}\r\n\
          Content-Length: 0\r\n\r\n",
+        ua = builder::USER_AGENT,
     ))
 }
 
@@ -419,9 +461,10 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
          To: {}\r\n\
          Call-ID: {}\r\n\
          CSeq: {}\r\n\
-         User-Agent: Aria/0.4.5\r\n\
+         User-Agent: {ua}\r\n\
          Content-Length: 0\r\n\r\n",
         code, reason, via, from, to, call_id, cseq,
+        ua = builder::USER_AGENT,
     ))
 }
 

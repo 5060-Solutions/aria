@@ -15,8 +15,25 @@ pub use rsip::sip_parser::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-pub const USER_AGENT: &str = "Aria/0.4.5";
-const ALLOW: &str = "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, MESSAGE, OPTIONS, INFO, SUBSCRIBE";
+// From Cargo.toml, so it cannot fall behind the release the way the literal
+// "Aria/0.2.0" did.
+pub const USER_AGENT: &str = concat!("Aria/", env!("CARGO_PKG_VERSION"));
+// Only methods the request handler actually answers. MESSAGE is not one.
+const ALLOW: &str = "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, OPTIONS, INFO, SUBSCRIBE";
+
+/// The URI from a Contact header value: the part inside `<...>` when it has
+/// one, otherwise the whole value. This is the dialog's remote target
+/// (RFC 3261 §12.1), where in-dialog requests are addressed.
+pub fn contact_uri(contact: &str) -> String {
+    let contact = contact.trim();
+    contact
+        .find('<')
+        .and_then(|start| {
+            let rest = &contact[start + 1..];
+            rest.find('>').map(|end| rest[..end].to_string())
+        })
+        .unwrap_or_else(|| contact.to_string())
+}
 
 /// Build an `rsip::Request` from parts and convert to `String`.
 fn request_to_string(
@@ -1069,6 +1086,16 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn contact_uri_takes_the_bracketed_uri_and_drops_header_params() {
+        assert_eq!(
+            contact_uri("\"Bob\" <sip:bob@10.0.0.5:5060;transport=udp>;expires=300"),
+            "sip:bob@10.0.0.5:5060;transport=udp"
+        );
+        assert_eq!(contact_uri(" sip:bob@10.0.0.5 "), "sip:bob@10.0.0.5");
+    }
+
     use super::*;
 
     fn addr() -> SocketAddr {

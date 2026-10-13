@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/appStore";
-import { registerAllEnabledAccounts } from "./useSip";
+import { isAuthFailure, registerAccounts } from "./useSip";
 import { log } from "../utils/log";
 
 /**
@@ -11,8 +11,16 @@ import { log } from "../utils/log";
  * On wake or network recovery, immediately probes registration health
  * via an OPTIONS ping rather than waiting for the next keepalive cycle.
  */
+/**
+ * Minimum time between re-registration attempts from here. Probes fire on every
+ * wake, reconnect and window focus; an account that keeps failing must not be
+ * retried that often.
+ */
+const REREGISTER_INTERVAL_MS = 5 * 60 * 1000;
+
 export function useNetworkMonitor() {
   const lastProbe = useRef(0);
+  const lastReregister = useRef(0);
 
   useEffect(() => {
     // Debounce: don't probe more than once every 3 seconds
@@ -28,14 +36,22 @@ export function useNetworkMonitor() {
         })
         .catch((e) => log.error("[NetworkMonitor] Probe failed:", e));
 
-      // If any enabled account is not registered, trigger re-registration
-      const store = useAppStore.getState();
-      const hasUnregistered = store.accounts.some(
-        (a) => a.enabled && store.accountStates[a.id]?.registrationState !== "registered"
-      );
-      if (hasUnregistered) {
-        log.info("[NetworkMonitor] Detected unregistered enabled accounts, triggering auto-register");
-        registerAllEnabledAccounts().catch(() => {});
+      // Accounts that gave up — e.g. launched before the network was up — get
+      // another go. Not "reconnecting" ones, which the backend is already
+      // retrying, and never a rejected password (see isAuthFailure).
+      const { accounts, accountStates } = useAppStore.getState();
+      const stalled = accounts.filter((a) => {
+        const st = accountStates[a.id];
+        return (
+          a.enabled &&
+          st?.registrationState === "error" &&
+          !isAuthFailure(st.registrationError)
+        );
+      });
+      if (stalled.length > 0 && now - lastReregister.current >= REREGISTER_INTERVAL_MS) {
+        lastReregister.current = now;
+        log.info("[NetworkMonitor] Re-registering failed accounts:", stalled.map((a) => a.id));
+        void registerAccounts(stalled);
       }
     };
 

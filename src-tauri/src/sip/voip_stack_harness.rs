@@ -37,6 +37,12 @@ struct Seen {
     invites: Vec<String>,
     /// How many ACKs arrived.
     acks: usize,
+    /// Where the client registered from, so the PBX can call it.
+    client: Option<SocketAddr>,
+    /// Every response the client sent the PBX, raw.
+    responses: Vec<String>,
+    /// The method of every other request the client sent.
+    methods: Vec<String>,
 }
 
 /// How the fake PBX answers an INVITE.
@@ -99,11 +105,21 @@ async fn start_pbx() -> (SocketAddr, Arc<Mutex<Seen>>) {
 }
 
 async fn start_pbx_with(invite_reply: InviteReply) -> (SocketAddr, Arc<Mutex<Seen>>) {
+    let (addr, seen, _) = start_pbx_with_socket(invite_reply).await;
+    (addr, seen)
+}
+
+/// As `start_pbx_with`, also returning the PBX's socket so a test can send the
+/// client requests of its own: an incoming call, a CANCEL.
+async fn start_pbx_with_socket(
+    invite_reply: InviteReply,
+) -> (SocketAddr, Arc<Mutex<Seen>>, Arc<UdpSocket>) {
     let _ = env_logger::builder().is_test(true).try_init();
     let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind fake PBX"));
     let addr = sock.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Seen::default()));
     let rec = seen.clone();
+    let pbx_sock = sock.clone();
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
         let mut nonce_n = 0u32;
@@ -111,6 +127,13 @@ async fn start_pbx_with(invite_reply: InviteReply) -> (SocketAddr, Arc<Mutex<See
             let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
             let msg = String::from_utf8_lossy(&buf[..n]).into_owned();
             let method = msg.split_whitespace().next().unwrap_or("");
+            if method == "SIP/2.0" {
+                rec.lock().unwrap().responses.push(msg.clone());
+                continue;
+            }
+            if method != "REGISTER" {
+                rec.lock().unwrap().methods.push(method.to_owned());
+            }
             let reply = match method {
                 "REGISTER" => match header(&msg, "Authorization") {
                     None => {
@@ -140,6 +163,7 @@ async fn start_pbx_with(invite_reply: InviteReply) -> (SocketAddr, Arc<Mutex<See
                             s.register_ok.push(ok);
                         }
                         if ok {
+                            rec.lock().unwrap().client = Some(from);
                             let contact = header(&msg, "Contact").unwrap_or_default().to_owned();
                             respond(&msg, 200, "OK", &[format!("Contact: {contact};expires=300"), "Expires: 300".to_owned()])
                         } else {
@@ -193,7 +217,7 @@ async fn start_pbx_with(invite_reply: InviteReply) -> (SocketAddr, Arc<Mutex<See
             let _ = sock.send_to(reply.as_bytes(), from).await;
         }
     });
-    (addr, seen)
+    (addr, seen, pbx_sock)
 }
 
 fn account(pbx: SocketAddr, auth_realm: Option<&str>, password: &str) -> AccountConfig {
@@ -337,4 +361,122 @@ async fn a_retransmitted_200_is_acked_but_not_answered_twice() {
     assert_eq!(connected, 1, "connected reported {connected} times: {states:?}");
     assert_eq!(seen.lock().unwrap().acks, 2, "each 200 needs its own ACK");
     assert_eq!(ended_direction.as_deref(), Some("outbound"));
+}
+
+/// An INVITE from the PBX to the registered client, as an incoming call.
+fn incoming_invite(pbx: SocketAddr, client: SocketAddr, call_id: &str, cseq_method: &str) -> String {
+    let sdp = "v=0\r\no=pbx 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0\r\n";
+    let (method, body) = if cseq_method == "CANCEL" { ("CANCEL", "") } else { ("INVITE", sdp) };
+    format!(
+        "{method} sip:{USER}@{client} SIP/2.0\r\n\
+         Via: SIP/2.0/UDP {pbx};branch=z9hG4bKinv1\r\n\
+         From: <sip:200@harness.lan>;tag=caller1\r\n\
+         To: <sip:{USER}@harness.lan>\r\n\
+         Call-ID: {call_id}\r\n\
+         CSeq: 1 {method}\r\n\
+         Contact: <sip:200@{pbx}>\r\n\
+         Content-Type: application/sdp\r\n\
+         Content-Length: {}\r\n\r\n{body}",
+        body.len(),
+    )
+}
+
+/// Register, and return the manager, its events, and where the PBX can reach it.
+async fn registered_client(
+    pbx: SocketAddr,
+    seen: &Arc<Mutex<Seen>>,
+) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, SocketAddr) {
+    let (mgr, rx) = SipManager::new_with_receiver();
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let client = seen.lock().unwrap().client.expect("client address");
+    (mgr, rx, client)
+}
+
+/// Wait for a call event in `state`, returning its call id.
+async fn wait_for_call_state(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+    state: &str,
+) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let event = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("no {state} event within 5s"))
+            .expect("event channel open");
+        if let super::SipEvent::CallStateChanged(e) = event {
+            if e.state == state {
+                return e.call_id;
+            }
+        }
+    }
+}
+
+fn status_lines(seen: &Arc<Mutex<Seen>>, cseq_method: &str) -> Vec<String> {
+    seen.lock()
+        .unwrap()
+        .responses
+        .iter()
+        .filter(|r| header(r, "CSeq").is_some_and(|c| c.ends_with(cseq_method)))
+        .map(|r| r.lines().next().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// While a call rings, a resent INVITE must get the 180 again and nothing
+/// else; answering it would pick the call up behind the user's back. When the
+/// caller gives up, the CANCEL must end the call with a 487. Before, there was
+/// no CANCEL handling at all, so Aria rang on after the caller had gone.
+#[tokio::test]
+async fn a_cancelled_incoming_call_stops_ringing_and_a_resent_invite_is_not_answered() {
+    let (pbx, seen, sock) = start_pbx_with_socket(InviteReply::Busy).await;
+    let (_mgr, mut rx, client) = registered_client(pbx, &seen).await;
+
+    let invite = incoming_invite(pbx, client, "harness-cancel@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    wait_for_call_state(&mut rx, "incoming").await;
+
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let cancel = incoming_invite(pbx, client, "harness-cancel@pbx", "CANCEL");
+    sock.send_to(cancel.as_bytes(), client).await.unwrap();
+    wait_for_call_state(&mut rx, "ended").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let invite_replies = status_lines(&seen, "INVITE");
+    assert!(
+        invite_replies.iter().all(|l| !l.contains(" 200 ")),
+        "a ringing call was answered: {invite_replies:?}"
+    );
+    assert!(
+        invite_replies.iter().filter(|l| l.contains(" 180 ")).count() >= 2,
+        "the resent INVITE should get the 180 again: {invite_replies:?}"
+    );
+    assert!(
+        invite_replies.iter().any(|l| l.contains(" 487 ")),
+        "the cancelled INVITE needs a 487: {invite_replies:?}"
+    );
+    assert!(status_lines(&seen, "CANCEL").iter().any(|l| l.contains(" 200 ")));
+}
+
+/// Declining a ringing call is a final response to its INVITE, not a BYE: no
+/// dialog exists yet to say goodbye to.
+#[tokio::test]
+async fn declining_an_incoming_call_answers_486_and_sends_no_bye() {
+    let (pbx, seen, sock) = start_pbx_with_socket(InviteReply::Busy).await;
+    let (mgr, mut rx, client) = registered_client(pbx, &seen).await;
+
+    let invite = incoming_invite(pbx, client, "harness-decline@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+
+    mgr.hangup(&call_id).await.expect("declined");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let invite_replies = status_lines(&seen, "INVITE");
+    assert!(
+        invite_replies.iter().any(|l| l.contains(" 486 ")),
+        "declining should answer 486: {invite_replies:?}"
+    );
+    let methods = seen.lock().unwrap().methods.clone();
+    assert!(!methods.iter().any(|m| m == "BYE"), "sent a BYE for an unanswered call: {methods:?}");
 }

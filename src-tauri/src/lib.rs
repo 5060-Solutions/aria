@@ -69,11 +69,6 @@ pub fn run() {
         .manage(manager)
         .manage(audio_test_manager)
         .setup(move |app| {
-            #[cfg(target_os = "macos")]
-            {
-                let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-            }
-
             // Set up event forwarding from SIP manager to frontend ONCE at startup
             let app_handle = app.handle().clone();
             
@@ -247,11 +242,13 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building Aria")
-        .run(|app_handle, event| {
+        // Underscored because only macOS uses them; elsewhere they would warn.
+        .run(|_app_handle, _event| {
+            // Clicking the Dock icon (or launching Aria again) while its window
+            // is hidden or minimized must bring the window back and focus it.
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = event {
-                let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-                if let Some(window) = app_handle.get_webview_window("main") {
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                if let Some(window) = _app_handle.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.unminimize();
                     let _ = window.set_focus();

@@ -496,7 +496,7 @@ impl SipManager {
 
         // Resolve server address with SRV lookup fallback to A-record
         let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
-        let server_addr = Self::resolve_server(registrar, &account.transport, account.port).await?;
+        let server_addr = Self::resolve_server(registrar, account.port).await?;
 
         // Create transport based on account config
         log::info!("Creating {:?} transport to {}", account.transport, server_addr);
@@ -684,35 +684,13 @@ impl SipManager {
         Ok("registering".into())
     }
 
-    /// DNS SRV lookup with fallback to A-record
-    async fn resolve_server(
-        registrar: &str,
-        transport: &TransportType,
-        port: u16,
-    ) -> Result<SocketAddr, String> {
-        // Try SRV lookup pattern: _sip._udp.domain, _sip._tcp.domain, _sips._tcp.domain
-        let srv_name = match transport {
-            TransportType::Udp => format!("_sip._udp.{}", registrar),
-            TransportType::Tcp => format!("_sip._tcp.{}", registrar),
-            TransportType::Tls => format!("_sips._tcp.{}", registrar),
-        };
-
-        // 3 second timeout for SRV lookup
-        if let Ok(Ok(mut addrs)) = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            tokio::net::lookup_host(&srv_name)
-        ).await {
-            if let Some(addr) = addrs.next() {
-                log::info!("SRV lookup resolved {} -> {}", srv_name, addr);
-                return Ok(addr);
-            }
-        }
-        log::debug!(
-            "SRV lookup failed for {}, falling back to A-record",
-            srv_name
-        );
-
-        // Fallback: direct A-record lookup with 3 second timeout
+    /// Resolve the registrar's address.
+    async fn resolve_server(registrar: &str, port: u16) -> Result<SocketAddr, String> {
+        // `lookup_host` resolves addresses (A/AAAA) only; it never issues an
+        // SRV query. The "SRV lookup" that used to be here asked it for
+        // `_sip._udp.<domain>`, which can never resolve, so it only ever added
+        // a timeout before this lookup. Real SRV support needs a DNS resolver
+        // crate and is not implemented.
         let addr_str = format!("{}:{}", registrar, port);
         let server_addr = tokio::time::timeout(
             std::time::Duration::from_secs(3),
@@ -1215,7 +1193,10 @@ impl SipManager {
             let transport = account.transport.clone().ok_or("No transport")?;
             let transport_str = account.config.transport.param().to_string();
 
-            let msg = if is_incoming && is_dialing_or_ringing {
+            // `is_incoming` is the unanswered-inbound state, which is neither
+            // dialing nor ringing (those are outbound states), so it is tested
+            // on its own.
+            let msg = if is_incoming {
                 // Reject incoming call while ringing with 486 Busy Here (RFC 3261 Section 21.4.17)
                 if let Some(ref raw_inv) = raw_invite {
                     let mut resp = builder::build_simple_response(raw_inv, 486, "Busy Here")
@@ -2593,7 +2574,7 @@ impl SipManager {
     ) -> Result<mpsc::Receiver<SipMessage>, String> {
         // Resolve server address
         let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
-        let server_addr = Self::resolve_server(registrar, &account.transport, account.port).await?;
+        let server_addr = Self::resolve_server(registrar, account.port).await?;
 
         // Create transport
         let (mut transport, rx) = match account.transport {

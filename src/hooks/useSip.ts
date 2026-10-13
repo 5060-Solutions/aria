@@ -49,50 +49,93 @@ interface RecordingPayload {
   path?: string;
 }
 
-/** Registers all enabled accounts with retry backoff (crucial for launch at boot). */
-export async function registerAllEnabledAccounts() {
-  const store = useAppStore.getState();
-  const enabledAccounts = store.accounts.filter((a) => a.enabled);
-  if (enabledAccounts.length === 0) return;
+/**
+ * Waits between retries when an account cannot be handed to the backend at
+ * all — typically at login, before the network is up and DNS answers.
+ */
+const REGISTER_RETRY_DELAYS_MS = [2000, 4000, 6000, 10000, 15000];
 
-  log.info("[useAutoRegister] Enabled accounts to register:", enabledAccounts.map(a => ({
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Whether a registration error is the server rejecting the credentials. Those
+ * are never retried automatically: every attempt is another failed login, and
+ * PBXes commonly ban an address after a handful of them.
+ */
+export function isAuthFailure(error: string | null | undefined): boolean {
+  return !!error && /authenticat|\b40[13]\b/i.test(error);
+}
+
+/**
+ * One attempt to hand an account to the backend. Errors here are the backend
+ * not even getting as far as a REGISTER (DNS, connect); a rejected login
+ * arrives later, as a registration event.
+ */
+async function attemptRegister(account: SipAccount): Promise<boolean> {
+  useAppStore.getState().setAccountRegistrationState(account.id, "registering");
+  try {
+    await sipRegister(await getAccountWithPassword(account));
+    return true;
+  } catch (e) {
+    log.error(`[register] ${account.id} failed:`, e);
+    useAppStore.getState().setAccountRegistrationState(account.id, "error", String(e));
+    return false;
+  }
+}
+
+/** Point the backend at the user's chosen account for outbound calls. */
+async function applyActiveAccount() {
+  const { activeAccountId } = useAppStore.getState();
+  if (activeAccountId) await sipSetActiveAccount(activeAccountId).catch(() => {});
+}
+
+/** Keep trying an account that failed, until it works or the delays run out. */
+async function retryRegister(accountId: string) {
+  for (const delay of REGISTER_RETRY_DELAYS_MS) {
+    await sleep(delay);
+    // Re-read: the user may have edited, disabled or removed the account, or
+    // something else may have registered it, while we waited.
+    const { accounts, accountStates } = useAppStore.getState();
+    const account = accounts.find((a) => a.id === accountId);
+    const st = accountStates[accountId];
+    if (!account?.enabled || st?.registrationState !== "error" || isAuthFailure(st.registrationError)) {
+      return;
+    }
+    log.info(`[register] Retrying ${accountId}`);
+    if (await attemptRegister(account)) {
+      // The backend only learns which account is active once it knows the
+      // account, so a late registration has to be told again.
+      await applyActiveAccount();
+      return;
+    }
+  }
+}
+
+/**
+ * Register `accounts` (default: every enabled account).
+ *
+ * Accounts are handed over one at a time and the active account is set after
+ * all of them, as the backend needs the account before it can be made active;
+ * otherwise outbound calls fall back to whichever account it has first. With
+ * `retry`, an account that fails keeps being retried in the background, which
+ * is what lets Aria launched at login register once the network comes up.
+ */
+export async function registerAccounts(
+  accounts: SipAccount[] = useAppStore.getState().accounts.filter((a) => a.enabled),
+  { retry = false }: { retry?: boolean } = {},
+) {
+  if (accounts.length === 0) return;
+  log.info("[register] Registering:", accounts.map((a) => ({
     id: a.id,
     username: a.username,
     transport: a.transport,
     port: a.port,
   })));
 
-  for (const account of enabledAccounts) {
-    log.info("[useAutoRegister] Registering account:", account.id);
-    store.setAccountRegistrationState(account.id, "registering");
-
-    let attempts = 0;
-    const maxAttempts = 5;
-    const retryDelays = [2000, 4000, 6000, 10000, 15000];
-
-    const tryRegister = async () => {
-      try {
-        const accountWithPassword = await getAccountWithPassword(account);
-        await sipRegister(accountWithPassword);
-        log.info(`[useAutoRegister] Registration successful for ${account.id}`);
-      } catch (e) {
-        attempts++;
-        log.error(`Auto-registration failed for ${account.id} (attempt ${attempts}/${maxAttempts}):`, e);
-        store.setAccountRegistrationState(account.id, "error", String(e));
-        if (attempts < maxAttempts) {
-          const delay = retryDelays[attempts - 1] || 15000;
-          log.info(`[useAutoRegister] Retrying registration in ${delay}ms...`);
-          setTimeout(tryRegister, delay);
-        }
-      }
-    };
-
-    tryRegister();
+  for (const account of accounts) {
+    if (!(await attemptRegister(account)) && retry) void retryRegister(account.id);
   }
-
-  if (store.activeAccountId) {
-    await sipSetActiveAccount(store.activeAccountId).catch(() => {});
-  }
+  await applyActiveAccount();
 }
 
 /** Auto-registers ALL enabled accounts on app launch. */
@@ -106,7 +149,7 @@ export function useAutoRegister() {
     if (!setupComplete) return;
 
     hasRegistered.current = true;
-    registerAllEnabledAccounts();
+    void registerAccounts(undefined, { retry: true });
   }, [setupComplete]);
 }
 
