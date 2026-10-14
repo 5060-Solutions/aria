@@ -143,7 +143,7 @@ jobs:
           # tauri-action writes the latest.json the auto-updater reads. A
           # job failing after others succeeded would otherwise point every
           # installed client at a release missing its platform's artifact.
-          # Publish by hand once all the artifacts are present.
+          # The publish job below releases it once every build succeeds.
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
@@ -272,7 +272,20 @@ jobs:
           # tauri-action writes the latest.json the auto-updater reads. A
           # job failing after others succeeded would otherwise point every
           # installed client at a release missing its platform's artifact.
-          # Publish by hand once all the artifacts are present.
+          # The publish job below releases it once every build succeeds.
           releaseDraft: true
           prerelease: false
           args: --target universal-apple-darwin
+
+  # Builds land in a draft so a partial release never reaches the updater.
+  # Once every build has uploaded its artifacts and its share of latest.json,
+  # publish it. If any build fails this never runs and the draft stays put.
+  publish:
+    needs: [build, build-macos-universal]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --latest
