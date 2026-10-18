@@ -131,9 +131,11 @@ impl UdpTransport {
         let recv_socket = socket.clone();
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65535];
+            let mut consecutive_errors = 0u32;
             loop {
                 match recv_socket.recv_from(&mut buf).await {
                     Ok((len, remote)) => {
+                        consecutive_errors = 0;
                         let msg = SipMessage {
                             data: buf[..len].to_vec(),
                             remote,
@@ -143,7 +145,18 @@ impl UdpTransport {
                         }
                     }
                     Err(e) => {
-                        log::error!("UDP recv error: {}", e);
+                        // A persistent error (the interface went away, the
+                        // descriptor is bad) used to spin this loop at full
+                        // speed forever. Treat it as the transport dying:
+                        // closing the channel ends the receive loop, which
+                        // starts the reconnect.
+                        consecutive_errors += 1;
+                        log::error!("UDP recv error ({}): {}", consecutive_errors, e);
+                        if consecutive_errors >= 10 {
+                            log::error!("UDP socket keeps failing; giving it up");
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
                 }
             }

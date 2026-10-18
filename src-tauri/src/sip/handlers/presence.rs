@@ -27,6 +27,9 @@ pub async fn handle_subscribe_response(
         200 => {
             log::info!("SUBSCRIBE accepted (200 OK)");
             let to_tag = extract_to_tag(text);
+            // The server may shorten what we asked for; the refresh has to
+            // follow its number, not ours.
+            let granted = extract_header(text, "Expires").and_then(|e| e.trim().parse::<u32>().ok());
             let mut s = state.write().await;
             if let Some(account) = s.get_account_mut(account_id) {
                 if let Some(sub) = account
@@ -34,10 +37,22 @@ pub async fn handle_subscribe_response(
                     .iter_mut()
                     .find(|s| s.call_id == call_id_header)
                 {
+                    if sub.expires == 0 {
+                        // The answer to our unsubscribe; the entry is removed
+                        // by `unsubscribe` itself.
+                        return;
+                    }
                     sub.state = SubscriptionState::Active;
+                    sub.auth_attempts = 0;
                     if let Some(tag) = to_tag {
                         sub.to_tag = Some(tag);
                     }
+                    if let Some(granted) = granted.filter(|g| *g > 0) {
+                        sub.expires = granted;
+                    }
+                    sub.expires_at = Some(
+                        std::time::Instant::now() + std::time::Duration::from_secs(u64::from(sub.expires)),
+                    );
                 }
             }
         }
@@ -56,7 +71,7 @@ pub async fn handle_subscribe_response(
                 }
             };
 
-            let (account_config, local_addr, server_addr, transport) = {
+            let (account_config, local_addr, server_addr, transport, realm) = {
                 let s = state.read().await;
                 let account = match s.get_account(account_id) {
                     Some(a) => a,
@@ -74,7 +89,13 @@ pub async fn handle_subscribe_response(
                     Some(a) => a,
                     None => return,
                 };
-                (account.config.clone(), local_addr, server_addr, transport)
+                // The realm REGISTER settled on: the configured override (which
+                // the REGISTER handler clears if the server rejected it) or
+                // the server-IP fallback it needed. SUBSCRIBE used to ignore
+                // the fallback, so on the servers that need it every
+                // subscription looped on 401 until the address was banned.
+                let realm = account.config.auth_realm.clone().or_else(|| account.realm_fallback.clone());
+                (account.config.clone(), local_addr, server_addr, transport, realm)
             };
 
             let sub_info = {
@@ -91,18 +112,29 @@ pub async fn handle_subscribe_response(
                     Some(sub) => sub,
                     None => return,
                 };
+                if sub.auth_attempts >= 2 {
+                    log::error!(
+                        "SUBSCRIBE for {} still challenged after {} attempts; giving up on it",
+                        sub.target_uri,
+                        sub.auth_attempts
+                    );
+                    account.subscriptions.retain(|s| s.call_id != call_id_header);
+                    return;
+                }
+                sub.auth_attempts += 1;
                 sub.cseq += 1;
                 (
                     sub.target_uri.clone(),
                     sub.call_id.clone(),
                     sub.cseq,
                     sub.from_tag.clone(),
+                    sub.to_tag.clone(),
                     sub.event_type.clone(),
                     sub.expires,
                 )
             };
 
-            let (target_uri, sub_call_id, cseq, from_tag, event_type, expires) = sub_info;
+            let (target_uri, sub_call_id, cseq, from_tag, to_tag, event_type, expires) = sub_info;
 
             let auth = DigestAuth::from_challenge_with_realm(
                 &www_auth,
@@ -110,7 +142,7 @@ pub async fn handle_subscribe_response(
                 &account_config.password,
                 &target_uri,
                 "SUBSCRIBE",
-                account_config.auth_realm.as_deref(),
+                realm.as_deref(),
             );
 
             let auth_header = match auth {
@@ -128,6 +160,7 @@ pub async fn handle_subscribe_response(
                 &sub_call_id,
                 cseq,
                 &from_tag,
+                to_tag.as_deref(),
                 &event_type,
                 expires,
                 Some(&auth_header),
@@ -255,9 +288,30 @@ pub async fn handle_notify_presence(
     let _ = event_tx.send(SipEvent::PresenceChanged(account_id.to_string(), blf_entries));
 
     if sub_state_val == "terminated" {
+        // RFC 6665 §4.1.3: timeout, deactivated, probation and giveup mean
+        // "subscribe again"; rejected, noresource and invariant mean "don't".
+        // Every termination used to drop the subscription, and since each
+        // refresh opened a new subscription instead of extending the old one
+        // (see build_subscribe), the original timed out ten minutes in and
+        // took the BLF with it.
+        let reason = sub_state_hdr
+            .split(';')
+            .skip(1)
+            .find_map(|p| p.trim().strip_prefix("reason=").map(|r| r.trim().to_lowercase()));
+        let resubscribe = matches!(
+            reason.as_deref(),
+            Some("timeout") | Some("deactivated") | Some("probation") | Some("giveup")
+        );
         let mut s = state.write().await;
         if let Some(account) = s.get_account_mut(account_id) {
-            account.subscriptions.retain(|s| s.call_id != call_id_header);
+            if resubscribe {
+                if let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == call_id_header) {
+                    log::info!("Subscription to {} terminated ({:?}); renewing", sub.target_uri, reason);
+                    *sub = sub.renewed();
+                }
+            } else {
+                account.subscriptions.retain(|s| s.call_id != call_id_header);
+            }
         }
     }
 }

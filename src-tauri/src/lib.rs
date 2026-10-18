@@ -249,17 +249,40 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building Aria")
-        // Underscored because only macOS uses them; elsewhere they would warn.
-        .run(|_app_handle, _event| {
-            // Clicking the Dock icon (or launching Aria again) while its window
-            // is hidden or minimized must bring the window back and focus it.
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen { .. } = _event {
-                if let Some(window) = _app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
+        .run(|app_handle, event| {
+            match event {
+                // Clicking the Dock icon (or launching Aria again) while its
+                // window is hidden or minimized must bring the window back and
+                // focus it.
+                #[cfg(target_os = "macos")]
+                tauri::RunEvent::Reopen { .. } => {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
                 }
+                // Quitting (last window closed, Cmd+Q) is `code: None`; the
+                // `app.exit(0)` below comes back as `Some(0)` and goes
+                // through. Until the bindings are cleared the PBX keeps
+                // sending calls to a phone that is no longer there, for as
+                // long as the registration had left to run.
+                tauri::RunEvent::ExitRequested { api, code: None, .. } => {
+                    api.prevent_exit();
+                    let handle = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let manager = handle.state::<sip::SipManager>().inner().clone();
+                        // Bounded: a registrar that does not answer must not
+                        // keep the app open.
+                        let _ = tokio::time::timeout(
+                            std::time::Duration::from_secs(4),
+                            manager.unregister_all(),
+                        )
+                        .await;
+                        handle.exit(0);
+                    });
+                }
+                _ => {}
             }
         });
 }

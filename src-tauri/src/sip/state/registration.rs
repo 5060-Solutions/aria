@@ -285,6 +285,14 @@ impl RegistrationFSM {
         matches!(&self.state, RegistrationState::Registering { .. })
     }
 
+    /// When the current registration was confirmed, if it is one.
+    pub fn registered_at(&self) -> Option<Instant> {
+        match &self.state {
+            RegistrationState::Registered { registered_at, .. } => Some(*registered_at),
+            _ => None,
+        }
+    }
+
     /// Increment auth attempts counter
     /// Stop using the account's realm override for this session.
     ///

@@ -18,6 +18,7 @@ use super::transport::TransportType;
 use super::SipManager;
 use md5::{Digest, Md5};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::UdpSocket;
@@ -33,6 +34,12 @@ struct Seen {
     register_realms: Vec<String>,
     /// Whether each authenticated REGISTER's digest verified.
     register_ok: Vec<bool>,
+    /// The Expires header of every authenticated REGISTER, in order.
+    register_expires: Vec<Option<String>>,
+    /// How many REGISTERs arrived without credentials.
+    register_unauth: usize,
+    /// Every SUBSCRIBE, raw.
+    subscribes: Vec<String>,
     /// Every INVITE, raw.
     invites: Vec<String>,
     /// How many ACKs arrived.
@@ -65,6 +72,45 @@ enum InviteReply {
     /// 180 Ringing, and a 200 OK sent the moment the caller's CANCEL arrives:
     /// the callee picked up as the caller gave up.
     AnswerOnCancel,
+}
+
+/// How the fake PBX behaves beyond its defaults.
+#[derive(Clone)]
+struct PbxOptions {
+    invite_reply: InviteReply,
+    /// The Expires it grants a registration.
+    register_expires: u32,
+    /// Set by a test to make the PBX swallow the next REGISTER transaction:
+    /// every copy of the next REGISTER it sees (same CSeq) goes unanswered.
+    drop_next_register: Arc<AtomicBool>,
+    /// Challenge every SUBSCRIBE and never accept the answer.
+    reject_subscribe_auth: bool,
+    /// The Expires it grants a subscription.
+    subscribe_expires: u32,
+}
+
+impl Default for PbxOptions {
+    fn default() -> Self {
+        Self {
+            invite_reply: InviteReply::Busy,
+            register_expires: 300,
+            drop_next_register: Arc::new(AtomicBool::new(false)),
+            reject_subscribe_auth: false,
+            subscribe_expires: 600,
+        }
+    }
+}
+
+/// Timers shrunk so a lost REGISTER, its deadline and the reconnect play out
+/// in a couple of seconds.
+fn fast_timing() -> super::Timing {
+    super::Timing {
+        t1: Duration::from_millis(50),
+        timer_f: Duration::from_millis(400),
+        min_refresh: Duration::from_secs(1),
+        unregister_wait: Duration::from_secs(2),
+        subscribe_tick: Duration::from_millis(200),
+    }
 }
 
 fn md5_hex(s: &str) -> String {
@@ -126,6 +172,13 @@ async fn start_pbx_with(invite_reply: InviteReply) -> (SocketAddr, Arc<Mutex<See
 async fn start_pbx_with_socket(
     invite_reply: InviteReply,
 ) -> (SocketAddr, Arc<Mutex<Seen>>, Arc<UdpSocket>) {
+    start_pbx_with_options(PbxOptions { invite_reply, ..PbxOptions::default() }).await
+}
+
+async fn start_pbx_with_options(
+    opts: PbxOptions,
+) -> (SocketAddr, Arc<Mutex<Seen>>, Arc<UdpSocket>) {
+    let invite_reply = opts.invite_reply;
     let _ = env_logger::builder().is_test(true).try_init();
     let sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind fake PBX"));
     let addr = sock.local_addr().unwrap();
@@ -135,6 +188,8 @@ async fn start_pbx_with_socket(
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
         let mut nonce_n = 0u32;
+        // The CSeq of the REGISTER transaction being swallowed, if any.
+        let mut dropping_cseq: Option<String> = None;
         loop {
             let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
             let msg = String::from_utf8_lossy(&buf[..n]).into_owned();
@@ -146,9 +201,30 @@ async fn start_pbx_with_socket(
             if method != "REGISTER" {
                 rec.lock().unwrap().methods.push(method.to_owned());
             }
+            if method == "REGISTER" {
+                let cseq = header(&msg, "CSeq").map(str::to_owned);
+                if opts.drop_next_register.swap(false, Ordering::SeqCst) {
+                    dropping_cseq = cseq.clone();
+                }
+                if dropping_cseq.is_some() && dropping_cseq == cseq {
+                    continue;
+                }
+            }
             let reply = match method {
+                "SUBSCRIBE" if opts.reject_subscribe_auth => {
+                    rec.lock().unwrap().subscribes.push(msg.clone());
+                    nonce_n += 1;
+                    respond(&msg, 401, "Unauthorized", &[format!(
+                        "WWW-Authenticate: Digest realm=\"{REALM}\", nonce=\"n{nonce_n}\", algorithm=MD5, qop=\"auth\""
+                    )])
+                }
+                "SUBSCRIBE" => {
+                    rec.lock().unwrap().subscribes.push(msg.clone());
+                    respond(&msg, 200, "OK", &[format!("Expires: {}", opts.subscribe_expires)])
+                }
                 "REGISTER" => match header(&msg, "Authorization") {
                     None => {
+                        rec.lock().unwrap().register_unauth += 1;
                         nonce_n += 1;
                         respond(&msg, 401, "Unauthorized", &[format!(
                             "WWW-Authenticate: Digest realm=\"{REALM}\", nonce=\"n{nonce_n}\", algorithm=MD5, qop=\"auth\""
@@ -173,11 +249,13 @@ async fn start_pbx_with_socket(
                             let mut s = rec.lock().unwrap();
                             s.register_realms.push(realm);
                             s.register_ok.push(ok);
+                            s.register_expires.push(header(&msg, "Expires").map(str::to_owned));
                         }
                         if ok {
                             rec.lock().unwrap().client = Some(from);
                             let contact = header(&msg, "Contact").unwrap_or_default().to_owned();
-                            respond(&msg, 200, "OK", &[format!("Contact: {contact};expires=300"), "Expires: 300".to_owned()])
+                            let expires = if header(&msg, "Expires") == Some("0") { 0 } else { opts.register_expires };
+                            respond(&msg, 200, "OK", &[format!("Contact: {contact};expires={expires}"), format!("Expires: {expires}")])
                         } else {
                             // voip_stack answers a bad digest with a fresh
                             // challenge, not a 403.
@@ -637,4 +715,171 @@ async fn a_200_that_crosses_our_cancel_is_acked_and_then_byed() {
     let invite_from_tag = header(&s.invites[0], "From").and_then(|f| param(f, "tag")).unwrap();
     assert_eq!(header(bye, "From").and_then(|f| param(f, "tag")), Some(invite_from_tag));
     assert_eq!(header(bye, "To").and_then(|t| param(t, "tag")), Some("pbx1".to_owned()));
+}
+
+/// Wait for a registration event in `state` for `account_id`.
+async fn wait_for_registration(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+    account_id: &str,
+    state: super::RegistrationState,
+    timeout: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+            return false;
+        };
+        if let super::SipEvent::RegistrationChanged(e) = event {
+            if e.account_id == account_id && e.state == state {
+                return true;
+            }
+        }
+    }
+}
+
+/// The refresh REGISTER follows what the registrar granted, not a fixed 120 s.
+/// Each refresh is one unauthenticated request and one authenticated one: the
+/// retransmission timer must stop once the challenge is answered, not keep
+/// resending the first request (which the server would challenge again, and
+/// the client would count against the credentials).
+#[tokio::test]
+async fn a_registration_refreshes_at_half_the_granted_expires_without_duplicate_requests() {
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions { register_expires: 2, ..PbxOptions::default() }).await;
+    let (mgr, _rx) = SipManager::new_with_timing(fast_timing());
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+
+    // Granted 2 s → refresh every 1 s (the floor). Three should land in 3.5 s.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let s = seen.lock().unwrap();
+    assert!(s.register_ok.len() >= 3, "only {} registrations in 3.5 s", s.register_ok.len());
+    assert!(s.register_ok.iter().all(|ok| *ok), "{:?}", s.register_ok);
+    assert_eq!(
+        s.register_unauth,
+        s.register_ok.len(),
+        "each cycle is one challenge and one answer; extra unauthenticated REGISTERs are Timer A \
+         still running after the challenge was answered"
+    );
+}
+
+/// A refresh whose request (or answer) is lost must not strand the account.
+/// It used to: the refresh had no deadline, the account sat in "registering",
+/// and the refresh timer skipped every tick because the state was not
+/// Registered. Now the deadline moves it to reconnecting, the reconnect
+/// registers again, and — the part that was missing even when reconnects
+/// worked — the refresh timer runs on the new transport.
+#[tokio::test]
+async fn a_lost_refresh_reconnects_and_keeps_refreshing_afterwards() {
+    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let drop_next = opts.drop_next_register.clone();
+    let (pbx, seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, mut rx) = SipManager::new_with_timing(fast_timing());
+    let cfg = account(pbx, None, PASSWORD);
+    let id = cfg.id.clone();
+    register(&mgr, cfg).await.expect("registered");
+    // Drain the events of the first registration.
+    while rx.try_recv().is_ok() {}
+
+    // The next REGISTER is the refresh, due in ~1 s. Swallow it.
+    drop_next.store(true, Ordering::SeqCst);
+
+    assert!(
+        wait_for_registration(&mut rx, &id, super::RegistrationState::Reconnecting, Duration::from_secs(4)).await,
+        "an unanswered refresh must lead to reconnecting"
+    );
+    assert!(
+        wait_for_registration(&mut rx, &id, super::RegistrationState::Registered, Duration::from_secs(4)).await,
+        "the reconnect must register again"
+    );
+    let registrations_after_reconnect = seen.lock().unwrap().register_ok.len();
+
+    // The new transport must refresh too.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let registrations_later = seen.lock().unwrap().register_ok.len();
+    assert!(
+        registrations_later > registrations_after_reconnect,
+        "no refresh after the reconnect: {} before, {} after",
+        registrations_after_reconnect,
+        registrations_later
+    );
+    let (state, _) = mgr.registration_state_for_account(Some(&id)).await;
+    assert_eq!(state, super::RegistrationState::Registered);
+}
+
+/// Unregistering is a REGISTER with Expires: 0 and it is challenged like any
+/// other. The account has to stay until the authenticated one is answered;
+/// removing it on the first send left the server's binding in place and the
+/// 401 unanswered, so a signed-out phone kept getting called.
+#[tokio::test]
+async fn unregistering_answers_the_challenge_and_clears_the_binding() {
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, mut rx) = SipManager::new_with_timing(fast_timing());
+    let cfg = account(pbx, None, PASSWORD);
+    let id = cfg.id.clone();
+    register(&mgr, cfg).await.expect("registered");
+    while rx.try_recv().is_ok() {}
+
+    mgr.unregister_account(Some(&id)).await.expect("unregistered");
+
+    {
+        let s = seen.lock().unwrap();
+        assert_eq!(s.register_ok.len(), 2, "one registration, one authenticated unregistration");
+        assert_eq!(s.register_expires[1].as_deref(), Some("0"), "the unregister carries Expires: 0");
+        assert!(s.register_ok[1], "the unregister was authenticated");
+    }
+
+    let (state, _) = mgr.registration_state_for_account(Some(&id)).await;
+    assert_eq!(state, super::RegistrationState::Unregistered);
+    assert!(
+        wait_for_registration(&mut rx, &id, super::RegistrationState::Unregistered, Duration::from_secs(1)).await,
+        "the UI is told the account is unregistered"
+    );
+}
+
+/// A subscription refresh is sent inside the subscription the server
+/// accepted — with its tag — and when the server says so, not every 60 s.
+#[tokio::test]
+async fn a_subscription_refresh_stays_in_the_dialog_and_follows_the_granted_expires() {
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions { subscribe_expires: 2, ..PbxOptions::default() }).await;
+    let (mgr, _rx) = SipManager::new_with_timing(fast_timing());
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+
+    mgr.subscribe_presence("sip:1002@harness.lan", super::state::EventType::Dialog)
+        .await
+        .expect("subscribed");
+
+    // Granted 2 s → the refresh is due at 1 s; the timer looks every 200 ms.
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    let s = seen.lock().unwrap();
+    assert!(s.subscribes.len() >= 2, "no refresh within the granted lifetime: {}", s.subscribes.len());
+    let first = &s.subscribes[0];
+    let refresh = &s.subscribes[1];
+    assert!(header(first, "To").is_some_and(|t| !t.contains("tag=")), "the first SUBSCRIBE starts the dialog");
+    assert_eq!(
+        header(refresh, "To").and_then(|t| param(t, "tag")),
+        Some("pbx1".to_owned()),
+        "the refresh must carry the server's tag: {refresh}"
+    );
+    assert_eq!(header(refresh, "Call-ID"), header(first, "Call-ID"));
+}
+
+/// A SUBSCRIBE the server keeps challenging is given up, like a REGISTER is.
+/// It used to be answered forever, one round trip at a time, which on a
+/// server with fail2ban got the whole phone banned.
+#[tokio::test]
+async fn a_subscribe_that_is_always_challenged_is_abandoned() {
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions { reject_subscribe_auth: true, ..PbxOptions::default() }).await;
+    let (mgr, _rx) = SipManager::new_with_timing(fast_timing());
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+
+    mgr.subscribe_presence("sip:1003@harness.lan", super::state::EventType::Dialog)
+        .await
+        .expect("subscribe sent");
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let sent = seen.lock().unwrap().subscribes.len();
+    assert!(sent <= 3, "kept answering challenges: {sent} SUBSCRIBEs");
+    assert!(
+        mgr.find_subscription_by_extension("1003").await.is_none(),
+        "a subscription the server will not accept must be dropped"
+    );
 }

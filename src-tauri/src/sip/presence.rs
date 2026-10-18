@@ -25,7 +25,7 @@ impl EventType {
 }
 
 /// State of an individual subscription
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SubscriptionState {
     Pending,
     Active,
@@ -44,6 +44,45 @@ pub struct Subscription {
     pub call_id: String,
     pub from_tag: String,
     pub to_tag: Option<String>,
+    /// How many challenges this subscription has answered. Bounded like
+    /// REGISTER's: an unbounded loop of wrong digests gets the address banned.
+    pub auth_attempts: u32,
+    /// When the server's grant runs out; the refresh is scheduled from it.
+    pub expires_at: Option<std::time::Instant>,
+}
+
+impl Subscription {
+    /// A fresh dialog for the same target, for re-subscribing after the server
+    /// terminated the old one.
+    pub fn renewed(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            target_uri: self.target_uri.clone(),
+            event_type: self.event_type.clone(),
+            state: SubscriptionState::Pending,
+            expires: self.expires,
+            cseq: 0,
+            call_id: crate::sip::builder::generate_call_id(),
+            from_tag: crate::sip::builder::generate_tag(),
+            to_tag: None,
+            auth_attempts: 0,
+            expires_at: None,
+        }
+    }
+
+    /// Whether a refresh is due: half of the granted lifetime has passed, or
+    /// the subscription is waiting to be (re)sent.
+    pub fn refresh_due(&self) -> bool {
+        match (self.state, self.expires_at) {
+            (SubscriptionState::Active, Some(at)) => {
+                let half = std::time::Duration::from_secs(u64::from(self.expires) / 2);
+                at.saturating_duration_since(std::time::Instant::now()) <= half
+            }
+            // Pending with no dialog yet: a renewal waiting to go out.
+            (SubscriptionState::Pending, None) => self.cseq == 0,
+            _ => false,
+        }
+    }
 }
 
 /// Presence state derived from NOTIFY bodies

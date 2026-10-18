@@ -5,9 +5,72 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::sip::auth::DigestAuth;
-use crate::sip::builder::{build_register, extract_header, extract_via_received};
+use crate::sip::builder::{extract_all_headers, extract_header, extract_via_received};
 use crate::sip::diagnostics::{self, DiagnosticLog};
-use crate::sip::{ManagerState, RegistrationEvent, RegistrationState, SipEvent};
+use crate::sip::state::RegistrationTransitionResult;
+use crate::sip::{finish_unregister, send_register, ManagerState, RegistrationEvent, RegistrationState, SipEvent};
+
+/// The lifetime the registrar granted our binding, from the 200 OK.
+///
+/// Per-binding `;expires=` on the Contact that is ours wins (other devices'
+/// bindings are listed too); the `Expires` header is the fallback. None means
+/// the response said nothing usable and the requested value stands.
+fn granted_expires(text: &str, local_addr: Option<SocketAddr>, public_addr: Option<SocketAddr>) -> Option<u32> {
+    let contacts = extract_all_headers(text, "Contact");
+    let is_ours = |c: &String| {
+        [local_addr, public_addr]
+            .into_iter()
+            .flatten()
+            .any(|a| c.contains(&a.to_string()))
+    };
+    let contact_expires = |c: &String| {
+        c.split(';')
+            .skip(1)
+            .find_map(|p| p.trim().strip_prefix("expires=")?.trim().parse::<u32>().ok())
+    };
+    contacts
+        .iter()
+        .find(|c| is_ours(c))
+        .or(contacts.first())
+        .and_then(contact_expires)
+        .or_else(|| extract_header(text, "Expires")?.trim().parse().ok())
+        .filter(|e| *e > 0)
+}
+
+/// Report a registration failure, if the account was in a state where it is one.
+async fn fail_registration(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account_id: &str,
+    status: u16,
+    reason: &str,
+) {
+    let (unregistering, transitioned) = {
+        let mut s = state.write().await;
+        let Some(account) = s.get_account_mut(account_id) else { return };
+        if account.unregistering {
+            (true, false)
+        } else {
+            account.refreshing = false;
+            let result = account.registration.registration_failed(status, reason);
+            (false, matches!(result, RegistrationTransitionResult::Ok))
+        }
+    };
+    if unregistering {
+        // Whatever went wrong, the user asked for this account to go.
+        finish_unregister(state, event_tx, account_id).await;
+        return;
+    }
+    // Only when the FSM actually moved: a late error for a registration that
+    // already failed or was torn down must not flip the UI again.
+    if transitioned {
+        let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
+            account_id: account_id.to_string(),
+            state: RegistrationState::Error,
+            error: Some(reason.to_string()),
+        }));
+    }
+}
 
 /// Handle REGISTER response (200 OK, 401/407 challenge, errors).
 pub async fn handle_register_response(
@@ -19,8 +82,6 @@ pub async fn handle_register_response(
 ) {
     match status {
         200 => {
-            log::info!("Registration successful for account {}", account_id);
-
             let public = extract_via_received(text).map(|(ip, port)| {
                 let addr: SocketAddr = format!("{}:{}", ip, port)
                     .parse()
@@ -29,15 +90,42 @@ pub async fn handle_register_response(
                 addr
             });
 
-            {
+            let (unregistering, transitioned) = {
                 let mut s = state.write().await;
-                if let Some(account) = s.get_account_mut(account_id) {
-                    account.registration.registration_success(public);
-                    if let Some(addr) = public {
-                        account.public_addr = Some(addr);
+                let Some(account) = s.get_account_mut(account_id) else { return };
+                if account.unregistering {
+                    (true, false)
+                } else {
+                    if let Some(granted) = granted_expires(text, account.local_addr, account.public_addr) {
+                        if granted != account.granted_expires {
+                            log::info!("Registrar granted Expires {} for {}", granted, account_id);
+                        }
+                        account.granted_expires = granted;
                     }
+                    account.refreshing = false;
+                    let result = account.registration.registration_success(public);
+                    let ok = matches!(result, RegistrationTransitionResult::Ok);
+                    if ok {
+                        if let Some(addr) = public {
+                            account.public_addr = Some(addr);
+                        }
+                    }
+                    (false, ok)
                 }
+            };
+            if unregistering {
+                log::info!("Unregistered account {}", account_id);
+                finish_unregister(state, event_tx, account_id).await;
+                return;
             }
+            if !transitioned {
+                // A 200 for a registration that has since timed out or been
+                // torn down. Announcing it would show a registered account
+                // the backend is not actually running.
+                log::debug!("Ignoring 200 OK to REGISTER for {} — not registering", account_id);
+                return;
+            }
+            log::info!("Registration successful for account {}", account_id);
             let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
                 account_id: account_id.to_string(),
                 state: RegistrationState::Registered,
@@ -96,18 +184,14 @@ pub async fn handle_register_response(
             
             if attempts >= 2 {
                 log::error!("Too many auth attempts ({}) for account {} - credentials likely wrong", attempts, account_id);
-                let mut s = state.write().await;
-                if let Some(account) = s.get_account_mut(account_id) {
-                    account.registration.registration_failed(
-                        status,
-                        "Authentication failed - check username and password",
-                    );
-                }
-                let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                    account_id: account_id.to_string(),
-                    state: RegistrationState::Error,
-                    error: Some("Authentication failed - check username and password".into()),
-                }));
+                fail_registration(
+                    state,
+                    event_tx,
+                    account_id,
+                    status,
+                    "Authentication failed - check username and password",
+                )
+                .await;
                 return;
             }
             
@@ -124,33 +208,21 @@ pub async fn handle_register_response(
                 Some(h) => h,
                 None => {
                     log::error!("No auth challenge header in {} — cannot authenticate", status);
-                    let mut s = state.write().await;
-                    if let Some(account) = s.get_account_mut(account_id) {
-                        account.registration.registration_failed(
-                            status,
-                            &format!("{} with no challenge header — check server config", status),
-                        );
-                    }
-                    let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                        account_id: account_id.to_string(),
-                        state: RegistrationState::Error,
-                        error: Some(format!("{} with no challenge header", status)),
-                    }));
+                    fail_registration(
+                        state,
+                        event_tx,
+                        account_id,
+                        status,
+                        &format!("{} with no challenge header — check server config", status),
+                    )
+                    .await;
                     return;
                 }
             };
 
-            let (account_config, local_addr, server_addr, reg_call_id, reg_from_tag, transport) = {
+            let (account_config, server_addr) = {
                 let s = state.read().await;
                 let account = match s.get_account(account_id) {
-                    Some(a) => a,
-                    None => return,
-                };
-                let transport = match &account.transport {
-                    Some(t) => t.clone(),
-                    None => return,
-                };
-                let local_addr = match account.local_addr {
                     Some(a) => a,
                     None => return,
                 };
@@ -158,14 +230,7 @@ pub async fn handle_register_response(
                     Some(a) => a,
                     None => return,
                 };
-                (
-                    account.config.clone(),
-                    local_addr,
-                    server_addr,
-                    account.registration.call_id().to_string(),
-                    account.registration.local_tag().to_string(),
-                    transport,
-                )
+                (account.config.clone(), server_addr)
             };
 
             let registrar = account_config.registrar.as_deref().unwrap_or(&account_config.domain);
@@ -238,12 +303,16 @@ pub async fn handle_register_response(
                     remote_addr: server_addr.to_string(),
                     summary: debug_summary.clone(),
                     call_id: None, // Auth debug entry, not a SIP message
-                    raw: format!(
-                        "{}\n\nChallenge header:\n{}\n\nAuth response header:\n{}",
+                    // Through the same redaction as every captured message:
+                    // the digest `response=` is what an offline attack on the
+                    // password needs, and this entry used to carry it into
+                    // every exported log.
+                    raw: diagnostics::redact_sip(&format!(
+                        "{}\n\nChallenge header:\n{}\n\nAuth response header:\nAuthorization: {}",
                         debug_summary,
                         www_auth,
                         auth.as_ref().map(|a| a.to_header()).unwrap_or_else(|| "(parse failed)".to_string()),
-                    ),
+                    )),
                 };
                 let s = state.read().await;
                 s.diagnostic_store.push(diag.clone()).await;
@@ -254,44 +323,49 @@ pub async fn handle_register_response(
                 Some(a) => a.to_header(),
                 None => {
                     log::error!("Failed to parse auth challenge header: {}", www_auth);
-                    let mut s = state.write().await;
-                    if let Some(account) = s.get_account_mut(account_id) {
-                        account.registration
-                            .registration_failed(status, "Could not parse server auth challenge");
-                    }
-                    let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                        account_id: account_id.to_string(),
-                        state: RegistrationState::Error,
-                        error: Some("Could not parse server auth challenge".into()),
-                    }));
+                    fail_registration(state, event_tx, account_id, status, "Could not parse server auth challenge").await;
                     return;
                 }
             };
 
-            let cseq = {
+            {
                 let mut s = state.write().await;
                 if let Some(account) = s.get_account_mut(account_id) {
                     account.registration.increment_auth_attempts();
-                    account.registration.next_cseq()
                 } else {
                     return;
                 }
-            };
+            }
 
-            let msg = build_register(
-                &account_config,
-                local_addr,
-                &reg_call_id,
-                cseq,
-                &reg_from_tag,
-                Some(&auth_header),
-                300,
-            );
-
-            log::debug!("Sending authenticated REGISTER:\n{}", msg);
-
-            if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+            // Through the shared sender, so the authenticated REGISTER is
+            // retransmitted and has a deadline like the first one, and so its
+            // new CSeq stops the first one's retransmissions.
+            log::debug!("Sending authenticated REGISTER to {}", server_addr);
+            if let Err(e) = send_register(state, event_tx, account_id, Some(&auth_header)).await {
                 log::error!("Failed to send auth REGISTER: {}", e);
+            }
+        }
+        423 => {
+            // Interval Too Brief: ask for at least what the registrar wants.
+            // This used to be a terminal error, and the frontend's retry sent
+            // the identical request.
+            let min_expires = extract_header(text, "Min-Expires")
+                .and_then(|v| v.trim().parse::<u32>().ok());
+            let Some(min_expires) = min_expires else {
+                fail_registration(state, event_tx, account_id, status, "Registrar rejected the registration interval").await;
+                return;
+            };
+            {
+                let mut s = state.write().await;
+                let Some(account) = s.get_account_mut(account_id) else { return };
+                if !account.registration.is_registering() {
+                    return;
+                }
+                log::info!("Registrar wants Expires >= {} for {}; retrying", min_expires, account_id);
+                account.requested_expires = account.requested_expires.max(min_expires);
+            }
+            if let Err(e) = send_register(state, event_tx, account_id, None).await {
+                log::error!("Failed to resend REGISTER after 423: {}", e);
             }
         }
         403 => {
@@ -315,63 +389,52 @@ pub async fn handle_register_response(
                             // Reset FSM so we can re-register
                             account.registration.registration_failed(403, "retrying with realm fallback");
                             account.registration.start_registration(account.config.clone());
-                            let cseq = account.registration.next_cseq();
-                            let config = account.config.clone();
-                            let local_addr = account.local_addr;
-                            let server_addr = account.server_addr;
-                            let transport = account.transport.clone();
-                            let call_id = account.registration.call_id().to_string();
-                            let from_tag = account.registration.local_tag().to_string();
-                            Some((config, local_addr, server_addr, transport, call_id, from_tag, cseq))
+                            true
                         } else {
-                            None
+                            false
                         }
                     } else {
-                        None
+                        false
                     }
                 } else {
-                    None
+                    false
                 }
             };
 
-            if let Some((config, Some(local_addr), Some(server_addr), Some(transport), call_id, from_tag, cseq)) = retry_info {
-                let msg = build_register(&config, local_addr, &call_id, cseq, &from_tag, None, 3600);
-
-                if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+            if retry_info {
+                if let Err(e) = send_register(state, event_tx, account_id, None).await {
                     log::error!("Failed to send fallback REGISTER: {}", e);
                 }
             } else {
                 log::error!("Registration forbidden (403) for account {}", account_id);
-                {
-                    let mut s = state.write().await;
-                    if let Some(account) = s.get_account_mut(account_id) {
-                        account.registration
-                            .registration_failed(status, "403 Forbidden — check username/password");
-                    }
-                }
-                let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                    account_id: account_id.to_string(),
-                    state: RegistrationState::Error,
-                    error: Some("Authentication failed".into()),
-                }));
+                fail_registration(state, event_tx, account_id, status, "Authentication failed").await;
             }
         }
-        _ => {
+        _ if status >= 400 => {
             log::warn!("Registration response: {} for account {}", status, account_id);
-            if status >= 400 {
-                {
-                    let mut s = state.write().await;
-                    if let Some(account) = s.get_account_mut(account_id) {
-                        account.registration
-                            .registration_failed(status, &format!("Registration failed: {}", status));
-                    }
-                }
-                let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                    account_id: account_id.to_string(),
-                    state: RegistrationState::Error,
-                    error: Some(format!("Registration failed: {}", status)),
-                }));
+            // A refresh that fails because the server is struggling (timeout,
+            // unavailable, internal error) is a connection problem: reconnect
+            // with backoff, as a lost response would. It used to become a
+            // terminal error that nothing in the backend recovered from.
+            let refreshing = {
+                let s = state.read().await;
+                s.get_account(account_id).is_some_and(|a| a.refreshing && !a.unregistering)
+            };
+            if refreshing && matches!(status, 408 | 480 | 500..=599) {
+                log::warn!("Refresh for {} failed with {}; reconnecting", account_id, status);
+                crate::sip::SipManager::handle_transport_death(
+                    state.clone(),
+                    event_tx.clone(),
+                    account_id.to_string(),
+                    true,
+                )
+                .await;
+                return;
             }
+            fail_registration(state, event_tx, account_id, status, &format!("Registration failed: {}", status)).await;
+        }
+        _ => {
+            log::debug!("Registration response: {} for account {}", status, account_id);
         }
     }
 }

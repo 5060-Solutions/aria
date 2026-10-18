@@ -73,7 +73,43 @@ pub struct AccountState {
     /// Subscription targets to re-subscribe after reconnect.
     /// Saved when transport dies, consumed when registration succeeds.
     pub pending_resubscriptions: Vec<(String, EventType)>,
+    /// Which transport/registration cycle the account's background tasks
+    /// belong to. Bumped whenever a new transport is created or the account
+    /// is unregistered; a task whose generation no longer matches exits.
+    ///
+    /// Each `register()` used to spawn a fresh refresh timer and keepalive
+    /// without stopping the old ones, so an account that took several
+    /// attempts to come up refreshed several times as often, forever.
+    pub timer_generation: u64,
+    /// The Expires we ask for.
+    pub requested_expires: u32,
+    /// The Expires the registrar actually granted in its last 200 OK. The
+    /// refresh is scheduled from this, not from what we asked for.
+    pub granted_expires: u32,
+    /// A refresh REGISTER is outstanding: the account was Registered when it
+    /// was sent, so a failure means the connection is in doubt, not that the
+    /// credentials are.
+    pub refreshing: bool,
+    /// The user asked to unregister: the REGISTER in flight has Expires: 0,
+    /// and its answer (or a timeout) removes the account.
+    pub unregistering: bool,
+    /// What to do if the REGISTER in flight gets no final response.
+    pub on_register_timeout: RegisterTimeoutPolicy,
 }
+
+/// What a REGISTER that never gets a final response means for the account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterTimeoutPolicy {
+    /// First registration: tell the user it failed.
+    Error,
+    /// Refresh or reconnect: the server has gone quiet; reconnect with backoff.
+    Reconnect,
+    /// Unregister: we tried; drop the account either way.
+    Forget,
+}
+
+/// The Expires we ask a registrar for, unless it tells us otherwise (423).
+pub const DEFAULT_REGISTER_EXPIRES: u32 = 300;
 
 impl AccountState {
     /// Create a new account state from configuration
@@ -93,6 +129,12 @@ impl AccountState {
             realm_fallback: None,
             realm_fallback_exhausted: false,
             pending_resubscriptions: Vec::new(),
+            timer_generation: 0,
+            requested_expires: DEFAULT_REGISTER_EXPIRES,
+            granted_expires: DEFAULT_REGISTER_EXPIRES,
+            refreshing: false,
+            unregistering: false,
+            on_register_timeout: RegisterTimeoutPolicy::Error,
         }
     }
 }

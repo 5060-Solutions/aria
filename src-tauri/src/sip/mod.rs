@@ -32,7 +32,7 @@ use self::builder::{
 use self::diagnostics::DiagnosticLog;
 use self::media::MediaSessionExt;
 use self::presence::{BlfEntry, EventType, SubscriptionState};
-use self::state::{AccountState, CallFSM, CallFSMEvent, EndReason};
+use self::state::{AccountState, CallFSM, CallFSMEvent, EndReason, RegisterTimeoutPolicy};
 use self::transport::{SipMessage, SipTransport};
 
 pub use self::state::RegistrationStatus as RegistrationState;
@@ -135,6 +135,37 @@ pub struct CallEventPayload {
     pub recording_path: Option<String>,
 }
 
+/// Protocol timers.
+///
+/// Tests shrink these so that a lost REGISTER, its retransmissions, the
+/// deadline and the reconnect that follows play out in a few seconds rather
+/// than the minute the RFC values take.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Timing {
+    /// RFC 3261 T1: the first retransmission interval over UDP.
+    pub t1: std::time::Duration,
+    /// Timer F: how long a non-INVITE transaction waits for a final response.
+    pub timer_f: std::time::Duration,
+    /// The shortest interval between registration refreshes.
+    pub min_refresh: std::time::Duration,
+    /// How long unregistering waits for the registrar's answer.
+    pub unregister_wait: std::time::Duration,
+    /// How often the SUBSCRIBE refresh timer looks for subscriptions due.
+    pub subscribe_tick: std::time::Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            t1: std::time::Duration::from_millis(500),
+            timer_f: std::time::Duration::from_secs(32),
+            min_refresh: std::time::Duration::from_secs(30),
+            unregister_wait: std::time::Duration::from_secs(3),
+            subscribe_tick: std::time::Duration::from_secs(15),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SipManager {
     state: Arc<RwLock<ManagerState>>,
@@ -205,6 +236,8 @@ pub struct VoicemailStatusEvent {
 pub(crate) struct ManagerState {
     /// Per-account states, keyed by account ID
     pub(crate) accounts: HashMap<String, AccountState>,
+    /// Protocol timers. Production uses RFC 3261 values; tests shrink them.
+    pub(crate) timing: Timing,
     /// Currently active/default account ID for backward-compatible single-account operations
     pub(crate) active_account_id: Option<String>,
 
@@ -445,10 +478,15 @@ impl SipManager {
     /// Create a new SipManager and return the event receiver separately.
     /// This allows the caller to set up event forwarding before managing the state.
     pub fn new_with_receiver() -> (Self, mpsc::UnboundedReceiver<SipEvent>) {
+        Self::new_with_timing(Timing::default())
+    }
+
+    pub(crate) fn new_with_timing(timing: Timing) -> (Self, mpsc::UnboundedReceiver<SipEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let manager = Self {
             state: Arc::new(RwLock::new(ManagerState {
                 accounts: HashMap::new(),
+                timing,
                 active_account_id: None,
                 last_latency_ms: None,
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
@@ -459,6 +497,10 @@ impl SipManager {
             event_tx,
         };
         manager.start_ended_call_sweeper();
+        // Process-wide loops, started once. They used to be spawned by every
+        // `register()` call and never stopped.
+        manager.start_session_timer();
+        manager.start_subscribe_refresh_timer();
         (manager, event_rx)
     }
 
@@ -507,54 +549,141 @@ impl SipManager {
     pub async fn register(&self, account: AccountConfig) -> Result<String, String> {
         let account_id = account.id.clone();
 
-        // Check if this account is already registered/registering
-        {
+        // Already up, or on its way up, with a live transport?
+        let (replace, current_status) = {
             let mut s = self.state.write().await;
-            if let Some(existing) = s.accounts.get_mut(&account_id) {
-                let status = existing.registration.status();
-                if status == RegistrationState::Registering || status == RegistrationState::Registered {
-                    // Update the config even if already registered (so SRTP mode, codecs, etc. take effect)
-                    log::info!("Account {} already registered — updating config (SRTP mode: {:?})",
-                               account_id, account.srtp_mode);
-                    existing.config = account;
-                    return Ok("already_registering".into());
+            match s.accounts.get_mut(&account_id) {
+                Some(existing)
+                    if existing.transport.is_some()
+                        && matches!(
+                            existing.registration.status(),
+                            RegistrationState::Registering | RegistrationState::Registered
+                        ) =>
+                {
+                    if connection_changed(&existing.config, &account) {
+                        // Server, credentials or transport changed: the binding
+                        // we hold is for the old settings. Editing a registered
+                        // account used to only overwrite the config, and the
+                        // new server was never contacted until a restart.
+                        (true, None)
+                    } else {
+                        // Settings that take effect per call (SRTP, codecs,
+                        // auto-record) only need the config refreshed.
+                        log::info!("Account {} already registered — updating config", account_id);
+                        existing.config = account.clone();
+                        (false, Some(existing.registration.status()))
+                    }
                 }
-                // If reconnecting, allow the manual register to proceed
-                // (it will replace the reconnect loop's work)
+                _ => (false, None),
             }
+        };
+        if let Some(status) = current_status {
+            // Say what the state is. Callers mark the account "registering"
+            // before asking, and with no event in reply the UI stayed on
+            // "Connecting…" until the next refresh happened to emit one.
+            self.emit_registration_event(&account_id, status, None);
+            return Ok("already_registering".into());
+        }
+        if replace {
+            log::info!("Account {} settings changed; re-registering", account_id);
+            self.unregister_account(Some(&account_id)).await?;
         }
 
-        // Resolve server address with SRV lookup fallback to A-record
         let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
         let server_addr = Self::resolve_server(registrar, account.port).await?;
 
-        // Create transport based on account config
+        let (transport, rx, local_addr) =
+            self.open_transport(&account, server_addr).await?;
+
+        log::info!(
+            "Registering {}@{} via {:?} to {} port {} (local: {})",
+            account.username,
+            account.domain,
+            account.transport,
+            server_addr,
+            account.port,
+            local_addr
+        );
+
+        let generation = {
+            let mut state = self.state.write().await;
+            if !state.accounts.contains_key(&account_id) {
+                state.accounts.insert(account_id.clone(), AccountState::new(account.clone()));
+            }
+            if state.active_account_id.is_none() {
+                state.active_account_id = Some(account_id.clone());
+            }
+            let account_state = state.accounts.get_mut(&account_id).unwrap();
+            account_state.config = account.clone();
+            account_state.registration.start_registration(account.clone());
+            account_state.registration.set_server_addr(server_addr);
+            account_state.registration.set_local_addr(local_addr);
+            account_state.transport = Some(transport);
+            account_state.server_addr = Some(server_addr);
+            account_state.local_addr = Some(local_addr);
+            account_state.refreshing = false;
+            account_state.unregistering = false;
+            account_state.requested_expires = state::DEFAULT_REGISTER_EXPIRES;
+            account_state.on_register_timeout = RegisterTimeoutPolicy::Error;
+            account_state.timer_generation += 1;
+            account_state.timer_generation
+        };
+
+        self.emit_registration_event(&account_id, RegistrationState::Registering, None);
+
+        Self::start_receive_loop_for_account(
+            self.state.clone(),
+            self.event_tx.clone(),
+            rx,
+            account_id.clone(),
+            generation,
+        );
+
+        if let Err(e) = send_register(&self.state, &self.event_tx, &account_id, None).await {
+            // Leave the account in a state a retry can start from. It used to
+            // stay "registering" with no transport, and every later attempt
+            // was waved through as "already registering".
+            log::error!("Could not send REGISTER for {}: {}", account_id, e);
+            {
+                let mut s = self.state.write().await;
+                if let Some(a) = s.accounts.get_mut(&account_id) {
+                    a.registration.registration_failed(0, &e);
+                    a.transport = None;
+                }
+            }
+            self.emit_registration_event(&account_id, RegistrationState::Error, Some(e.clone()));
+            return Err(e);
+        }
+
+        Self::start_account_timers(self.state.clone(), self.event_tx.clone(), account_id, generation);
+
+        Ok("registering".into())
+    }
+
+    /// Create the account's transport and work out the local address other
+    /// hosts can reach it on.
+    async fn open_transport(
+        &self,
+        account: &AccountConfig,
+        server_addr: SocketAddr,
+    ) -> Result<(SipTransport, mpsc::Receiver<SipMessage>, SocketAddr), String> {
         log::info!("Creating {:?} transport to {}", account.transport, server_addr);
         let (mut transport, rx) = match account.transport {
             TransportType::Udp => {
                 let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
-                log::info!("UDP transport created, local addr: {}", t.local_addr());
                 (SipTransport::Udp(t), rx)
             }
             TransportType::Tcp => {
-                log::info!("Connecting TCP to {}...", server_addr);
                 let (t, rx) = transport::TcpTransport::connect(server_addr).await?;
-                log::info!("TCP transport connected, local addr: {}", t.local_addr());
                 (SipTransport::Tcp(t), rx)
             }
             TransportType::Tls => {
                 let tls_name = account.registrar.as_deref().unwrap_or(&account.domain);
-                log::info!("Connecting TLS to {} (server name: {})...", server_addr, tls_name);
-                match transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure).await {
-                    Ok((t, rx)) => {
-                        log::info!("TLS transport connected, local addr: {}", t.local_addr());
-                        (SipTransport::Tls(t), rx)
-                    }
-                    Err(e) => {
-                        log::error!("TLS connection failed: {}", e);
-                        return Err(e);
-                    }
-                }
+                let (t, rx) =
+                    transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
+                        .await
+                        .inspect_err(|e| log::error!("TLS connection failed: {}", e))?;
+                (SipTransport::Tls(t), rx)
             }
         };
 
@@ -580,138 +709,7 @@ impl SipManager {
         } else {
             raw_addr
         };
-
-        log::info!(
-            "Registering {}@{} via {:?} to {} port {} (local: {})",
-            account.username,
-            account.domain,
-            account.transport,
-            server_addr,
-            account.port,
-            local_addr
-        );
-
-        // Create or update account state
-        let (call_id, from_tag, cseq) = {
-            let mut state = self.state.write().await;
-            
-            // Create new account state or update existing
-            if !state.accounts.contains_key(&account_id) {
-                state.accounts.insert(account_id.clone(), AccountState::new(account.clone()));
-            }
-            
-            // Set as active account if none set
-            if state.active_account_id.is_none() {
-                state.active_account_id = Some(account_id.clone());
-            }
-            
-            // Now get mutable reference to account state
-            let account_state = state.accounts.get_mut(&account_id).unwrap();
-            
-            // Update account state
-            account_state.config = account.clone();
-            account_state.registration.start_registration(account.clone());
-            account_state.registration.set_server_addr(server_addr);
-            account_state.registration.set_local_addr(local_addr);
-            account_state.transport = Some(transport);
-            account_state.server_addr = Some(server_addr);
-            account_state.local_addr = Some(local_addr);
-            
-            (
-                account_state.registration.call_id().to_string(),
-                account_state.registration.local_tag().to_string(),
-                account_state.registration.current_cseq(),
-            )
-        };
-
-        self.emit_registration_event(&account_id, RegistrationState::Registering, None);
-
-        let register_msg =
-            build_register(&account, local_addr, &call_id, cseq, &from_tag, None, 300);
-
-        // Send initial REGISTER with Timer A retransmission (RFC 3261 §17.1.1).
-        // Retry at 500ms, 1s, 2s, 4s if no response, up to ~8s total.
-        // The 30s registration timeout (spawned below) is the ultimate backstop.
-        {
-            let intervals = [500u64, 1000, 2000, 4000];
-            let s = self.state.read().await;
-            if let Some(account_state) = s.accounts.get(&account_id) {
-                if let Some(ref t) = account_state.transport {
-                    t.send_to(register_msg.as_bytes(), server_addr).await?;
-                    log::debug!("Sent REGISTER (attempt 1):\n{}", register_msg);
-
-                    // Spawn retransmission in background — stops when state changes
-                    // from Registering (meaning we got a response).
-                    let transport = t.clone();
-                    let msg_bytes = register_msg.as_bytes().to_vec();
-                    let state_ref = self.state.clone();
-                    let aid = account_id.clone();
-                    tokio::spawn(async move {
-                        for (i, delay_ms) in intervals.iter().enumerate() {
-                            tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
-                            // Check if we're still registering (no response yet)
-                            let still_registering = {
-                                let s = state_ref.read().await;
-                                s.accounts.get(&aid)
-                                    .map(|a| a.registration.is_registering())
-                                    .unwrap_or(false)
-                            };
-                            if !still_registering {
-                                break; // Got a response, stop retransmitting
-                            }
-                            log::debug!("REGISTER retransmit attempt {} for {}", i + 2, aid);
-                            if transport.send_to(&msg_bytes, server_addr).await.is_err() {
-                                break;
-                            }
-                        }
-                    });
-                }
-            }
-        }
-
-        // Start the receive loop for this account
-        self.start_receive_loop_for_account(rx, account_id.clone());
-
-        // Start periodic re-REGISTER (refresh before expiry)
-        self.start_re_register_timer_for_account(account_id.clone());
-
-        // Start OPTIONS keepalive (every 30s)
-        self.start_options_keepalive_for_account(account_id.clone());
-
-        // Start session timer monitoring (RFC 4028)
-        self.start_session_timer();
-
-        // Start subscription refresh timer for BLF/presence
-        self.start_subscribe_refresh_timer();
-
-        // Registration timeout: if still registering after 30s, surface an error
-        // (30s allows time for auth challenges and retries)
-        {
-            let state = self.state.clone();
-            let event_tx = self.event_tx.clone();
-            let aid = account_id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                let status = {
-                    let s = state.read().await;
-                    s.accounts.get(&aid).map(|a| a.registration.status())
-                };
-                if status == Some(RegistrationState::Registering) {
-                    let mut s = state.write().await;
-                    if let Some(account_state) = s.accounts.get_mut(&aid) {
-                        account_state.registration.registration_timeout();
-                        let error = account_state.registration.error_reason().map(|e| e.to_string());
-                        let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-                            account_id: aid,
-                            state: RegistrationState::Error,
-                            error,
-                        }));
-                    }
-                }
-            });
-        }
-
-        Ok("registering".into())
+        Ok((transport, rx, local_addr))
     }
 
     /// Resolve the registrar's address.
@@ -722,168 +720,162 @@ impl SipManager {
         // a timeout before this lookup. Real SRV support needs a DNS resolver
         // crate and is not implemented.
         let addr_str = format!("{}:{}", registrar, port);
-        let server_addr = tokio::time::timeout(
+        let addrs: Vec<SocketAddr> = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             tokio::net::lookup_host(&addr_str)
         )
             .await
             .map_err(|_| format!("DNS lookup timed out for {}", addr_str))?
             .map_err(|e| format!("DNS resolve failed for {}: {}", addr_str, e))?
-            .next()
-            .ok_or_else(|| format!("No address found for {}", addr_str))?;
-        Ok(server_addr)
+            .collect();
+        // The transports bind IPv4 sockets, so an AAAA record — which the
+        // resolver often lists first on a dual-stack host — cannot be used.
+        // Taking the first address regardless failed the very first send
+        // with "address family not supported".
+        addrs
+            .iter()
+            .copied()
+            .find(SocketAddr::is_ipv4)
+            .or_else(|| addrs.first().copied())
+            .ok_or_else(|| format!("No address found for {}", addr_str))
     }
 
-    fn start_re_register_timer_for_account(&self, account_id: String) {
-        let state = self.state.clone();
-        let event_tx = self.event_tx.clone();
-        let aid = account_id.clone();
+    /// Start the refresh and keepalive loops for one transport generation.
+    ///
+    /// Called when a transport is created, by `register()` and by the
+    /// reconnect loop. Both loops exit when the account is gone, is
+    /// unregistered, or has moved on to a newer generation, so an account
+    /// never has more than one of each.
+    fn start_account_timers(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        account_id: String,
+        generation: u64,
+    ) {
+        tokio::spawn(Self::re_register_loop(state.clone(), event_tx.clone(), account_id.clone(), generation));
+        tokio::spawn(Self::options_keepalive_loop(state, event_tx, account_id, generation));
+    }
 
-        tokio::spawn(async move {
-            loop {
-                // Refresh at ~40% of Expires (300s) — well before expiry.
-                // This ensures the binding stays alive even with network jitter.
-                tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+    /// Whether the account still exists on this transport generation.
+    fn account_current(s: &ManagerState, account_id: &str, generation: u64) -> bool {
+        s.accounts
+            .get(account_id)
+            .is_some_and(|a| a.timer_generation == generation)
+    }
 
-                let (account_config, local_addr, server_addr, reg_call_id, reg_from_tag, cseq, transport) = {
-                    let mut s = state.write().await;
-                    let account = match s.get_account_mut(&aid) {
-                        Some(a) => a,
-                        None => return, // Account removed — stop timer
-                    };
-                    let status = account.registration.status();
-                    if status == RegistrationState::Reconnecting
-                        || status == RegistrationState::Unregistered
-                    {
-                        return; // Stop — reconnect or user-initiated unregister
-                    }
-                    if status != RegistrationState::Registered {
-                        continue;
-                    }
-                    let (local_addr, server_addr) = match (account.local_addr, account.server_addr) {
-                        (Some(la), Some(sa)) => (la, sa),
-                        _ => continue,
-                    };
-                    let transport = match &account.transport {
-                        Some(t) => t.clone(),
-                        None => continue,
-                    };
-                    let cseq = account.registration.next_cseq();
-                    let call_id = account.registration.call_id().to_string();
-                    let from_tag = account.registration.local_tag().to_string();
-                    // Transition to Registering so the 401 challenge handler will
-                    // process the server's response and send authenticated REGISTER.
-                    account.registration.begin_re_registration();
-                    (account.config.clone(), local_addr, server_addr, call_id, from_tag, cseq, transport)
-                };
+    /// Refresh the registration before the granted Expires runs out.
+    async fn re_register_loop(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        aid: String,
+        generation: u64,
+    ) {
+        loop {
+            // Polled rather than slept for the whole interval: the grant is
+            // only known once the 200 arrives, which is after this loop
+            // starts, and a registrar can change it on any refresh.
+            let tick = state.read().await.timing.min_refresh / 2;
+            tokio::time::sleep(tick).await;
 
-                let msg = build_register(
-                    &account_config,
-                    local_addr,
-                    &reg_call_id,
-                    cseq,
-                    &reg_from_tag,
-                    None,
-                    300,
-                );
-
-                // Retry up to 3 times with 2s delay before declaring transport dead.
-                // A single UDP send failure doesn't mean the network is gone.
-                let mut sent = false;
-                for attempt in 1..=3 {
-                    match transport.send_to(msg.as_bytes(), server_addr).await {
-                        Ok(_) => {
-                            log::info!("Sent re-REGISTER for {} (cseq={}, attempt={})", aid, cseq, attempt);
-                            sent = true;
-                            break;
-                        }
-                        Err(e) => {
-                            log::warn!("Re-REGISTER attempt {}/3 failed for {}: {}", attempt, aid, e);
-                            if attempt < 3 {
-                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                            }
-                        }
-                    }
-                }
-                if !sent {
-                    log::error!("Re-REGISTER failed after 3 attempts for {} — transport dead", aid);
-                    Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone()).await;
+            {
+                let mut s = state.write().await;
+                if !Self::account_current(&s, &aid, generation) {
                     return;
                 }
+                let min_refresh = s.timing.min_refresh;
+                let account = s.accounts.get_mut(&aid).unwrap();
+                match account.registration.status() {
+                    RegistrationState::Unregistered | RegistrationState::Reconnecting => return,
+                    RegistrationState::Registered => {}
+                    // Registering (a refresh is in flight and has its own
+                    // deadline) or Error (the frontend decides on retries).
+                    _ => continue,
+                }
+                // Half of what was granted, so one lost refresh still leaves
+                // time for another before the binding expires. The refresh
+                // used to be a fixed 120 s whatever the server said; a
+                // registrar granting 60 s left the phone unreachable half the
+                // time.
+                let interval = std::time::Duration::from_secs(u64::from(account.granted_expires) / 2)
+                    .max(min_refresh);
+                let due = account
+                    .registration
+                    .registered_at()
+                    .is_some_and(|at| at.elapsed() >= interval);
+                if !due {
+                    continue;
+                }
+                account.refreshing = true;
+                account.on_register_timeout = RegisterTimeoutPolicy::Reconnect;
+                // So the 401 handler, which only acts while Registering,
+                // answers the challenge the refresh will get.
+                account.registration.begin_re_registration();
             }
-        });
+
+            if let Err(e) = send_register(&state, &event_tx, &aid, None).await {
+                log::error!("Re-REGISTER failed for {} — transport dead: {}", aid, e);
+                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), true).await;
+                return;
+            }
+        }
     }
 
-    fn start_options_keepalive_for_account(&self, account_id: String) {
-        let state = self.state.clone();
-        let event_tx = self.event_tx.clone();
-        let aid = account_id.clone();
+    /// Keep the NAT pinhole open with an OPTIONS every 15 s.
+    async fn options_keepalive_loop(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        aid: String,
+        generation: u64,
+    ) {
+        let mut fail_count = 0u32;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
 
-        tokio::spawn(async move {
-            let mut fail_count = 0u32;
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-
-                let (account_config, local_addr, server_addr, transport, cseq) = {
-                    let mut s = state.write().await;
-                    let account = match s.get_account_mut(&aid) {
-                        Some(a) => a,
-                        None => return, // Account removed — stop keepalive
-                    };
-                    let status = account.registration.status();
-                    if status == RegistrationState::Reconnecting
-                        || status == RegistrationState::Unregistered
-                    {
-                        // Don't send keepalives during reconnection or when unregistered
-                        return; // Stop — reconnect loop handles recovery
-                    }
-                    if status != RegistrationState::Registered {
+            let (account_config, local_addr, server_addr, transport, cseq) = {
+                let mut s = state.write().await;
+                if !Self::account_current(&s, &aid, generation) {
+                    return;
+                }
+                let account = s.accounts.get_mut(&aid).unwrap();
+                match account.registration.status() {
+                    RegistrationState::Unregistered | RegistrationState::Reconnecting => return,
+                    RegistrationState::Registered => {}
+                    _ => {
                         fail_count = 0;
                         continue;
                     }
-                    let (local_addr, server_addr) = match (account.local_addr, account.server_addr) {
-                        (Some(la), Some(sa)) => (la, sa),
-                        _ => continue,
-                    };
-                    let transport = match &account.transport {
-                        Some(t) => t.clone(),
-                        None => continue,
-                    };
-                    account.options_cseq += 1;
-                    (account.config.clone(), local_addr, server_addr, transport, account.options_cseq)
-                };
-
-                let call_id = builder::generate_call_id();
-                let from_tag = builder::generate_tag();
-
-                let msg = build_options(
-                    &account_config.domain,
-                    local_addr,
-                    &call_id,
-                    cseq,
-                    &from_tag,
-                    &account_config.username,
-                    account_config.transport.param(),
-                );
-
-                if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
-                    fail_count += 1;
-                    log::warn!("OPTIONS keepalive failed for {} ({}/2): {}", aid, fail_count, e);
-                    if fail_count >= 2 {
-                        // Trigger transport death — the receive loop exit will handle reconnection
-                        log::error!("OPTIONS keepalive lost for {} — triggering transport death", aid);
-                        Self::handle_transport_death(
-                            state.clone(),
-                            event_tx.clone(),
-                            aid.clone(),
-                        ).await;
-                        return; // Stop this keepalive — reconnect will start a new one
-                    }
-                } else {
-                    fail_count = 0;
                 }
+                let (Some(local_addr), Some(server_addr), Some(transport)) =
+                    (account.local_addr, account.server_addr, account.transport.clone())
+                else {
+                    continue;
+                };
+                account.options_cseq += 1;
+                (account.config.clone(), local_addr, server_addr, transport, account.options_cseq)
+            };
+
+            let msg = build_options(
+                &account_config.domain,
+                local_addr,
+                &builder::generate_call_id(),
+                cseq,
+                &builder::generate_tag(),
+                &account_config.username,
+                account_config.transport.param(),
+            );
+
+            if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+                fail_count += 1;
+                log::warn!("OPTIONS keepalive failed for {} ({}/2): {}", aid, fail_count, e);
+                if fail_count >= 2 {
+                    log::error!("OPTIONS keepalive lost for {} — triggering transport death", aid);
+                    Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), false).await;
+                    return;
+                }
+            } else {
+                fail_count = 0;
             }
-        });
+        }
     }
 
     /// Start session timer for connected calls (RFC 4028)
@@ -928,6 +920,14 @@ impl SipManager {
         self.unregister_account(None).await
     }
 
+    /// Clear the account's binding on the registrar and forget the account.
+    ///
+    /// The REGISTER with Expires: 0 is challenged like any other, so the
+    /// account stays until the authenticated one is answered (or the wait
+    /// runs out). It used to be removed the instant the first, unauthenticated
+    /// request went out; the 401 then arrived for an account that no longer
+    /// existed, and the binding stood until it expired on its own — callers
+    /// kept ringing a phone that had signed out.
     pub async fn unregister_account(&self, account_id: Option<&str>) -> Result<(), String> {
         let aid = match account_id {
             Some(id) => id.to_string(),
@@ -940,44 +940,56 @@ impl SipManager {
             }
         };
 
-        let (account_config, local_addr, server_addr, cseq, call_id, from_tag, transport) = {
+        let (needs_request, wait) = {
             let mut s = self.state.write().await;
-            let account = match s.get_account_mut(&aid) {
-                Some(a) => a,
-                None => return Ok(()),
-            };
-            let local_addr = match account.local_addr {
-                Some(a) => a,
-                None => return Ok(()),
-            };
-            let server_addr = match account.server_addr {
-                Some(a) => a,
-                None => return Ok(()),
-            };
-            let transport = match &account.transport {
-                Some(t) => t.clone(),
-                None => return Ok(()),
-            };
-            let cseq = account.registration.next_cseq();
-            let call_id = account.registration.call_id().to_string();
-            let from_tag = account.registration.local_tag().to_string();
-            (account.config.clone(), local_addr, server_addr, cseq, call_id, from_tag, transport)
+            let wait = s.timing.unregister_wait;
+            let Some(account) = s.accounts.get_mut(&aid) else { return Ok(()) };
+            // Stop the refresh and keepalive; the receive loop stays for the answer.
+            account.timer_generation += 1;
+            let registered = account.registration.status() == RegistrationState::Registered
+                && account.transport.is_some();
+            if registered {
+                account.unregistering = true;
+                account.refreshing = false;
+                account.on_register_timeout = RegisterTimeoutPolicy::Forget;
+                account.registration.begin_re_registration();
+            }
+            (registered, wait)
         };
 
-        let msg = build_register(&account_config, local_addr, &call_id, cseq, &from_tag, None, 0);
-        let _ = transport.send_to(msg.as_bytes(), server_addr).await;
-
-        {
-            let mut s = self.state.write().await;
-            s.accounts.remove(&aid);
-            if s.active_account_id.as_ref() == Some(&aid) {
-                s.active_account_id = s.accounts.keys().next().cloned();
-            }
+        if !needs_request || send_register(&self.state, &self.event_tx, &aid, None).await.is_err() {
+            finish_unregister(&self.state, &self.event_tx, &aid).await;
+            return Ok(());
         }
 
-        self.emit_registration_event(&aid, RegistrationState::Unregistered, None);
-
+        // The response handler removes the account on the 200. Wait for it, so
+        // a caller re-registering with new settings starts from a clean slate.
+        let deadline = tokio::time::Instant::now() + wait;
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if !self.state.read().await.accounts.contains_key(&aid) {
+                return Ok(());
+            }
+        }
+        log::warn!("No answer to unregister for {}; forgetting the account", aid);
+        finish_unregister(&self.state, &self.event_tx, &aid).await;
         Ok(())
+    }
+
+    /// Unregister every account, in parallel. For quitting: each waits for
+    /// its answer at most `Timing::unregister_wait`.
+    pub async fn unregister_all(&self) {
+        let ids: Vec<String> = self.state.read().await.accounts.keys().cloned().collect();
+        let tasks: Vec<_> = ids
+            .into_iter()
+            .map(|id| {
+                let mgr = self.clone();
+                tokio::spawn(async move { mgr.unregister_account(Some(&id)).await })
+            })
+            .collect();
+        for task in tasks {
+            let _ = task.await;
+        }
     }
 
     /// Set the active account for outbound calls without affecting registrations.
@@ -2036,6 +2048,7 @@ impl SipManager {
                     self.state.clone(),
                     self.event_tx.clone(),
                     account_id,
+                    false,
                 ).await;
             } else {
                 log::info!("Health probe OK for {}", account_id);
@@ -2112,6 +2125,8 @@ impl SipManager {
             call_id: call_id.clone(),
             from_tag: from_tag.clone(),
             to_tag: None,
+            auth_attempts: 0,
+            expires_at: None,
         };
 
         let sub_id = sub.id.clone();
@@ -2123,26 +2138,35 @@ impl SipManager {
             &call_id,
             cseq,
             &from_tag,
+            None,
             &event_type,
             expires,
             None,
         );
 
-        transport.send_to(msg.as_bytes(), server_addr).await?;
-
-
-        log::info!(
-            "Sent SUBSCRIBE for {} (event={})",
-            target_uri,
-            event_type.event_header()
-        );
-
+        // On the list before the request goes out: a challenge that beat the
+        // insertion found no subscription and was dropped, leaving it Pending
+        // for good.
         {
             let mut s = self.state.write().await;
             if let Some(account) = s.get_account_mut(&aid) {
                 account.subscriptions.push(sub);
             }
         }
+
+        if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+            let mut s = self.state.write().await;
+            if let Some(account) = s.get_account_mut(&aid) {
+                account.subscriptions.retain(|s| s.id != sub_id);
+            }
+            return Err(e);
+        }
+
+        log::info!(
+            "Sent SUBSCRIBE for {} (event={})",
+            target_uri,
+            event_type.event_header()
+        );
 
         Ok(sub_id)
     }
@@ -2160,11 +2184,15 @@ impl SipManager {
                 .find(|s| s.id == subscription_id)
                 .ok_or("Subscription not found")?;
             sub.cseq += 1;
+            // Expires 0 on the record too, so a 200 that arrives before the
+            // entry is removed is not mistaken for a renewal.
+            sub.expires = 0;
             let info = (
                 sub.target_uri.clone(),
                 sub.call_id.clone(),
                 sub.cseq,
                 sub.from_tag.clone(),
+                sub.to_tag.clone(),
                 sub.event_type.clone(),
             );
             let local_addr = account.local_addr.ok_or("No local addr")?;
@@ -2173,7 +2201,7 @@ impl SipManager {
             (account.config.clone(), local_addr, server_addr, transport, info, aid)
         };
 
-        let (target_uri, call_id, cseq, from_tag, event_type) = sub_info;
+        let (target_uri, call_id, cseq, from_tag, to_tag, event_type) = sub_info;
 
         let msg = build_subscribe(
             &account_config,
@@ -2182,6 +2210,7 @@ impl SipManager {
             &call_id,
             cseq,
             &from_tag,
+            to_tag.as_deref(),
             &event_type,
             0,
             None,
@@ -2320,83 +2349,72 @@ impl SipManager {
         }
     }
 
-    /// Start subscription refresh timers for all active subscriptions
+    /// Refresh subscriptions before the server's grant runs out, and send the
+    /// renewals of ones the server terminated.
+    ///
+    /// Refreshes go inside the existing subscription (with the server's tag)
+    /// at half of the granted lifetime. The old timer re-sent every
+    /// subscription every 60 s, without the tag, so each refresh opened a new
+    /// subscription at the server while the original ran down.
     fn start_subscribe_refresh_timer(&self) {
         let state = self.state.clone();
 
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let tick = state.read().await.timing.subscribe_tick;
+                tokio::time::sleep(tick).await;
 
-                // Collect subs to refresh from all accounts
-                let subs_to_refresh: Vec<(String, String, String, u32, String, EventType, u32)> = {
+                // (account id, subscription call-id) of everything due.
+                let due: Vec<(String, String)> = {
                     let s = state.read().await;
-                    let mut result = Vec::new();
-                    for (aid, account) in s.accounts.iter() {
-                        if account.registration.status() != RegistrationState::Registered {
-                            continue;
-                        }
-                        for sub in account.subscriptions.iter() {
-                            if sub.state == SubscriptionState::Active && sub.expires > 0 {
-                                result.push((
-                                    aid.clone(),
-                                    sub.target_uri.clone(),
-                                    sub.call_id.clone(),
-                                    sub.cseq,
-                                    sub.from_tag.clone(),
-                                    sub.event_type.clone(),
-                                    sub.expires,
-                                ));
-                            }
-                        }
-                    }
-                    result
+                    s.accounts
+                        .iter()
+                        .filter(|(_, a)| a.registration.status() == RegistrationState::Registered)
+                        .flat_map(|(aid, a)| {
+                            a.subscriptions
+                                .iter()
+                                .filter(|sub| sub.refresh_due())
+                                .map(move |sub| (aid.clone(), sub.call_id.clone()))
+                        })
+                        .collect()
                 };
 
-                if subs_to_refresh.is_empty() {
-                    continue;
-                }
-
-                for (aid, target_uri, call_id, _old_cseq, from_tag, event_type, expires) in subs_to_refresh {
-                    let (account_config, local_addr, server_addr, transport, cseq) = {
+                for (aid, call_id) in due {
+                    let sent = {
                         let mut s = state.write().await;
-                        let account = match s.get_account_mut(&aid) {
-                            Some(a) => a,
-                            None => continue,
+                        let Some(account) = s.get_account_mut(&aid) else { continue };
+                        let (Some(local_addr), Some(server_addr), Some(transport)) =
+                            (account.local_addr, account.server_addr, account.transport.clone())
+                        else {
+                            continue;
                         };
-                        let sub = match account.subscriptions.iter_mut().find(|s| s.call_id == call_id) {
-                            Some(s) => s,
-                            None => continue,
+                        let config = account.config.clone();
+                        let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == call_id) else {
+                            continue;
                         };
                         sub.cseq += 1;
-                        let cseq = sub.cseq;
-                        let local_addr = match account.local_addr {
-                            Some(a) => a,
-                            None => continue,
-                        };
-                        let server_addr = match account.server_addr {
-                            Some(a) => a,
-                            None => continue,
-                        };
-                        let transport = match &account.transport {
-                            Some(t) => t.clone(),
-                            None => continue,
-                        };
-                        (account.config.clone(), local_addr, server_addr, transport, cseq)
+                        if sub.expires == 0 {
+                            continue;
+                        }
+                        let msg = build_subscribe(
+                            &config,
+                            &sub.target_uri,
+                            local_addr,
+                            &sub.call_id,
+                            sub.cseq,
+                            &sub.from_tag,
+                            sub.to_tag.as_deref(),
+                            &sub.event_type,
+                            sub.expires,
+                            None,
+                        );
+                        // Not due again until this one is answered.
+                        sub.expires_at = sub.expires_at.map(|_| {
+                            std::time::Instant::now() + std::time::Duration::from_secs(u64::from(sub.expires))
+                        });
+                        (msg, transport, server_addr, sub.target_uri.clone(), sub.cseq)
                     };
-
-                    let msg = build_subscribe(
-                        &account_config,
-                        &target_uri,
-                        local_addr,
-                        &call_id,
-                        cseq,
-                        &from_tag,
-                        &event_type,
-                        expires,
-                        None,
-                    );
-
+                    let (msg, transport, server_addr, target_uri, cseq) = sent;
                     if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
                         log::error!("SUBSCRIBE refresh failed for {}: {}", target_uri, e);
                     } else {
@@ -2431,29 +2449,39 @@ impl SipManager {
         }
     }
 
-    fn start_receive_loop_for_account(&self, rx: mpsc::Receiver<SipMessage>, account_id: String) {
-        let state = self.state.clone();
-        let event_tx = self.event_tx.clone();
-        let aid = account_id.clone();
-
+    /// Run the receive loop for one transport generation, and treat its end
+    /// as the transport dying — unless the account has since moved on to a
+    /// newer transport, in which case this loop is simply obsolete.
+    fn start_receive_loop_for_account(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        rx: mpsc::Receiver<SipMessage>,
+        account_id: String,
+        generation: u64,
+    ) {
         tokio::spawn(async move {
-            Self::run_receive_loop(state.clone(), event_tx.clone(), aid.clone(), rx).await;
-
-            // Receive loop ended — transport is dead.
-            // Only trigger reconnect if we were registered/registering (not if user unregistered).
-            log::warn!("Receive loop ended for account {} — transport dead", aid);
-            Self::handle_transport_death(state, event_tx, aid).await;
+            let died = Self::run_receive_loop(state.clone(), event_tx.clone(), account_id.clone(), rx, generation).await;
+            if died {
+                log::warn!("Receive loop ended for account {} — transport dead", account_id);
+                Self::handle_transport_death(state, event_tx, account_id, false).await;
+            }
         });
     }
 
     /// Handle transport death: clean up stale state, end active calls, and start reconnection.
+    ///
+    /// With `keep_calls`, established calls are left in place: a refresh
+    /// REGISTER that went unanswered says the registrar is unreachable, not
+    /// that the call's media has stopped, and the new transport can still
+    /// carry the BYE.
     fn handle_transport_death(
         state: Arc<RwLock<ManagerState>>,
         event_tx: mpsc::UnboundedSender<SipEvent>,
         account_id: String,
+        keep_calls: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(async move {
-        let (should_reconnect, ended_calls) = {
+        let ended_calls = {
             let mut s = state.write().await;
             let account = match s.accounts.get_mut(&account_id) {
                 Some(a) => a,
@@ -2465,30 +2493,37 @@ impl SipManager {
                 RegistrationState::Registered | RegistrationState::Registering
             );
 
-            if !was_active {
+            if !was_active || account.unregistering {
                 // Already in error/unregistered/reconnecting — don't double-trigger
                 return;
             }
 
             // Transition to reconnecting
             account.registration.transport_lost();
+            account.refreshing = false;
+            // The old transport's loops are obsolete; the reconnect starts new ones.
+            account.timer_generation += 1;
 
             // End all active calls for this account. Their media is finished
             // after the lock is released, below.
-            let ended_calls: Vec<(CallEventPayload, Option<media::MediaSession>)> = account
-                .calls
-                .drain(..)
-                .map(|mut call| {
-                    let event = CallEventPayload::new(
-                        &account_id,
-                        &call.id,
-                        "ended",
-                        &call.remote_uri,
-                        call.direction_str(),
-                    );
-                    (event, call.take_media())
-                })
-                .collect();
+            let ended_calls: Vec<(CallEventPayload, Option<media::MediaSession>)> = if keep_calls {
+                Vec::new()
+            } else {
+                account
+                    .calls
+                    .drain(..)
+                    .map(|mut call| {
+                        let event = CallEventPayload::new(
+                            &account_id,
+                            &call.id,
+                            "ended",
+                            &call.remote_uri,
+                            call.direction_str(),
+                        );
+                        (event, call.take_media())
+                    })
+                    .collect()
+            };
 
             // Save subscription targets for re-subscription after reconnect
             let resub_targets: Vec<(String, crate::sip::state::EventType)> = account
@@ -2507,7 +2542,7 @@ impl SipManager {
             account.realm_fallback = None;
             account.realm_fallback_exhausted = false;
 
-            (was_active, ended_calls)
+            ended_calls
         };
 
         for (mut event, media) in ended_calls {
@@ -2515,10 +2550,6 @@ impl SipManager {
                 event = event.with_recording_path(path);
             }
             let _ = event_tx.send(SipEvent::CallStateChanged(event));
-        }
-
-        if !should_reconnect {
-            return;
         }
 
         // Emit reconnecting state to UI
@@ -2590,7 +2621,12 @@ impl SipManager {
                 error: Some(format!("Reconnecting (attempt {})...", attempt + 1)),
             }));
 
-            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            // Shortened in tests, where the backoff would otherwise dominate.
+            let delay = {
+                let s = state.read().await;
+                std::time::Duration::from_secs(delay).min(s.timing.timer_f)
+            };
+            tokio::time::sleep(delay).await;
 
             // Re-check state after sleeping (user may have unregistered during the wait)
             let account_config = {
@@ -2608,21 +2644,21 @@ impl SipManager {
 
             // Attempt to reconnect: resolve, connect transport, send REGISTER
             match Self::attempt_reconnect(&state, &event_tx, &account_id, &account_config).await {
-                Ok(rx) => {
+                Ok((rx, generation)) => {
                     log::info!("Reconnect transport established for {} — waiting for registration", account_id);
-
-                    // Start a new receive loop for the reconnected transport
-                    let recv_state = state.clone();
-                    let recv_event_tx = event_tx.clone();
-                    let recv_aid = account_id.clone();
-                    tokio::spawn(async move {
-                        Self::run_receive_loop(recv_state.clone(), recv_event_tx.clone(), recv_aid.clone(), rx).await;
-                        // If this loop also dies, trigger reconnect again
-                        log::warn!("Receive loop ended again for account {} — transport dead", recv_aid);
-                        Self::handle_transport_death(recv_state, recv_event_tx, recv_aid).await;
-                    });
-
-                    return; // Successfully handed off to new receive loop
+                    Self::start_receive_loop_for_account(
+                        state.clone(),
+                        event_tx.clone(),
+                        rx,
+                        account_id.clone(),
+                        generation,
+                    );
+                    // The refresh and keepalive loops exited when the old
+                    // transport died. Without new ones the account looked
+                    // registered but its binding expired and its NAT pinhole
+                    // closed; nothing noticed until the next network event.
+                    Self::start_account_timers(state, event_tx, account_id, generation);
+                    return;
                 }
                 Err(e) => {
                     log::warn!("Reconnect attempt {} failed for {}: {}", attempt + 1, account_id, e);
@@ -2632,16 +2668,37 @@ impl SipManager {
         }
     }
 
-    /// Core receive loop logic, extracted so it can be reused by reconnection.
+    /// Core receive loop logic. Returns true if the transport died while it
+    /// was still the account's current one.
     async fn run_receive_loop(
         state: Arc<RwLock<ManagerState>>,
         event_tx: mpsc::UnboundedSender<SipEvent>,
         account_id: String,
         mut rx: mpsc::Receiver<SipMessage>,
-    ) {
+        generation: u64,
+    ) -> bool {
         let mut dropped_from_stranger = 0u64;
+        let mut check = tokio::time::interval(std::time::Duration::from_secs(2));
 
-        while let Some(msg) = rx.recv().await {
+        loop {
+            let msg = tokio::select! {
+                msg = rx.recv() => match msg {
+                    Some(msg) => msg,
+                    None => return true,
+                },
+                _ = check.tick() => {
+                    // Obsolete once the account is gone or has a newer
+                    // transport. Dropping `rx` here closes the socket's
+                    // reader too; replaced transports used to live on.
+                    let s = state.read().await;
+                    if !Self::account_current(&s, &account_id, generation) {
+                        log::debug!("Receive loop for {} generation {} retired", account_id, generation);
+                        return false;
+                    }
+                    continue;
+                }
+            };
+
             // Drop anything that did not come from the account's own server.
             // See `is_expected_peer` — without this, arbitrary internet hosts
             // can drive the SIP state machine.
@@ -2698,18 +2755,16 @@ impl SipManager {
     }
 
     /// Attempt a single reconnection: resolve DNS, create transport, send REGISTER.
-    /// Returns the new receive channel on success.
+    /// Returns the new receive channel and transport generation on success.
     async fn attempt_reconnect(
         state: &Arc<RwLock<ManagerState>>,
         event_tx: &mpsc::UnboundedSender<SipEvent>,
         account_id: &str,
         account: &AccountConfig,
-    ) -> Result<mpsc::Receiver<SipMessage>, String> {
-        // Resolve server address
+    ) -> Result<(mpsc::Receiver<SipMessage>, u64), String> {
         let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
         let server_addr = Self::resolve_server(registrar, account.port).await?;
 
-        // Create transport
         let (mut transport, rx) = match account.transport {
             TransportType::Udp => {
                 let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
@@ -2728,7 +2783,6 @@ impl SipManager {
             }
         };
 
-        // Attach diagnostics
         {
             let s = state.read().await;
             let diag_sender = diagnostics::DiagnosticSender::new(
@@ -2739,7 +2793,6 @@ impl SipManager {
             transport.set_diagnostic_sender(diag_sender);
         }
 
-        // Resolve local address
         let raw_addr = transport.local_addr();
         let local_addr = if raw_addr.ip().is_unspecified() {
             let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
@@ -2751,8 +2804,7 @@ impl SipManager {
             raw_addr
         };
 
-        // Update account state and send REGISTER
-        let (call_id, from_tag, cseq) = {
+        let generation = {
             let mut s = state.write().await;
             let account_state = match s.accounts.get_mut(account_id) {
                 Some(a) => a,
@@ -2766,12 +2818,11 @@ impl SipManager {
             account_state.transport = Some(transport);
             account_state.server_addr = Some(server_addr);
             account_state.local_addr = Some(local_addr);
-
-            (
-                account_state.registration.call_id().to_string(),
-                account_state.registration.local_tag().to_string(),
-                account_state.registration.current_cseq(),
-            )
+            account_state.refreshing = false;
+            // A reconnect that gets no answer is still a connection problem.
+            account_state.on_register_timeout = RegisterTimeoutPolicy::Reconnect;
+            account_state.timer_generation += 1;
+            account_state.timer_generation
         };
 
         let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
@@ -2780,21 +2831,164 @@ impl SipManager {
             error: None,
         }));
 
-        let register_msg = build_register(account, local_addr, &call_id, cseq, &from_tag, None, 300);
-
-        {
-            let s = state.read().await;
-            if let Some(account_state) = s.accounts.get(account_id) {
-                if let Some(ref t) = account_state.transport {
-                    t.send_to(register_msg.as_bytes(), server_addr).await?;
-                }
-            }
-        }
-
+        send_register(state, event_tx, account_id, None).await?;
         log::info!("Sent reconnect REGISTER for {} to {}", account_id, server_addr);
 
-        Ok(rx)
+        Ok((rx, generation))
     }
+}
+
+/// Send a REGISTER for `account_id` and see its transaction through.
+///
+/// Every REGISTER — first, authenticated retry, refresh, unregister — goes
+/// through here, so each gets the same retransmission (Timer A, over UDP) and
+/// the same deadline (Timer F). Only the first one used to: a refresh whose
+/// request or answer was lost left the account "registering" for good, with
+/// nothing left running that could get it out, while the binding expired.
+///
+/// Retransmission stops when the FSM leaves Registering or moves on to a
+/// later CSeq (a challenge was answered). What the deadline means is decided
+/// by the account's `on_register_timeout`.
+pub(crate) async fn send_register(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account_id: &str,
+    auth_header: Option<&str>,
+) -> Result<(), String> {
+    let (msg, transport, server_addr, cseq, timing) = {
+        let mut s = state.write().await;
+        let timing = s.timing;
+        let account = s.get_account_mut(account_id).ok_or("Account not found")?;
+        let local_addr = account.local_addr.ok_or("No local addr")?;
+        let server_addr = account.server_addr.ok_or("No server addr")?;
+        let transport = account.transport.clone().ok_or("No transport")?;
+        let cseq = account.registration.next_cseq();
+        let expires = if account.unregistering { 0 } else { account.requested_expires };
+        let call_id = account.registration.call_id().to_string();
+        let from_tag = account.registration.local_tag().to_string();
+        let msg = build_register(&account.config, local_addr, &call_id, cseq, &from_tag, auth_header, expires);
+        (msg, transport, server_addr, cseq, timing)
+    };
+    transport.send_to(msg.as_bytes(), server_addr).await?;
+
+    let state = state.clone();
+    let event_tx = event_tx.clone();
+    let aid = account_id.to_string();
+    tokio::spawn(async move {
+        // No retransmission over a reliable transport; just the deadline.
+        let reliable = !matches!(transport, SipTransport::Udp(_));
+        let started = tokio::time::Instant::now();
+        let mut interval = timing.t1;
+        loop {
+            let remaining = timing.timer_f.saturating_sub(started.elapsed());
+            let wait = if reliable { remaining } else { interval.min(remaining) };
+            tokio::time::sleep(wait).await;
+
+            let outstanding = {
+                let s = state.read().await;
+                s.accounts.get(&aid).is_some_and(|a| {
+                    a.registration.is_registering() && a.registration.current_cseq() == cseq
+                })
+            };
+            if !outstanding {
+                return;
+            }
+            if started.elapsed() >= timing.timer_f {
+                register_timed_out(&state, &event_tx, &aid).await;
+                return;
+            }
+            log::debug!("Retransmitting REGISTER cseq {} for {}", cseq, aid);
+            if transport.send_to(msg.as_bytes(), server_addr).await.is_err() {
+                register_timed_out(&state, &event_tx, &aid).await;
+                return;
+            }
+            // T2 caps the interval at 4 s.
+            interval = (interval * 2).min(std::time::Duration::from_secs(4));
+        }
+    });
+    Ok(())
+}
+
+/// A REGISTER got no final response within Timer F.
+async fn register_timed_out(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account_id: &str,
+) {
+    let policy = {
+        let s = state.read().await;
+        match s.accounts.get(account_id) {
+            Some(a) if a.registration.is_registering() => a.on_register_timeout,
+            _ => return,
+        }
+    };
+    match policy {
+        RegisterTimeoutPolicy::Forget => {
+            log::warn!("Unregister for {} was not answered", account_id);
+            finish_unregister(state, event_tx, account_id).await;
+        }
+        RegisterTimeoutPolicy::Reconnect => {
+            log::warn!("REGISTER for {} was not answered; reconnecting", account_id);
+            SipManager::handle_transport_death(state.clone(), event_tx.clone(), account_id.to_string(), true).await;
+        }
+        RegisterTimeoutPolicy::Error => {
+            let error = {
+                let mut s = state.write().await;
+                let Some(account) = s.accounts.get_mut(account_id) else { return };
+                account.registration.registration_timeout();
+                account.transport = None;
+                account.registration.error_reason().map(str::to_owned)
+            };
+            let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
+                account_id: account_id.to_string(),
+                state: RegistrationState::Error,
+                error,
+            }));
+        }
+    }
+}
+
+/// Forget an account and tell the UI it is unregistered.
+pub(crate) async fn finish_unregister(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account_id: &str,
+) {
+    {
+        let mut s = state.write().await;
+        if s.accounts.remove(account_id).is_none() {
+            return;
+        }
+        if s.active_account_id.as_deref() == Some(account_id) {
+            s.active_account_id = s.accounts.keys().next().cloned();
+        }
+    }
+    let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
+        account_id: account_id.to_string(),
+        state: RegistrationState::Unregistered,
+        error: None,
+    }));
+}
+
+/// Whether two configurations register differently: a different server,
+/// credentials or transport means the existing binding is for the wrong
+/// thing and the account has to be registered afresh.
+fn connection_changed(current: &AccountConfig, next: &AccountConfig) -> bool {
+    let key = |c: &AccountConfig| {
+        (
+            c.domain.clone(),
+            c.registrar.clone(),
+            c.outbound_proxy.clone(),
+            c.port,
+            c.transport.clone(),
+            c.username.clone(),
+            c.password.clone(),
+            c.auth_username.clone(),
+            c.auth_realm.clone(),
+            c.tls_insecure,
+        )
+    };
+    key(current) != key(next)
 }
 
 

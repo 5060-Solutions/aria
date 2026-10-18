@@ -977,6 +977,7 @@ pub fn build_subscribe(
     call_id: &str,
     cseq: u32,
     from_tag: &str,
+    to_tag: Option<&str>,
     event_type: &EventType,
     expires: u32,
     auth_header: Option<&str>,
@@ -988,7 +989,15 @@ pub fn build_subscribe(
 
     let via = via_value(transport_param, local_addr, &branch);
     let from_hdr = format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag);
-    let to_hdr = format!("<{}>", target_uri);
+    // With the server's tag this is a refresh inside the existing
+    // subscription (RFC 6665 §4.1.2.2). Without it, it is a brand-new
+    // subscription: refreshes used to leave the tag off, so the server
+    // created a new subscription every time and let the original expire,
+    // which ended BLF updates for that extension after ten minutes.
+    let to_hdr = match to_tag {
+        Some(tag) => format!("<{}>;tag={}", target_uri, tag),
+        None => format!("<{}>", target_uri),
+    };
     let cseq_hdr = format!("{} SUBSCRIBE", cseq);
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
