@@ -25,9 +25,9 @@ pub use account::AccountConfig;
 pub use transport::TransportType;
 
 use self::builder::{
-    build_200_ok_invite_with_public_ip, build_bye_with_routes, build_cancel, build_options,
-    build_refer, build_refer_with_replaces, build_register, build_subscribe, extract_via_branch,
-    is_request, parse_sdp_connection,
+    build_200_ok_invite_srtp, build_bye_with_routes, build_cancel, build_options, build_refer,
+    build_refer_with_replaces, build_register, build_subscribe, extract_via_branch, is_request,
+    parse_sdp_connection,
 };
 use self::diagnostics::DiagnosticLog;
 use self::media::MediaSessionExt;
@@ -1366,7 +1366,7 @@ impl SipManager {
     }
 
     pub async fn answer(&self, call_id: &str) -> Result<(), String> {
-        let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport) = {
+        let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport, srtp_mode) = {
             let s = self.state.read().await;
             let (account, call) = s.find_call(call_id).ok_or("Call not found")?;
             if !call.is_incoming() {
@@ -1388,6 +1388,7 @@ impl SipManager {
                 call.remote_uri.clone(),
                 account_id,
                 transport,
+                account.config.srtp_mode,
             )
         };
 
@@ -1412,15 +1413,66 @@ impl SipManager {
         let negotiated_codec = codec::negotiate_codec(sdp);
         log::info!("Negotiated codec for inbound: {:?}", negotiated_codec);
 
+        // SRTP answer: when the account offers SDES and the caller's offer is
+        // RTP/SAVP with a key, generate our own key, answer encrypted, and run
+        // the session with both contexts. Inbound calls used to be answered
+        // RTP/AVP whatever the offer said, so a call to an SRTP extension was
+        // always plaintext — and a PBX that requires SRTP rejected it.
+        let remote_srtp_key = builder::parse_sdp_crypto(sdp);
+        let use_srtp = srtp_mode == crate::sip::account::SrtpMode::Sdes
+            && builder::sdp_offers_savp(sdp)
+            && remote_srtp_key.is_some();
+        let our_srtp_key = if use_srtp {
+            match rtp_engine::srtp::SrtpContext::generate() {
+                Ok((_, key)) => Some(key),
+                Err(e) => {
+                    log::error!("Could not generate SRTP key for answer: {:?}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        // Encrypt only when we have both a key to send and the context pair built.
+        let answer_crypto = our_srtp_key.clone();
+
         let (input_dev, output_dev) = {
             let s = self.state.read().await;
             (s.preferred_input_device.clone(), s.preferred_output_device.clone())
         };
-        let media = match media::MediaSession::start_with_devices(
-            rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
-        )
-        .await
-        {
+
+        let media_result = match (&our_srtp_key, &remote_srtp_key) {
+            (Some(our_key), Some(their_key)) => {
+                match (
+                    rtp_engine::srtp::SrtpContext::from_base64(our_key),
+                    rtp_engine::srtp::SrtpContext::from_base64(their_key),
+                ) {
+                    (Ok(tx), Ok(rx)) => {
+                        log::info!("Answering incoming call with SRTP");
+                        media::MediaSession::start_with_srtp_keys_and_devices(
+                            rtp_port, remote_rtp, negotiated_codec, tx, rx, input_dev, output_dev,
+                        )
+                        .await
+                    }
+                    _ => {
+                        log::error!("Could not build SRTP contexts; answering plain");
+                        media::MediaSession::start_with_devices(
+                            rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
+                        )
+                        .await
+                    }
+                }
+            }
+            _ => {
+                media::MediaSession::start_with_devices(
+                    rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
+                )
+                .await
+            }
+        };
+        // Encrypted only when both keys were present and both contexts built.
+        let srtp_active = use_srtp && answer_crypto.is_some() && media_result.is_ok();
+        let media = match media_result {
             Ok(media) => media,
             Err(e) => {
                 log::error!("Could not start audio for incoming call {}: {}", call_id, e);
@@ -1428,6 +1480,11 @@ impl SipManager {
                 return Err(format!("Could not start audio: {}", e));
             }
         };
+
+        // DTMF goes on the payload type the caller named for telephone-event.
+        if let Some(pt) = builder::parse_telephone_event_pt(sdp) {
+            media.set_dtmf_payload_type(pt);
+        }
 
         // Discover public IP via STUN for NAT traversal in SDP
         // A server on a private network is answered with the local address:
@@ -1447,13 +1504,17 @@ impl SipManager {
             media::sdp_address(local_addr.ip(), stun_ip, Some(server_addr.ip())).to_string(),
         );
 
-        let response = build_200_ok_invite_with_public_ip(
+        // Our crypto line only when the session actually came up encrypted,
+        // so the answer never claims SRTP the media is not using.
+        let answer_crypto = if srtp_active { answer_crypto.as_deref() } else { None };
+        let response = build_200_ok_invite_srtp(
             &raw_invite,
             local_addr,
             rtp_port,
             &to_tag,
             Some(&username),
             public_ip.as_deref(),
+            answer_crypto,
         )
         .ok_or("Failed to build 200 OK")?;
 
@@ -1471,6 +1532,12 @@ impl SipManager {
                 return Err("Call ended before it could be answered".into());
             }
             call.set_to_tag(to_tag.clone());
+            call.srtp_active = srtp_active;
+            // Remember our key for the session, so a re-INVITE refresh answers
+            // with the same crypto line instead of downgrading to plain RTP.
+            if srtp_active {
+                call.local_srtp_key = our_srtp_key.clone();
+            }
 
             // Only once the session is on the call, so a recording is never
             // started for a call that is already gone.
@@ -1483,7 +1550,7 @@ impl SipManager {
 
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&account_id, call_id, "connected", &remote_uri, "inbound")
-                .with_srtp_active(false),
+                .with_srtp_active(srtp_active),
         ));
 
         if let Some(event) = recording_event {

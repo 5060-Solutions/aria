@@ -92,13 +92,21 @@ pub async fn handle_incoming_request(
                             account.server_addr.map(|a| a.ip()),
                         )
                         .to_string();
-                        let resp = builder::build_200_ok_invite_with_public_ip(
+                        // Keep the call's crypto on a session refresh: an SRTP
+                        // call answered RTP/AVP here would be torn down by the
+                        // PBX (media_encryption=sdes) or lose audio. Reuse the
+                        // key the call already negotiated.
+                        let srtp_key = s
+                            .find_call(&call_internal_id)
+                            .and_then(|(_, c)| if c.srtp_active { c.local_srtp_key.clone() } else { None });
+                        let resp = builder::build_200_ok_invite_srtp(
                             text,
                             la,
                             rtp_port,
                             &our_tag,
                             Some(&account.config.username),
                             Some(&media_ip),
+                            srtp_key.as_deref(),
                         );
                         drop(s);
                         if let Some(target) = new_target {

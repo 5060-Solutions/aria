@@ -485,6 +485,11 @@ pub async fn handle_invite_response(
 
                 match media_result {
                     Ok(session) => {
+                        // DTMF goes on the payload type the answer named for
+                        // telephone-event, not a hardcoded 101.
+                        if let Some(pt) = builder::parse_telephone_event_pt(sdp) {
+                            session.set_dtmf_payload_type(pt);
+                        }
                         let mut s = state.write().await;
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.srtp_active = srtp_active;

@@ -443,6 +443,24 @@ pub fn build_200_ok_invite_with_public_ip(
     username: Option<&str>,
     public_ip: Option<&str>,
 ) -> Option<String> {
+    build_200_ok_invite_srtp(request_raw, local_addr, rtp_port, to_tag, username, public_ip, None)
+}
+
+/// Build a 200 OK for an incoming INVITE, answering SRTP when `crypto_b64_key`
+/// is given and the offer was RTP/SAVP.
+///
+/// The offer-less case still produces an offer. The plain-RTP case is this
+/// with `crypto_b64_key = None`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_200_ok_invite_srtp(
+    request_raw: &str,
+    local_addr: SocketAddr,
+    rtp_port: u16,
+    to_tag: &str,
+    username: Option<&str>,
+    public_ip: Option<&str>,
+    crypto_b64_key: Option<&str>,
+) -> Option<String> {
     let via = extract_header(request_raw, "Via")?;
     let from = extract_header(request_raw, "From")?;
     let to_base = extract_header(request_raw, "To")?;
@@ -463,7 +481,7 @@ pub fn build_200_ok_invite_with_public_ip(
     // If the request has SDP, generate an answer; otherwise generate an offer
     let remote_sdp = request_raw.split("\r\n\r\n").nth(1).unwrap_or("");
     let sdp = if remote_sdp.contains("m=audio") {
-        build_sdp_answer(remote_sdp, sdp_ip, rtp_port)
+        build_sdp_answer_srtp(remote_sdp, sdp_ip, rtp_port, crypto_b64_key)
     } else {
         build_sdp_offer(sdp_ip, rtp_port)
     };
@@ -596,6 +614,30 @@ pub fn build_sdp_answer_srtp(
 #[allow(dead_code)]
 pub fn parse_sdp_crypto(sdp: &str) -> Option<String> {
     super::srtp::parse_sdp_crypto(sdp)
+}
+
+/// The payload type the peer named for `telephone-event` (DTMF, RFC 4733), if
+/// any. DTMF must be sent on the type the peer offered; 101 is only the usual
+/// default.
+pub fn parse_telephone_event_pt(sdp: &str) -> Option<u8> {
+    sdp.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("a=rtpmap:")?;
+        let (pt, codec) = rest.split_once(char::is_whitespace)?;
+        if codec.to_ascii_lowercase().starts_with("telephone-event") {
+            pt.trim().parse().ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Whether an SDP offer's audio media uses an SRTP profile (RTP/SAVP).
+pub fn sdp_offers_savp(sdp: &str) -> bool {
+    sdp.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("m=audio ")
+            && line.split_whitespace().nth(2).is_some_and(|p| p.contains("SAVP"))
+    })
 }
 
 /// Build SDP offer/answer for audio (PCMU default, PCMA, Opus, telephone-event)
@@ -1221,5 +1263,52 @@ mod tests {
 
         let cancel = build_cancel("sip:x@y", addr(), "c", 1, "f", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
         assert!(!cancel.contains("user@host"));
+    }
+
+    const SAVP_OFFER: &str = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+        m=audio 20000 RTP/SAVP 0 8 96\r\na=rtpmap:0 PCMU/8000\r\n\
+        a=rtpmap:96 telephone-event/8000\r\n\
+        a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVyS3cm9vZ3J0ZXN0aW5na2V5bWF0ZXJpYWwxMjM0\r\n";
+
+    #[test]
+    fn savp_offer_is_recognised_and_its_crypto_key_parsed() {
+        assert!(sdp_offers_savp(SAVP_OFFER));
+        assert!(!sdp_offers_savp(
+            "m=audio 20000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        ));
+        assert!(parse_sdp_crypto(SAVP_OFFER).is_some());
+    }
+
+    #[test]
+    fn telephone_event_pt_is_read_from_the_offer() {
+        assert_eq!(parse_telephone_event_pt(SAVP_OFFER), Some(96));
+        assert_eq!(
+            parse_telephone_event_pt("a=rtpmap:0 PCMU/8000\r\n"),
+            None
+        );
+    }
+
+    /// Given a key and a SAVP offer, the 200 OK answers RTP/SAVP with a crypto
+    /// line. Without a key it stays plain RTP/AVP even for a SAVP offer, so the
+    /// answer never promises encryption the session is not running.
+    #[test]
+    fn srtp_200_ok_answers_savp_with_a_crypto_line() {
+        let invite = format!(
+            "INVITE sip:1001@pbx SIP/2.0\r\nVia: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK1\r\n\
+             From: <sip:200@pbx>;tag=caller\r\nTo: <sip:1001@pbx>\r\nCall-ID: c1\r\nCSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
+            SAVP_OFFER.len(),
+            SAVP_OFFER
+        );
+        let key = "WVyS3cm9vZ3J0ZXN0aW5na2V5bWF0ZXJpYWwxMjM0";
+        let enc = build_200_ok_invite_srtp(&invite, addr(), 30000, "t", Some("1001"), None, Some(key))
+            .expect("200 OK");
+        assert!(enc.contains("m=audio 30000 RTP/SAVP"), "{enc}");
+        assert!(enc.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"), "{enc}");
+
+        let plain = build_200_ok_invite_srtp(&invite, addr(), 30000, "t", Some("1001"), None, None)
+            .expect("200 OK");
+        assert!(plain.contains("m=audio 30000 RTP/AVP"), "{plain}");
+        assert!(!plain.contains("a=crypto"), "{plain}");
     }
 }
