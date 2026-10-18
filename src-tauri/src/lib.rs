@@ -60,8 +60,15 @@ pub fn run() {
         // app's identity and invalidate macOS/Windows signing.
         .plugin(
             tauri_plugin_single_instance::Builder::new()
-                .callback(|_app, _argv, _cwd| {
-                    // Handle single instance - argv may contain deep link URL
+                // The plugin has already forwarded any deep link in argv to
+                // the deep-link plugin (the `deep-link` feature). Launching
+                // Aria again is also how people ask for the window back.
+                .callback(|app, _argv, _cwd| {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
                 })
                 .dbus_id("com.solutions5060.aria")
                 .build(),

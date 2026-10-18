@@ -33,7 +33,6 @@ import ViewListIcon from "@mui/icons-material/ViewList";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { save } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { log } from "../../utils/log";
@@ -1130,18 +1129,14 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
     setLogs([]);
   };
 
+  // The backend opens the save dialog itself, so the destination path never
+  // passes through the webview. Only the translated labels are sent.
   const handleExportText = async () => {
     try {
-      const timestamp = Date.now();
-      const filePath = await save({
-        defaultPath: `aria-sip-${timestamp}.txt`,
-        filters: [{ name: t("diagnostics.textFiles"), extensions: ["txt"] }],
+      await invoke("export_sip_log_text", {
         title: t("diagnostics.exportTextTitle"),
+        filterName: t("diagnostics.textFiles"),
       });
-      
-      if (filePath) {
-        await invoke("export_sip_log_text", { path: filePath });
-      }
     } catch (e) {
       log.error("Failed to export text:", e);
     }
@@ -1149,16 +1144,10 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
 
   const handleExportPcap = async () => {
     try {
-      const timestamp = Date.now();
-      const filePath = await save({
-        defaultPath: `aria-sip-${timestamp}.pcap`,
-        filters: [{ name: t("diagnostics.pcapFiles"), extensions: ["pcap"] }],
+      await invoke("export_sip_log_pcap", {
         title: t("diagnostics.exportPcapTitle"),
+        filterName: t("diagnostics.pcapFiles"),
       });
-      
-      if (filePath) {
-        await invoke("export_sip_log_pcap", { path: filePath });
-      }
     } catch (e) {
       log.error("Failed to export pcap:", e);
     }
@@ -1168,17 +1157,11 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
     try {
       const callHistoryRaw = localStorage.getItem("aria_call_history");
       const callHistory = callHistoryRaw ? JSON.parse(callHistoryRaw) : [];
-      const timestamp = Date.now();
-
-      const filePath = await save({
-        defaultPath: `aria-diagnostic-report-${timestamp}.json`,
-        filters: [{ name: t("diagnostics.jsonFiles"), extensions: ["json"] }],
+      await invoke("export_diagnostic_report", {
+        callHistory,
         title: t("diagnostics.exportReportTitle"),
+        filterName: t("diagnostics.jsonFiles"),
       });
-
-      if (filePath) {
-        await invoke("export_diagnostic_report", { callHistory, path: filePath });
-      }
     } catch (e) {
       log.error("Failed to export report:", e);
     }
@@ -1189,17 +1172,11 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
     try {
       const callHistoryRaw = localStorage.getItem("aria_call_history");
       const callHistory = callHistoryRaw ? JSON.parse(callHistoryRaw) : [];
-      const timestamp = Date.now();
-
-      const filePath = await save({
-        defaultPath: `aria-call-history-${timestamp}.csv`,
-        filters: [{ name: t("diagnostics.csvFiles"), extensions: ["csv"] }],
+      await invoke("export_call_history_csv", {
+        callHistory,
         title: t("diagnostics.exportHistoryTitle"),
+        filterName: t("diagnostics.csvFiles"),
       });
-
-      if (filePath) {
-        await invoke("export_call_history_csv", { callHistory, path: filePath });
-      }
     } catch (e) {
       log.error("Failed to export call history:", e);
     }

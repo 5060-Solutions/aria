@@ -29,6 +29,65 @@ fn recordings_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String>
         .map_err(|e| format!("Failed to get app data dir: {e}"))
 }
 
+/// Ask the user where to save an export, and return the path they chose.
+///
+/// The dialog is opened here rather than in the webview so the destination
+/// never crosses the IPC boundary. The export commands used to take a `path`
+/// argument, which let a compromised renderer write partly caller-controlled
+/// content to any file the user can write — `~/.zshenv`, a LaunchAgent.
+/// `title` and `filter_name` are display strings only, so the UI can still
+/// translate them.
+async fn ask_save_path(
+    app: &tauri::AppHandle,
+    title: Option<String>,
+    default_name: String,
+    filter_name: Option<String>,
+    extension: &str,
+) -> Option<std::path::PathBuf> {
+    use tauri_plugin_dialog::DialogExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_file_name(default_name)
+        .add_filter(filter_name.unwrap_or_else(|| extension.to_uppercase()), &[extension]);
+    if let Some(title) = title {
+        dialog = dialog.set_title(title);
+    }
+    dialog.save_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
+/// A file name for an export made now, e.g. `aria-sip-1718000000000.pcap`.
+fn export_file_name(prefix: &str, extension: &str) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{prefix}-{now}.{extension}")
+}
+
+/// Quote one CSV field.
+///
+/// Doubles embedded quotes so a field cannot break out of the row, and
+/// neutralises a leading formula character so a spreadsheet opening the file
+/// treats the field as text. Remote display names come from the From header
+/// of an incoming call, so a caller controls them.
+fn csv_field(value: &str) -> String {
+    let escaped = value.replace('"', "\"\"");
+    let starts_formula = escaped
+        .chars()
+        .next()
+        .is_some_and(|c| matches!(c, '=' | '+' | '-' | '@' | '\t' | '\r' | '\n'));
+    if starts_formula {
+        format!("\"'{escaped}\"")
+    } else {
+        format!("\"{escaped}\"")
+    }
+}
+
 use serde::Deserialize;
 use tauri::{Manager, State};
 
@@ -62,6 +121,13 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
         let sip_len = payload.len();
         let udp_len = 8 + sip_len;
         let ip_len = 20 + udp_len;
+        // The IPv4 and UDP length fields are 16 bits. A message over TCP/TLS
+        // can be bigger than that; writing it would truncate the lengths and
+        // give Wireshark a malformed frame it may stop dissecting at.
+        if ip_len > u16::MAX as usize {
+            log::warn!("Skipping {}-byte SIP message in PCAP export: too large for one UDP frame", sip_len);
+            continue;
+        }
 
         // Parse remote addr; fall back to a placeholder if invalid
         let remote: std::net::SocketAddr = log
@@ -112,6 +178,24 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
     }
 
     buf
+}
+
+/// Check a dial target before it is built into a request line.
+///
+/// The target comes from the dialer, and the dialer can be filled by a
+/// `sip:`/`tel:` link from any web page. A percent-encoded CRLF in such a
+/// link decodes to a literal line break, which the builder would write
+/// straight into the INVITE: header injection. Whitespace has no place in a
+/// URI either.
+fn checked_target(uri: &str) -> Result<&str, String> {
+    let uri = uri.trim();
+    if uri.is_empty() {
+        return Err("No number or address to call".to_string());
+    }
+    if uri.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err("Address contains invalid characters".to_string());
+    }
+    Ok(uri)
 }
 
 /// QR provisioning payload from the frontend
@@ -330,9 +414,10 @@ pub async fn sip_make_call(
     call_id: Option<String>,
     manager: State<'_, SipManager>,
 ) -> Result<String, String> {
+    let uri = checked_target(&uri)?;
     match call_id {
-        Some(id) => manager.make_call_with_id(&uri, &id).await,
-        None => manager.make_call(&uri).await,
+        Some(id) => manager.make_call_with_id(uri, &id).await,
+        None => manager.make_call(uri).await,
     }
 }
 
@@ -419,20 +504,15 @@ pub async fn get_default_recordings_dir(app: tauri::AppHandle) -> Result<String,
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// Open the recordings directory in the system file browser.
+///
+/// Only ever the app's own recordings directory. This used to accept a path
+/// from the webview and hand it to `open`, which on macOS launches whatever
+/// the path is — see `confine_to`.
 #[tauri::command]
-pub async fn open_recordings_folder(
-    custom_path: Option<String>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let dir = if let Some(path) = custom_path {
-        std::path::PathBuf::from(path)
-    } else {
-        app.path()
-            .app_data_dir()
-            .map_err(|e| format!("Failed to get app data dir: {}", e))?
-            .join("recordings")
-    };
-    
+pub async fn open_recordings_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = recordings_root(&app)?;
+
     // Create directory if it doesn't exist
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
     
@@ -721,9 +801,10 @@ pub async fn sip_add_call(
     manager: State<'_, SipManager>,
 ) -> Result<String, String> {
     // This creates a second call - the frontend should have already put the first call on hold
+    let uri = checked_target(&uri)?;
     match call_id {
-        Some(id) => manager.make_call_with_id(&uri, &id).await,
-        None => manager.make_call(&uri).await,
+        Some(id) => manager.make_call_with_id(uri, &id).await,
+        None => manager.make_call(uri).await,
     }
 }
 
@@ -771,7 +852,7 @@ pub async fn sip_transfer_blind(
     target_uri: String,
     manager: State<'_, SipManager>,
 ) -> Result<(), String> {
-    manager.transfer_blind(&call_id, &target_uri).await
+    manager.transfer_blind(&call_id, checked_target(&target_uri)?).await
 }
 
 #[tauri::command]
@@ -828,8 +909,15 @@ pub async fn sip_unsubscribe_blf(
 #[tauri::command]
 pub async fn export_sip_log_text(
     manager: State<'_, SipManager>,
-    path: Option<String>,
-) -> Result<String, String> {
+    app: tauri::AppHandle,
+    title: Option<String>,
+    filter_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(file_path) =
+        ask_save_path(&app, title, export_file_name("aria-sip", "txt"), filter_name, "txt").await
+    else {
+        return Ok(None);
+    };
     let logs = manager.get_diagnostics().await;
     let mut out = String::new();
     for log in &logs {
@@ -840,31 +928,27 @@ pub async fn export_sip_log_text(
         let ts = chrono_format(log.timestamp);
         out.push_str(&format!("── {} {} {} ──\n{}\n\n", dir, ts, log.remote_addr, log.raw));
     }
-    
-    if let Some(file_path) = path {
-        std::fs::write(&file_path, &out)
-            .map_err(|e| format!("Failed to write file: {}", e))?;
-        Ok(file_path)
-    } else {
-        Ok(out)
-    }
+
+    std::fs::write(&file_path, &out).map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(Some(file_path.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
 pub async fn export_sip_log_pcap(
     manager: State<'_, SipManager>,
-    path: Option<String>,
-) -> Result<String, String> {
+    app: tauri::AppHandle,
+    title: Option<String>,
+    filter_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(file_path) =
+        ask_save_path(&app, title, export_file_name("aria-sip", "pcap"), filter_name, "pcap").await
+    else {
+        return Ok(None);
+    };
     let logs = manager.get_diagnostics().await;
-    let bytes = build_pcap(&logs);
-    
-    if let Some(file_path) = path {
-        std::fs::write(&file_path, &bytes)
-            .map_err(|e| format!("Failed to write file: {}", e))?;
-        Ok(file_path)
-    } else {
-        Ok(base64_encode(&bytes))
-    }
+    std::fs::write(&file_path, build_pcap(&logs))
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(Some(file_path.to_string_lossy().into_owned()))
 }
 
 fn chrono_format(ts_millis: u64) -> String {
@@ -875,22 +959,6 @@ fn chrono_format(ts_millis: u64) -> String {
     let m = (secs / 60) % 60;
     let s = secs % 60;
     format!("{:02}:{:02}:{:02}.{:03}", h, m, s, ms)
-}
-
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(CHARS[(n >> 18 & 0x3F) as usize] as char);
-        out.push(CHARS[(n >> 12 & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { CHARS[(n >> 6 & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[(n & 0x3F) as usize] as char } else { '=' });
-    }
-    out
 }
 
 #[tauri::command]
@@ -955,7 +1023,17 @@ fn save_insecure_creds(creds: &std::collections::HashMap<String, String>) -> Res
 
 /// Store a password securely in the OS keychain (or insecure file in dev mode)
 #[tauri::command]
-pub fn store_credential(account_id: &str, password: &str) -> Result<(), String> {
+pub async fn store_credential(account_id: String, password: String) -> Result<(), String> {
+    // The OS keychain can block on an unlock prompt (GNOME Keyring, KWallet,
+    // a locked macOS keychain). A synchronous command runs on the main
+    // thread, so the whole UI — including a live call's controls — froze
+    // until the user answered it.
+    tokio::task::spawn_blocking(move || store_credential_blocking(&account_id, &password))
+        .await
+        .map_err(|e| format!("keychain task failed: {e}"))?
+}
+
+fn store_credential_blocking(account_id: &str, password: &str) -> Result<(), String> {
     log::info!("store_credential: account_id={}, password_len={}", account_id, password.len());
     
     #[cfg(feature = "dev-insecure")]
@@ -982,7 +1060,17 @@ pub fn store_credential(account_id: &str, password: &str) -> Result<(), String> 
 
 /// Retrieve a password from the OS keychain (or insecure file in dev mode)
 #[tauri::command]
-pub fn get_credential(account_id: &str) -> Result<Option<String>, String> {
+pub async fn get_credential(account_id: String) -> Result<Option<String>, String> {
+    // The OS keychain can block on an unlock prompt (GNOME Keyring, KWallet,
+    // a locked macOS keychain). A synchronous command runs on the main
+    // thread, so the whole UI — including a live call's controls — froze
+    // until the user answered it.
+    tokio::task::spawn_blocking(move || get_credential_blocking(&account_id))
+        .await
+        .map_err(|e| format!("keychain task failed: {e}"))?
+}
+
+fn get_credential_blocking(account_id: &str) -> Result<Option<String>, String> {
     log::info!("get_credential: account_id={}", account_id);
     
     #[cfg(feature = "dev-insecure")]
@@ -1020,7 +1108,17 @@ pub fn get_credential(account_id: &str) -> Result<Option<String>, String> {
 
 /// Delete a password from the OS keychain (or insecure file in dev mode)
 #[tauri::command]
-pub fn delete_credential(account_id: &str) -> Result<(), String> {
+pub async fn delete_credential(account_id: String) -> Result<(), String> {
+    // The OS keychain can block on an unlock prompt (GNOME Keyring, KWallet,
+    // a locked macOS keychain). A synchronous command runs on the main
+    // thread, so the whole UI — including a live call's controls — froze
+    // until the user answered it.
+    tokio::task::spawn_blocking(move || delete_credential_blocking(&account_id))
+        .await
+        .map_err(|e| format!("keychain task failed: {e}"))?
+}
+
+fn delete_credential_blocking(account_id: &str) -> Result<(), String> {
     #[cfg(feature = "dev-insecure")]
     {
         let mut creds = load_insecure_creds();
@@ -1067,40 +1165,56 @@ pub struct CallHistoryEntry {
 #[tauri::command]
 pub async fn export_diagnostic_report(
     manager: State<'_, SipManager>,
+    app: tauri::AppHandle,
     call_history: Vec<CallHistoryEntry>,
-    path: String,
-) -> Result<String, String> {
+    title: Option<String>,
+    filter_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(file_path) = ask_save_path(
+        &app,
+        title,
+        export_file_name("aria-diagnostic-report", "json"),
+        filter_name,
+        "json",
+    )
+    .await
+    else {
+        return Ok(None);
+    };
     let system_status = manager.get_system_status().await;
     let sip_logs = manager.get_diagnostics().await;
-    
+
     let report = serde_json::json!({
         "exportedAt": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0),
-        "version": "0.2.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "systemStatus": system_status,
         "sipMessageCount": sip_logs.len(),
         "callHistory": call_history,
         "callHistoryCount": call_history.len(),
     });
-    
+
     let json_str = serde_json::to_string_pretty(&report)
         .map_err(|e| format!("Failed to serialize report: {}", e))?;
-    
-    std::fs::write(&path, &json_str)
+
+    std::fs::write(&file_path, &json_str)
         .map_err(|e| format!("Failed to write file: {}", e))?;
-    
-    Ok(path)
+
+    Ok(Some(file_path.to_string_lossy().into_owned()))
 }
 
 /// Export PCAP for a specific call (filtered by SIP Call-ID)
 #[tauri::command]
 pub async fn export_call_pcap(
     manager: State<'_, SipManager>,
+    app: tauri::AppHandle,
     sip_call_id: String,
-    path: Option<String>,
-) -> Result<String, String> {
+    default_name: Option<String>,
+    title: Option<String>,
+    filter_name: Option<String>,
+) -> Result<Option<String>, String> {
     let logs = manager.get_diagnostics().await;
     let filtered: Vec<_> = logs
         .into_iter()
@@ -1111,15 +1225,17 @@ pub async fn export_call_pcap(
         return Err("No SIP messages found for this call".into());
     }
 
-    let bytes = build_pcap(&filtered);
-
-    if let Some(file_path) = path {
-        std::fs::write(&file_path, &bytes)
-            .map_err(|e| format!("Failed to write file: {}", e))?;
-        Ok(file_path)
-    } else {
-        Ok(base64_encode(&bytes))
-    }
+    // The suggested name is display-only: the dialog decides the real path.
+    let default_name = default_name
+        .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        .unwrap_or_else(|| export_file_name("aria-call", "pcap"));
+    let Some(file_path) = ask_save_path(&app, title, default_name, filter_name, "pcap").await
+    else {
+        return Ok(None);
+    };
+    std::fs::write(&file_path, build_pcap(&filtered))
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(Some(file_path.to_string_lossy().into_owned()))
 }
 
 /// Get SIP message trace for a specific call
@@ -1140,29 +1256,43 @@ pub async fn get_call_sip_trace(
 /// Export call history as CSV
 #[tauri::command]
 pub async fn export_call_history_csv(
+    app: tauri::AppHandle,
     call_history: Vec<CallHistoryEntry>,
-    path: String,
-) -> Result<String, String> {
+    title: Option<String>,
+    filter_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(file_path) = ask_save_path(
+        &app,
+        title,
+        export_file_name("aria-call-history", "csv"),
+        filter_name,
+        "csv",
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+    std::fs::write(&file_path, call_history_csv(&call_history))
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(Some(file_path.to_string_lossy().into_owned()))
+}
+
+fn call_history_csv(call_history: &[CallHistoryEntry]) -> String {
     let mut csv = String::from("ID,Remote URI,Remote Name,Direction,Start Time,Duration (s),Missed,Recording Path\n");
-    
-    for entry in &call_history {
+    for entry in call_history {
         csv.push_str(&format!(
-            "\"{}\",\"{}\",\"{}\",\"{}\",{},{},{},\"{}\"\n",
-            entry.id,
-            entry.remote_uri,
-            entry.remote_name.as_deref().unwrap_or(""),
-            entry.direction,
+            "{},{},{},{},{},{},{},{}\n",
+            csv_field(&entry.id),
+            csv_field(&entry.remote_uri),
+            csv_field(entry.remote_name.as_deref().unwrap_or("")),
+            csv_field(&entry.direction),
             entry.start_time,
             entry.duration,
             entry.missed,
-            entry.recording_path.as_deref().unwrap_or("")
+            csv_field(entry.recording_path.as_deref().unwrap_or(""))
         ));
     }
-    
-    std::fs::write(&path, &csv)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
-
-    Ok(path)
+    csv
 }
 
 // ── Audio Device Testing ─────────────────────────────────────────────────────
@@ -1334,15 +1464,6 @@ mod tests {
     }
 
     #[test]
-    fn test_base64_encode_basic() {
-        assert_eq!(base64_encode(b"Hello"), "SGVsbG8=");
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"a"), "YQ==");
-        assert_eq!(base64_encode(b"ab"), "YWI=");
-        assert_eq!(base64_encode(b"abc"), "YWJj");
-    }
-
-    #[test]
     fn test_chrono_format() {
         let formatted = chrono_format(1710000000000);
         // Should produce HH:MM:SS.mmm format
@@ -1350,6 +1471,49 @@ mod tests {
         assert!(formatted.contains(':'));
         assert!(formatted.contains('.'));
     }
+    #[test]
+    fn csv_fields_cannot_break_out_of_their_cell() {
+        assert_eq!(csv_field("Bob"), "\"Bob\"");
+        assert_eq!(csv_field("Bob\", \"x"), "\"Bob\"\", \"\"x\"");
+    }
+
+    #[test]
+    fn csv_fields_starting_like_a_formula_are_made_text() {
+        assert_eq!(csv_field("=HYPERLINK(\"http://evil\")"), "\"'=HYPERLINK(\"\"http://evil\"\")\"");
+        assert_eq!(csv_field("+15551234567"), "\"'+15551234567\"");
+        assert_eq!(csv_field("-"), "\"'-\"");
+        assert_eq!(csv_field("@x"), "\"'@x\"");
+    }
+
+    #[test]
+    fn call_history_csv_quotes_every_text_column() {
+        let rows = vec![CallHistoryEntry {
+            id: "abc".into(),
+            remote_uri: "sip:1001@pbx".into(),
+            remote_name: Some("=cmd|' /C calc'!A0".into()),
+            direction: "inbound".into(),
+            start_time: 1,
+            duration: 2,
+            missed: false,
+            recording_path: None,
+        }];
+        let csv = call_history_csv(&rows);
+        let line = csv.lines().nth(1).unwrap();
+        assert_eq!(
+            line,
+            "\"abc\",\"sip:1001@pbx\",\"'=cmd|' /C calc'!A0\",\"inbound\",1,2,false,\"\""
+        );
+    }
+
+    #[test]
+    fn dial_targets_with_line_breaks_or_spaces_are_rejected() {
+        assert_eq!(checked_target("  sip:bob@pbx.example  "), Ok("sip:bob@pbx.example"));
+        assert!(checked_target("sip:bob@pbx.example\r\nX-Injected: x").is_err());
+        assert!(checked_target("1001 ").is_ok());
+        assert!(checked_target("10 01").is_err());
+        assert!(checked_target("").is_err());
+    }
+
 }
 
 // ── On-device transcription ─────────────────────────────────────────────────
@@ -1393,10 +1557,11 @@ pub async fn ai_delete_model(model_id: String) -> Result<u64, String> {
 /// Transcribe a call recording that is already on disk.
 #[tauri::command]
 pub async fn ai_transcribe_recording(
+    app: tauri::AppHandle,
     call_id: String,
     wav_path: String,
 ) -> Result<crate::ai::AiInsightDto, String> {
-    let path = std::path::PathBuf::from(wav_path);
+    let path = confine_to(&recordings_root(&app)?, &wav_path)?;
     // Inference is CPU-bound and blocking, so it must not sit on an async
     // worker that other commands are waiting to use.
     tokio::task::spawn_blocking(move || crate::ai::transcribe_recording(&call_id, &path))

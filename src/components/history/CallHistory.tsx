@@ -440,16 +440,12 @@ export function CallHistory() {
                       variant="outlined"
                       onClick={async () => {
                         try {
-                          const { save } = await import("@tauri-apps/plugin-dialog");
                           const sipId = selectedEntry.sipCallId;
                           if (!sipId) return;
-                          const path = await save({
-                            defaultPath: `aria-call-${selectedEntry.id.substring(0, 8)}.pcap`,
-                            filters: [{ name: "PCAP Files", extensions: ["pcap"] }],
+                          await exportCallPcap(sipId, {
+                            defaultName: `aria-call-${selectedEntry.id.substring(0, 8)}.pcap`,
+                            filterName: "PCAP Files",
                           });
-                          if (path) {
-                            await exportCallPcap(sipId, path);
-                          }
                         } catch {
                           // Export failed silently
                         }

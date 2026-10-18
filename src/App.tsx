@@ -11,6 +11,7 @@ import { DiagnosticPanel } from "./components/diagnostics/DiagnosticPanel";
 import { useSipEvents, useAutoRegister } from "./hooks/useSip";
 import { useNetworkMonitor } from "./hooks/useNetworkMonitor";
 import { log } from "./utils/log";
+import { deepLinkTarget } from "./utils/deepLink";
 import "./i18n";
 
 const isDebugWindow = getCurrentWebviewWindow().label === "debug";
@@ -42,20 +43,13 @@ function MainApp() {
   useEffect(() => {
     const unlisten = onOpenUrl((urls) => {
       for (const url of urls) {
-        // Handle tel: links (e.g., tel:+1234567890)
-        if (url.startsWith("tel:")) {
-          const number = decodeURIComponent(url.slice(4));
-          setDialInput(number);
-          setCurrentView("dialer");
-          log.info("[DeepLink] Received tel: link, setting dialer to:", number);
-        }
-        // Handle sip: links (e.g., sip:user@domain.com)
-        else if (url.startsWith("sip:")) {
-          const uri = decodeURIComponent(url.slice(4));
-          setDialInput(uri);
-          setCurrentView("dialer");
-          log.info("[DeepLink] Received sip: link, setting dialer to:", uri);
-        }
+        // tel:+1234567890 or sip:user@domain.com. The link comes from any web
+        // page, so it is only ever put in the dialer, never dialled.
+        const target = deepLinkTarget(url);
+        if (target === null) continue;
+        setDialInput(target);
+        setCurrentView("dialer");
+        log.info("[DeepLink] Received link, setting dialer to:", target);
       }
     });
 

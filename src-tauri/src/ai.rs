@@ -133,12 +133,19 @@ mod enabled {
         let mut key = vec![0_u8; 32];
         getrandom(&mut key)?;
         std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
-        std::fs::write(&path, &key).map_err(|e| e.to_string())?;
+        // Created with its final mode rather than written and then chmod'ed:
+        // between those two steps the key sat world-readable under the
+        // default umask, and the key decrypts every transcript.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+        use std::io::Write;
+        let mut file = options.open(&path).map_err(|e| e.to_string())?;
+        file.write_all(&key).map_err(|e| e.to_string())?;
         Ok(key)
     }
 

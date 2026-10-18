@@ -32,7 +32,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-deep-link = "2"
-tauri-plugin-single-instance = "2"
+# deep-link: when Aria is already running and the OS launches a second copy
+# for a tel:/sip: link, the plugin forwards the link to this instance. Without
+# it the second copy just exits and the link is lost.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

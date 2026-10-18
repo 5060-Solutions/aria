@@ -484,8 +484,8 @@ export async function getDefaultRecordingsDir(): Promise<string> {
   return invoke("get_default_recordings_dir");
 }
 
-export async function openRecordingsFolder(customPath?: string): Promise<void> {
-  return invoke("open_recordings_folder", { customPath });
+export async function openRecordingsFolder(): Promise<void> {
+  return invoke("open_recordings_folder");
 }
 
 export async function playRecording(path: string): Promise<void> {
@@ -502,12 +502,17 @@ export interface SystemContact {
 
 // ── Per-call diagnostics ─────────────────────────────────────────────────────
 
-/** Export PCAP for a specific call by SIP Call-ID */
+/**
+ * Export PCAP for a specific call by SIP Call-ID.
+ *
+ * The backend asks the user where to save it, so the destination never passes
+ * through the webview. Resolves to the path written, or null if they cancelled.
+ */
 export async function exportCallPcap(
   sipCallId: string,
-  path?: string,
-): Promise<string> {
-  return invoke<string>("export_call_pcap", { sipCallId, path });
+  options: { defaultName?: string; title?: string; filterName?: string } = {},
+): Promise<string | null> {
+  return invoke<string | null>("export_call_pcap", { sipCallId, ...options });
 }
 
 /** Get SIP message trace for a specific call */
