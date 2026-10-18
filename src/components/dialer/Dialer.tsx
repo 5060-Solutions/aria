@@ -340,6 +340,15 @@ export function Dialer() {
           ) : (
             <Box
               onClick={() => setCountryPickerOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setCountryPickerOpen(true);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              aria-label={t("dialer.searchCountry")}
               sx={{
                 display: "flex",
                 alignItems: "center",
@@ -441,6 +450,7 @@ export function Dialer() {
           <IconButton
             onClick={handleCall}
             disabled={!dialInput.trim()}
+            aria-label={t("dialer.call", "Call")}
             sx={{
               width: 64,
               height: 64,
@@ -471,6 +481,7 @@ export function Dialer() {
             onClick={handleBackspace}
             onDoubleClick={clearDialInput}
             tabIndex={dialInput ? 0 : -1}
+            aria-label={t("dialer.backspace", "Delete last digit")}
             sx={{
               width: 48,
               height: 48,

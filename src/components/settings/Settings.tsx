@@ -635,7 +635,7 @@ export function Settings() {
           >
             {t("settings.accounts")}
           </Typography>
-          <IconButton size="small" onClick={handleOpenAddDialog}>
+          <IconButton size="small" onClick={handleOpenAddDialog} aria-label={t("settings.addAccount", "Add account")}>
             <AddIcon sx={{ fontSize: 18 }} />
           </IconButton>
         </Box>
@@ -676,6 +676,19 @@ export function Settings() {
                   handleSwitchAccount(account.id);
                 }
               }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  if (isActive && (status === "error" || status === "unregistered")) {
+                    handleReconnect(account.id);
+                  } else {
+                    handleSwitchAccount(account.id);
+                  }
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              aria-label={account.displayName || account.username}
             >
               <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
                 {isActive ? (
@@ -783,6 +796,7 @@ export function Settings() {
                 <IconButton
                   size="small"
                   onClick={(e) => handleOpenMenu(e, account.id)}
+                  aria-label={t("settings.accountOptions", "Account options")}
                   sx={{ ml: 0.5 }}
                 >
                   <MoreVertIcon sx={{ fontSize: 18 }} />
@@ -850,6 +864,7 @@ export function Settings() {
                   <IconButton
                     size="small"
                     onClick={(e) => handleOpenMenu(e, account.id)}
+                    aria-label={t("settings.accountOptions", "Account options")}
                   >
                     <MoreVertIcon sx={{ fontSize: 18 }} />
                   </IconButton>
@@ -1209,6 +1224,7 @@ export function Settings() {
                       size="small"
                       onClick={handleSyncSystemContacts}
                       disabled={syncingSystemContacts}
+                      aria-label={t("settings.syncNow", "Sync now")}
                     >
                       {syncingSystemContacts ? (
                         <CircularProgress size={18} />
@@ -1456,6 +1472,7 @@ export function Settings() {
                         size="small"
                         onClick={() => setShowPassword(!showPassword)}
                         edge="end"
+                        aria-label={showPassword ? t("settings.hidePassword", "Hide password") : t("settings.showPassword", "Show password")}
                       >
                         {showPassword ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
                       </IconButton>
@@ -1627,6 +1644,7 @@ export function Settings() {
                             <IconButton
                               size="small"
                               disabled={index === 0}
+                              aria-label={t("settings.moveUp", "Move up")}
                               onClick={() => {
                                 setForm((f) => {
                                   const newCodecs = [...f.codecs];
@@ -1647,6 +1665,7 @@ export function Settings() {
                             <IconButton
                               size="small"
                               disabled={index === form.codecs.length - 1}
+                              aria-label={t("settings.moveDown", "Move down")}
                               onClick={() => {
                                 setForm((f) => {
                                   const newCodecs = [...f.codecs];

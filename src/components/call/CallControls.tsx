@@ -60,6 +60,8 @@ function ControlButton({ icon, label, active, onClick }: ControlButtonProps) {
       <motion.div whileTap={{ scale: 0.88 }}>
         <IconButton
           onClick={onClick}
+          aria-label={label}
+          aria-pressed={active}
           sx={{
             width: 56,
             height: 56,
@@ -149,6 +151,7 @@ export function CallControls() {
           <motion.div whileTap={{ scale: 0.88 }}>
             <IconButton
               onClick={handleDecline}
+              aria-label={t("call.decline")}
               sx={{
                 width: 68,
                 height: 68,
@@ -171,6 +174,7 @@ export function CallControls() {
           <motion.div whileTap={{ scale: 0.88 }}>
             <IconButton
               onClick={handleAnswer}
+              aria-label={t("call.answer")}
               sx={{
                 width: 68,
                 height: 68,
@@ -424,6 +428,7 @@ export function CallControls() {
           <motion.div whileTap={{ scale: 0.88 }}>
             <IconButton
               onClick={handleHangup}
+              aria-label={t("call.hangUp", "Hang up")}
               sx={{
                 width: 68,
                 height: 68,

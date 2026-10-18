@@ -81,6 +81,8 @@ export function NavRail() {
             >
               <IconButton
                 onClick={() => setCurrentView(id)}
+                aria-label={label}
+                aria-current={active ? "page" : undefined}
                 sx={{
                   width: 48,
                   height: 32,

@@ -137,7 +137,7 @@ function ContactDialog({
         <Typography variant="h6" sx={{ fontWeight: 500, fontSize: "1rem" }}>
           {isEdit ? t("contacts.editContact") : t("contacts.newContact")}
         </Typography>
-        <IconButton size="small" onClick={onClose}>
+        <IconButton size="small" onClick={onClose} aria-label={t("common.cancel", "Close")}>
           <CloseIcon fontSize="small" />
         </IconButton>
       </DialogTitle>
@@ -361,6 +361,7 @@ function ContactItem({
             e.stopPropagation();
             onCall();
           }}
+          aria-label={t("history.callBack", "Call")}
           sx={{ color: "primary.main", borderRadius: "10px" }}
         >
           <CallIcon sx={{ fontSize: 18 }} />
@@ -569,7 +570,7 @@ export function ContactList() {
               ),
               endAdornment: search ? (
                 <InputAdornment position="end">
-                  <IconButton size="small" onClick={() => setSearch("")}>
+                  <IconButton size="small" onClick={() => setSearch("")} aria-label={t("common.clear", "Clear")}>
                     <CloseIcon sx={{ fontSize: 14 }} />
                   </IconButton>
                 </InputAdornment>

@@ -279,9 +279,17 @@ export function Transcription() {
           >
             <Box
               sx={{ cursor: "pointer" }}
+              role="button"
+              tabIndex={0}
               onClick={() =>
                 void invoke<AiInsight | null>("ai_insight", { callId: row.callId }).then(setOpen)
               }
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  void invoke<AiInsight | null>("ai_insight", { callId: row.callId }).then(setOpen);
+                }
+              }}
             >
               <Typography variant="body2">{formatTimestamp(row.createdAt)}</Typography>
               <Typography variant="caption" sx={{ color: "text.disabled" }}>

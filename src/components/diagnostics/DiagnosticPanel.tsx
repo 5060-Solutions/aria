@@ -560,6 +560,16 @@ function SipLogEntry({
   return (
     <Box
       onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      aria-expanded={isSelected}
+      aria-label={summaryLine}
       sx={{
         px: 1,
         py: 0.6,
