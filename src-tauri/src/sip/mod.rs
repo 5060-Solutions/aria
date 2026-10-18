@@ -458,7 +458,37 @@ impl SipManager {
             })),
             event_tx,
         };
+        manager.start_ended_call_sweeper();
         (manager, event_rx)
+    }
+
+    /// How long an ended call's record is kept.
+    ///
+    /// Timer H (RFC 3261 §17.1.1): the longest a far end will keep
+    /// retransmitting a final response we have to be able to match.
+    const ENDED_CALL_RETENTION: std::time::Duration = std::time::Duration::from_secs(32);
+
+    /// Drop the records of calls that ended a while ago.
+    ///
+    /// Every way a call ends leaves its record in place, and only local hangup
+    /// used to remove it (after 2 s). Calls ended by the far end, by a
+    /// rejection or by a timeout accumulated for the life of the process and
+    /// were counted as active by the status report.
+    fn start_ended_call_sweeper(&self) {
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                let mut s = state.write().await;
+                for account in s.accounts.values_mut() {
+                    account.calls.retain(|call| {
+                        !call
+                            .ended_at
+                            .is_some_and(|at| at.elapsed() >= Self::ENDED_CALL_RETENTION)
+                    });
+                }
+            }
+        });
     }
 
     fn emit(&self, event: SipEvent) {
@@ -1112,6 +1142,7 @@ impl SipManager {
     fn start_invite_timeout(&self, call_id: &str, account_id: &str) {
         let state = self.state.clone();
         let event_tx = self.event_tx.clone();
+        let manager = self.clone();
         let call_id = call_id.to_string();
         let account_id = account_id.to_string();
 
@@ -1150,41 +1181,47 @@ impl SipManager {
             // Second check: additional 60 seconds for ringing to be answered
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
-            let mut s = state.write().await;
-            if let Some((_, call)) = s.find_call_mut(&call_id) {
-                // Timeout if still ringing after 60 more seconds
-                if call.is_ringing() {
-                    log::warn!("Call timeout (unanswered) for call {}", call_id);
-                    let remote_uri = call.remote_uri.clone();
-                    call.end(EndReason::Failed("No answer".to_string()));
-                    let _ = event_tx.send(SipEvent::CallStateChanged(
-                        CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                    ));
+            let still_ringing = state
+                .read()
+                .await
+                .find_call(&call_id)
+                .is_some_and(|(_, call)| call.is_ringing());
+            if still_ringing {
+                // Give up the same way the user would: with a CANCEL. Ending
+                // the call locally left the far end ringing until its own
+                // timer expired.
+                log::warn!("Call timeout (unanswered) for call {}", call_id);
+                if let Err(e) = manager.hangup(&call_id).await {
+                    log::warn!("Could not cancel unanswered call {}: {}", call_id, e);
                 }
             }
         });
     }
 
     pub async fn hangup(&self, call_id: &str) -> Result<(), String> {
-        let (action_msg, server_addr, transport, account_id, remote_uri, direction) = {
+        let (action_msg, server_addr, transport, account_id, remote_uri, direction, sent_cancel) = {
             let mut s = self.state.write().await;
-            let (aid, cseq, remote_uri, direction, to_tag, from_tag, call_id_header, last_invite_branch, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact) = {
+            let (aid, cseq, remote_uri, direction, our_tag, their_tag, call_id_header, last_invite_branch, invite_cseq, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact) = {
                 let (aid, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
                 let aid = aid.to_string();
                 let cseq = call.next_cseq();
                 let remote_uri = call.remote_uri.clone();
                 let direction = call.direction_str().to_string();
-                let to_tag = call.to_tag.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()[..8].to_string());
-                let from_tag = call.from_tag.clone();
+                let (our_tag, their_tag) = call.dialog_tags();
+                // An unanswered inbound call has our tag already (we chose it
+                // for the 180); an unanswered outbound one has no remote tag
+                // yet, and the 486 path below needs one for ours.
+                let our_tag = if our_tag.is_empty() { builder::generate_tag() } else { our_tag };
                 let call_id_header = call.call_id_header.clone();
                 let last_invite_branch = call.last_invite_branch.clone();
+                let invite_cseq = call.invite_cseq;
                 let local_uri = call.local_uri.clone();
                 let route_set = call.route_set().to_vec();
                 let is_incoming = call.is_incoming();
                 let is_dialing_or_ringing = call.is_dialing() || call.is_ringing();
                 let raw_invite = call.raw_invite().map(|str_| str_.to_string());
                 let remote_contact = call.remote_contact.clone();
-                (aid, cseq, remote_uri, direction, to_tag, from_tag, call_id_header, last_invite_branch, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact)
+                (aid, cseq, remote_uri, direction, our_tag, their_tag, call_id_header, last_invite_branch, invite_cseq, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact)
             };
 
             let account = s.get_account(&aid).ok_or("Account not found")?;
@@ -1198,26 +1235,20 @@ impl SipManager {
             // on its own.
             let msg = if is_incoming {
                 // Reject incoming call while ringing with 486 Busy Here (RFC 3261 Section 21.4.17)
-                if let Some(ref raw_inv) = raw_invite {
-                    let mut resp = builder::build_simple_response(raw_inv, 486, "Busy Here")
-                        .unwrap_or_default();
-                    if !resp.contains(";tag=") && !resp.contains(";tag =") {
-                        if let Some(to_hdr) = builder::extract_header(raw_inv, "To") {
-                            resp = resp.replace(&to_hdr, &format!("{};tag={}", to_hdr, to_tag));
-                        }
-                    }
-                    Some(resp)
-                } else {
-                    None
-                }
+                raw_invite
+                    .as_deref()
+                    .and_then(|raw| builder::build_final_response(raw, 486, "Busy Here", &our_tag))
             } else if is_dialing_or_ringing {
-                // Outbound call not answered yet: cancel INVITE (RFC 3261 Section 9.1)
+                // Outbound call not answered yet: cancel INVITE (RFC 3261 Section 9.1).
+                // The CANCEL carries the INVITE's CSeq, which is 2 after an
+                // auth retry; a literal 1 made FreeSWITCH answer 481 and keep
+                // ringing the callee.
                 let cancel_msg = build_cancel(
                     &remote_uri,
                     la,
                     &call_id_header,
-                    1,
-                    &from_tag,
+                    invite_cseq,
+                    &our_tag,
                     &transport_str,
                     &last_invite_branch.unwrap_or_default(),
                     &local_uri,
@@ -1225,18 +1256,9 @@ impl SipManager {
                 );
                 Some(cancel_msg)
             } else {
-                // Established dialog: send BYE
-                // RFC 3261 Section 15: The sender of the BYE puts its own tag in From,
-                // and the remote party's tag in To.
-                let is_inbound = direction == "inbound";
-                let (bye_from_tag, bye_to_tag) = if is_inbound {
-                    // For inbound call: to_tag is Aria's tag in dialog, from_tag is caller's tag
-                    (&to_tag, &from_tag)
-                } else {
-                    // For outbound call: from_tag is Aria's tag in dialog, to_tag is callee's tag
-                    (&from_tag, &to_tag)
-                };
-
+                // Established dialog: send BYE. RFC 3261 Section 15: the sender
+                // of the BYE puts its own tag in From and the remote party's
+                // tag in To, whichever side sent the INVITE.
                 let target_uri = remote_contact.as_deref().unwrap_or(&remote_uri);
 
                 let bye = build_bye_with_routes(
@@ -1244,8 +1266,8 @@ impl SipManager {
                     la,
                     &call_id_header,
                     cseq,
-                    bye_from_tag,
-                    bye_to_tag,
+                    &our_tag,
+                    &their_tag,
                     &transport_str,
                     &route_set,
                     &local_uri,
@@ -1254,21 +1276,55 @@ impl SipManager {
                 Some(bye)
             };
 
-            (msg, sa, transport, aid, remote_uri, direction)
+            (msg, sa, transport, aid, remote_uri, direction, is_dialing_or_ringing)
         };
 
         if let Some(msg) = action_msg {
             transport.send_to(msg.as_bytes(), server_addr).await?;
         }
 
-        let media = {
+        let (media, late_bye) = {
             let mut s = self.state.write().await;
-            s.find_call_mut(call_id).and_then(|(_, call)| {
-                let media = call.take_media();
-                let _ = call.process(CallFSMEvent::LocalHangup);
-                media
-            })
+            let Some((aid, call)) = s.find_call_mut(call_id) else {
+                return Ok(());
+            };
+            let aid = aid.to_string();
+            // The 200 OK may have arrived while the CANCEL was going out, and
+            // the response handler will have ACKed it. That dialog is now
+            // confirmed and the CANCEL does nothing to it: only a BYE ends it.
+            let late_bye = if sent_cancel && call.is_established() {
+                let cseq = call.next_cseq();
+                let (our_tag, their_tag) = call.dialog_tags();
+                let target = call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone());
+                let route_set = call.route_set().to_vec();
+                let (call_id_header, local_uri, remote_uri) =
+                    (call.call_id_header.clone(), call.local_uri.clone(), call.remote_uri.clone());
+                let account = s.get_account(&aid).ok_or("Account not found")?;
+                let la = account.local_addr.ok_or("No local addr")?;
+                Some(build_bye_with_routes(
+                    &target,
+                    la,
+                    &call_id_header,
+                    cseq,
+                    &our_tag,
+                    &their_tag,
+                    account.config.transport.param(),
+                    &route_set,
+                    &local_uri,
+                    &remote_uri,
+                ))
+            } else {
+                None
+            };
+            let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
+            let media = call.take_media();
+            let _ = call.process(CallFSMEvent::LocalHangup);
+            (media, late_bye)
         };
+        if let Some(bye) = late_bye {
+            log::info!("Call {} was answered as it was cancelled; sending BYE", call_id);
+            let _ = transport.send_to(bye.as_bytes(), server_addr).await;
+        }
         let recording_path = finish_call_media(call_id, media).await;
 
         let mut ended = CallEvent::new(&account_id, call_id, "ended", &remote_uri, &direction);
@@ -1277,16 +1333,9 @@ impl SipManager {
         }
         self.emit(SipEvent::CallStateChanged(ended));
 
-        let state = self.state.clone();
-        let id = call_id.to_string();
-        let aid = account_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            let mut s = state.write().await;
-            if let Some(account) = s.get_account_mut(&aid) {
-                account.calls.retain(|c| c.id != id);
-            }
-        });
+        // The record is pruned by `start_ended_call_sweeper`, not here: it has
+        // to outlive the call long enough to answer a 200 OK that crossed the
+        // CANCEL, or a retransmitted final response.
 
         Ok(())
     }
@@ -1295,6 +1344,9 @@ impl SipManager {
         let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport) = {
             let s = self.state.read().await;
             let (account, call) = s.find_call(call_id).ok_or("Call not found")?;
+            if !call.is_incoming() {
+                return Err("Call is not waiting to be answered".into());
+            }
             let la = account.local_addr.ok_or("No local addr")?;
             let sa = account.server_addr.ok_or("No server addr")?;
             let transport = account.transport.clone().ok_or("No transport")?;
@@ -1312,6 +1364,44 @@ impl SipManager {
                 account_id,
                 transport,
             )
+        };
+
+        // Media first, 200 OK second. The 200 used to go out before the audio
+        // devices were opened; when they failed (microphone permission denied,
+        // device busy) the PBX had a confirmed dialog while this side still
+        // had an unanswered call, so hangup answered 486 to a finished
+        // transaction and the caller sat in silence. A call we cannot carry
+        // audio for is declined instead.
+        let sdp = raw_invite.split("\r\n\r\n").nth(1).unwrap_or("");
+        let Some((ip, port)) = parse_sdp_connection(sdp) else {
+            self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here").await;
+            return Err("The caller offered no media".into());
+        };
+        let remote_rtp: SocketAddr = match format!("{}:{}", ip, port).parse() {
+            Ok(addr) => addr,
+            Err(e) => {
+                self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here").await;
+                return Err(format!("Bad RTP addr: {}", e));
+            }
+        };
+        let negotiated_codec = codec::negotiate_codec(sdp);
+        log::info!("Negotiated codec for inbound: {:?}", negotiated_codec);
+
+        let (input_dev, output_dev) = {
+            let s = self.state.read().await;
+            (s.preferred_input_device.clone(), s.preferred_output_device.clone())
+        };
+        let media = match media::MediaSession::start_with_devices(
+            rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
+        )
+        .await
+        {
+            Ok(media) => media,
+            Err(e) => {
+                log::error!("Could not start audio for incoming call {}: {}", call_id, e);
+                self.decline_incoming(call_id, &raw_invite, &to_tag, 480, "Temporarily Unavailable").await;
+                return Err(format!("Could not start audio: {}", e));
+            }
         };
 
         // Discover public IP via STUN for NAT traversal in SDP
@@ -1342,50 +1432,29 @@ impl SipManager {
         )
         .ok_or("Failed to build 200 OK")?;
 
-        transport.send_to(response.as_bytes(), server_addr).await?;
-
         // Built when auto-record starts. Emitted after the call-state event
         // below, so the frontend has the call in its list before it is told the
         // call is being recorded.
-        let mut recording_event: Option<RecordingEvent> = None;
-
-        let sdp = raw_invite.split("\r\n\r\n").nth(1).unwrap_or("");
-        if let Some((ip, port)) = parse_sdp_connection(sdp) {
-            let remote_rtp: SocketAddr = format!("{}:{}", ip, port)
-                .parse()
-                .map_err(|e| format!("Bad RTP addr: {}", e))?;
-
-            let negotiated_codec = codec::negotiate_codec(sdp);
-            log::info!("Negotiated codec for inbound: {:?}", negotiated_codec);
-
-            let (input_dev, output_dev) = {
-                let s = self.state.read().await;
-                (s.preferred_input_device.clone(), s.preferred_output_device.clone())
-            };
-            let media = media::MediaSession::start_with_devices(
-                rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
-            )
-                .await
-                .map_err(|e| e.to_string())?;
-
+        let recording_event = {
             let mut s = self.state.write().await;
-
-            if let Some((_, call)) = s.find_call_mut(call_id) {
-                let _ = call.process(CallFSMEvent::LocalAnswer {
-                    media,
-                    remote_rtp,
-                });
-                call.set_to_tag(to_tag.clone());
+            let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
+            let result = call.process(CallFSMEvent::LocalAnswer { media, remote_rtp });
+            if !matches!(result, state::call::TransitionResult::Ok) {
+                // The caller gave up while the devices were opening. The CANCEL
+                // handler has answered the INVITE; there is nothing to say yes
+                // to, and the UI has had its ended event.
+                return Err("Call ended before it could be answered".into());
             }
+            call.set_to_tag(to_tag.clone());
 
-            // Only once the session is on the call. Media startup runs without
-            // the lock, and a caller who gave up in that window has already
-            // been torn down; recording then would leave an orphaned WAV.
-            recording_event = s
-                .find_call(call_id)
+            // Only once the session is on the call, so a recording is never
+            // started for a call that is already gone.
+            s.find_call(call_id)
                 .and_then(|(_, call)| call.media())
-                .and_then(|media| s.start_auto_record(&account_id, call_id, media));
-        }
+                .and_then(|media| s.start_auto_record(&account_id, call_id, media))
+        };
+
+        transport.send_to(response.as_bytes(), server_addr).await?;
 
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&account_id, call_id, "connected", &remote_uri, "inbound")
@@ -1396,6 +1465,34 @@ impl SipManager {
         }
 
         Ok(())
+    }
+
+    /// Turn down an incoming call that cannot be answered, with a final
+    /// response to its INVITE, and report it ended.
+    async fn decline_incoming(&self, call_id: &str, raw_invite: &str, to_tag: &str, code: u16, reason: &str) {
+        let sent = {
+            let mut s = self.state.write().await;
+            let Some((aid, call)) = s.find_call_mut(call_id) else { return };
+            let aid = aid.to_string();
+            if !call.is_incoming() {
+                return;
+            }
+            let remote_uri = call.remote_uri.clone();
+            call.end(EndReason::Failed(format!("{code} {reason}")));
+            let account = s.get_account(&aid);
+            let transport = account.and_then(|a| a.transport.clone());
+            let server_addr = account.and_then(|a| a.server_addr);
+            (aid, remote_uri, transport, server_addr)
+        };
+        let (aid, remote_uri, transport, server_addr) = sent;
+        if let (Some(transport), Some(server_addr), Some(resp)) =
+            (transport, server_addr, builder::build_final_response(raw_invite, code, reason, to_tag))
+        {
+            let _ = transport.send_to(resp.as_bytes(), server_addr).await;
+        }
+        self.emit(SipEvent::CallStateChanged(
+            CallEvent::new(&aid, call_id, "ended", &remote_uri, "inbound"),
+        ));
     }
 
     pub async fn hold(&self, call_id: &str, hold: bool) -> Result<(), String> {
@@ -1458,13 +1555,40 @@ impl SipManager {
     }
 
     /// Stop recording the call audio
+    ///
+    /// Saving writes the whole call's audio to disk synchronously, and this
+    /// used to do it under the state read lock. tokio's lock is fair, so the
+    /// first writer to queue behind it — the receive loop with a BYE, a
+    /// refresh timer, a hangup — stopped every other reader too, stalling all
+    /// SIP for the length of the write. The session is lifted out of the call
+    /// for the duration instead; the call stays up throughout.
     pub async fn stop_recording(&self, call_id: &str) -> Result<Option<String>, String> {
         log::info!("Stopping recording for call {}", call_id);
-        let s = self.state.read().await;
-        let (_, call) = s.find_call(call_id).ok_or("Call not found")?;
-        let media = call.media().ok_or("No active media session")?;
-        let path = save_recording(call_id, media)?;
-        Ok(path.map(|p| p.to_string_lossy().into_owned()))
+        let media = {
+            let mut s = self.state.write().await;
+            let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
+            if !call.is_established() {
+                return Err("No active media session".into());
+            }
+            call.take_media().ok_or("No active media session")?
+        };
+
+        let id = call_id.to_string();
+        let (media, path) = tokio::task::spawn_blocking(move || {
+            let path = save_recording(&id, &media);
+            (media, path)
+        })
+        .await
+        .map_err(|e| format!("Recording task failed: {}", e))?;
+
+        // Put the session back. If the call ended meanwhile, its teardown
+        // found no media to finish, so finish it here.
+        let mut s = self.state.write().await;
+        match s.find_call_mut(call_id) {
+            Some((_, call)) if call.is_established() => call.set_media(media),
+            _ => media.stop(),
+        }
+        Ok(path?.map(|p| p.to_string_lossy().into_owned()))
     }
 
     /// Check if the call is being recorded
@@ -1491,12 +1615,15 @@ impl SipManager {
             }
 
             let cseq = call.next_cseq();
+            // Ours in From, theirs in To, whichever way the call was set up.
+            let (our_tag, their_tag) = call.dialog_tags();
             let info = (
+                call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone()),
                 call.remote_uri.clone(),
                 call.call_id_header.clone(),
                 cseq,
-                call.from_tag.clone(),
-                call.to_tag.clone().unwrap_or_default(),
+                our_tag,
+                their_tag,
                 call.route_set().to_vec(),
                 call.local_uri.clone(),
             );
@@ -1510,10 +1637,10 @@ impl SipManager {
             (info, la, sa, tp, aid, transport)
         };
 
-        let (remote_uri, sip_call_id, cseq, from_tag, to_tag, route_set, local_uri) = call_info;
+        let (request_target, remote_uri, sip_call_id, cseq, from_tag, to_tag, route_set, local_uri) = call_info;
 
         let refer = build_refer(
-            &remote_uri,
+            &request_target,
             target_uri,
             local_addr,
             &sip_call_id,
@@ -1552,11 +1679,15 @@ impl SipManager {
             let mut s = self.state.write().await;
 
             let (_, call_b) = s.find_call(call_id_b).ok_or("Call B not found")?;
+            // Replaces names B's dialog from the transfer target's side (RFC
+            // 3891 §3): to-tag is the tag that party chose, which is the
+            // remote tag from our side, and from-tag is ours.
+            let (b_our_tag, b_their_tag) = call_b.dialog_tags();
             let b_info = (
                 call_b.remote_uri.clone(),
                 call_b.call_id_header.clone(),
-                call_b.from_tag.clone(),
-                call_b.to_tag.clone().unwrap_or_default(),
+                b_their_tag,
+                b_our_tag,
             );
 
             let (aid, call_a) = s.find_call_mut(call_id_a).ok_or("Call A not found")?;
@@ -1567,12 +1698,14 @@ impl SipManager {
             }
 
             let cseq = call_a.next_cseq();
+            let (a_our_tag, a_their_tag) = call_a.dialog_tags();
             let a_info = (
+                call_a.remote_contact.clone().unwrap_or_else(|| call_a.remote_uri.clone()),
                 call_a.remote_uri.clone(),
                 call_a.call_id_header.clone(),
                 cseq,
-                call_a.from_tag.clone(),
-                call_a.to_tag.clone().unwrap_or_default(),
+                a_our_tag,
+                a_their_tag,
                 call_a.route_set().to_vec(),
                 call_a.local_uri.clone(),
             );
@@ -1586,15 +1719,15 @@ impl SipManager {
             (a_info, b_info, la, sa, tp, aid, transport)
         };
 
-        let (a_remote_uri, a_sip_call_id, a_cseq, a_from_tag, a_to_tag, a_route_set, a_local_uri) = call_a_info;
-        let (b_remote_uri, b_sip_call_id, b_from_tag, b_to_tag) = call_b_info;
+        let (a_target, a_remote_uri, a_sip_call_id, a_cseq, a_from_tag, a_to_tag, a_route_set, a_local_uri) = call_a_info;
+        let (b_remote_uri, b_sip_call_id, b_replaces_to_tag, b_replaces_from_tag) = call_b_info;
 
         let refer = build_refer_with_replaces(
-            &a_remote_uri,
+            &a_target,
             &b_remote_uri,
             &b_sip_call_id,
-            &b_to_tag,
-            &b_from_tag,
+            &b_replaces_to_tag,
+            &b_replaces_from_tag,
             local_addr,
             &a_sip_call_id,
             a_cseq,

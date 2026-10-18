@@ -37,6 +37,12 @@ struct Seen {
     invites: Vec<String>,
     /// How many ACKs arrived.
     acks: usize,
+    /// Every ACK, raw.
+    ack_msgs: Vec<String>,
+    /// Every CANCEL, raw.
+    cancels: Vec<String>,
+    /// Every BYE, raw.
+    byes: Vec<String>,
     /// Where the client registered from, so the PBX can call it.
     client: Option<SocketAddr>,
     /// Every response the client sent the PBX, raw.
@@ -53,6 +59,12 @@ enum InviteReply {
     /// 200 OK, the same 200 again as a retransmission (as a peer does when it
     /// has not seen the ACK yet), then a BYE from the far end.
     AnswerTwiceThenHangUp,
+    /// 407 for an INVITE without credentials — retransmitted twice, as a UAS
+    /// does until it sees the ACK — then 200 OK for the authenticated one.
+    ChallengeThenAnswer,
+    /// 180 Ringing, and a 200 OK sent the moment the caller's CANCEL arrives:
+    /// the callee picked up as the caller gave up.
+    AnswerOnCancel,
 }
 
 fn md5_hex(s: &str) -> String {
@@ -203,14 +215,60 @@ async fn start_pbx_with_socket(
                     });
                     continue;
                 }
+                "INVITE" if invite_reply == InviteReply::ChallengeThenAnswer => {
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    if header(&msg, "Proxy-Authorization").is_none() {
+                        let challenge = respond(&msg, 407, "Proxy Authentication Required", &[format!(
+                            "Proxy-Authenticate: Digest realm=\"{REALM}\", nonce=\"inv1\", algorithm=MD5, qop=\"auth\""
+                        )]);
+                        let sock = sock.clone();
+                        tokio::spawn(async move {
+                            // Timer G: the UAS resends the 407 until the ACK
+                            // matches its transaction.
+                            for _ in 0..3 {
+                                let _ = sock.send_to(challenge.as_bytes(), from).await;
+                                tokio::time::sleep(Duration::from_millis(300)).await;
+                            }
+                        });
+                        continue;
+                    }
+                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")])
+                }
+                "INVITE" if invite_reply == InviteReply::AnswerOnCancel => {
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    respond(&msg, 180, "Ringing", &[])
+                }
+                "CANCEL" if invite_reply == InviteReply::AnswerOnCancel => {
+                    let invite = rec.lock().unwrap().invites.last().cloned();
+                    rec.lock().unwrap().cancels.push(msg.clone());
+                    let _ = sock.send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from).await;
+                    // The callee answered at the same moment: the 200 for the
+                    // INVITE goes out after the 200 for the CANCEL.
+                    match invite {
+                        Some(invite) => respond(&invite, 200, "OK", &[format!("Contact: <sip:11@{addr}>")]),
+                        None => continue,
+                    }
+                }
                 "INVITE" => {
                     rec.lock().unwrap().invites.push(msg.clone());
                     // Enough to end the attempt cleanly; the SDP is the point.
                     respond(&msg, 486, "Busy Here", &[])
                 }
                 "ACK" => {
-                    rec.lock().unwrap().acks += 1;
+                    let mut s = rec.lock().unwrap();
+                    s.acks += 1;
+                    s.ack_msgs.push(msg.clone());
                     continue;
+                }
+                "BYE" => {
+                    rec.lock().unwrap().byes.push(msg.clone());
+                    respond(&msg, 200, "OK", &[])
+                }
+                "CANCEL" => {
+                    rec.lock().unwrap().cancels.push(msg.clone());
+                    respond(&msg, 200, "OK", &[])
                 }
                 _ => respond(&msg, 200, "OK", &[]),
             };
@@ -479,4 +537,104 @@ async fn declining_an_incoming_call_answers_486_and_sends_no_bye() {
     );
     let methods = seen.lock().unwrap().methods.clone();
     assert!(!methods.iter().any(|m| m == "BYE"), "sent a BYE for an unanswered call: {methods:?}");
+}
+
+/// Collect call events for `call_id` until `until` or the deadline.
+async fn call_states_until(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+    call_id: &str,
+    until: &str,
+    timeout: Duration,
+) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut states = Vec::new();
+    loop {
+        let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+            return states;
+        };
+        if let super::SipEvent::CallStateChanged(e) = event {
+            if e.call_id == call_id {
+                states.push(e.state.clone());
+                if e.state == until {
+                    return states;
+                }
+            }
+        }
+    }
+}
+
+fn via_branch(msg: &str) -> String {
+    header(msg, "Via").and_then(|v| param(v, "branch")).unwrap_or_default()
+}
+
+/// A PBX that challenges INVITEs retransmits its 407 until the ACK matches the
+/// INVITE transaction, which needs the INVITE's Via branch (RFC 3261
+/// §17.1.1.3). The challenge ACK used a fresh branch, so the PBX kept resending
+/// the 407, and each copy was handled as a new challenge: the second one ended
+/// the call as an "auth loop" half a second after dialling.
+#[tokio::test]
+async fn a_challenged_invite_is_acked_on_its_own_branch_and_resent_challenges_are_ignored() {
+    let (pbx, seen) = start_pbx_with(InviteReply::ChallengeThenAnswer).await;
+    let (mgr, mut rx) = SipManager::new_with_receiver();
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+
+    // Outlive the PBX's 407 retransmissions (3 × 300 ms); none may end the call.
+    let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_millis(1500)).await;
+    assert!(!later.contains(&"ended".to_owned()), "a retransmitted 407 ended the call: {later:?}");
+
+    {
+        let s = seen.lock().unwrap();
+        assert_eq!(s.invites.len(), 2, "one INVITE, one authenticated retry");
+        assert!(header(&s.invites[1], "Proxy-Authorization").is_some());
+        assert_eq!(header(&s.invites[1], "CSeq"), Some("2 INVITE"));
+        let challenge_ack = s.ack_msgs.first().expect("the 407 was ACKed");
+        assert_eq!(
+            via_branch(challenge_ack),
+            via_branch(&s.invites[0]),
+            "the ACK for a non-2xx must reuse the INVITE's branch"
+        );
+        assert_eq!(header(challenge_ack, "CSeq"), Some("1 ACK"));
+        assert_eq!(s.acks, 2, "one ACK per final response (407, 200)");
+    }
+
+    mgr.hangup(&call_id).await.expect("hung up");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s = seen.lock().unwrap();
+    let bye = s.byes.first().expect("an answered call ends with BYE");
+    assert_eq!(header(bye, "CSeq"), Some("3 BYE"), "CSeq continues after the auth retry");
+    assert!(s.cancels.is_empty(), "no CANCEL for an answered call");
+}
+
+/// The caller hangs up as the callee answers. Our CANCEL and their 200 OK
+/// cross: the 200 confirms a dialog the CANCEL cannot touch, so after the ACK
+/// a BYE must follow (RFC 3261 §9.1, §15). Before, the 200 was ACKed and left
+/// alone, and the callee stayed connected to silence.
+#[tokio::test]
+async fn a_200_that_crosses_our_cancel_is_acked_and_then_byed() {
+    let (pbx, seen) = start_pbx_with(InviteReply::AnswerOnCancel).await;
+    let (mgr, mut rx) = SipManager::new_with_receiver();
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    call_states_until(&mut rx, &call_id, "ringing", Duration::from_secs(5)).await;
+
+    mgr.hangup(&call_id).await.expect("cancelled");
+    let states = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(5)).await;
+    assert!(states.contains(&"ended".to_owned()), "{states:?}");
+    assert!(!states.contains(&"connected".to_owned()), "a cancelled call must not show connected: {states:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let s = seen.lock().unwrap();
+    let cancel = s.cancels.first().expect("a ringing call is cancelled");
+    assert_eq!(header(cancel, "CSeq"), Some("1 CANCEL"), "CANCEL carries the INVITE's CSeq");
+    assert_eq!(via_branch(cancel), via_branch(&s.invites[0]), "CANCEL carries the INVITE's branch");
+    assert_eq!(s.acks, 1, "the crossed 200 is ACKed");
+    let bye = s.byes.first().expect("the confirmed dialog is ended with BYE");
+    assert!(bye.starts_with(&format!("BYE sip:11@{pbx} ")), "BYE goes to the 200's Contact: {bye}");
+    let invite_from_tag = header(&s.invites[0], "From").and_then(|f| param(f, "tag")).unwrap();
+    assert_eq!(header(bye, "From").and_then(|f| param(f, "tag")), Some(invite_from_tag));
+    assert_eq!(header(bye, "To").and_then(|t| param(t, "tag")), Some("pbx1".to_owned()));
 }

@@ -828,6 +828,8 @@ pub fn build_202_accepted(request: &str, to_tag: &str) -> Option<String> {
 #[allow(clippy::too_many_arguments, dead_code)]
 pub fn build_notify_refer(
     target_uri: &str,
+    from_uri: &str,
+    to_uri: &str,
     local_addr: SocketAddr,
     call_id: &str,
     cseq: u32,
@@ -844,8 +846,8 @@ pub fn build_notify_refer(
     let request_uri = parse_uri(target_uri);
 
     let via = via_value(transport, local_addr, &branch);
-    let from_hdr = format!("<sip:user@host>;tag={}", from_tag);
-    let to_hdr = format!("<{}>;tag={}", target_uri, to_tag);
+    let from_hdr = format!("<{}>;tag={}", from_uri, from_tag);
+    let to_hdr = format!("<{}>;tag={}", to_uri, to_tag);
     let cseq_hdr = format!("{} NOTIFY", cseq);
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
@@ -1048,6 +1050,20 @@ pub fn build_200_ok_subscribe(request_raw: &str, expires: u32) -> Option<String>
 // ---------------------------------------------------------------------------
 // Simple response
 // ---------------------------------------------------------------------------
+
+/// Build a bodiless final response to an INVITE, with our tag on To.
+///
+/// A final response creates (or ends) a dialog, so it needs a To tag (RFC
+/// 3261 §12.1.1); `build_simple_response` copies To as it was in the request.
+/// An existing tag — a re-sent INVITE already carries ours — is kept.
+pub fn build_final_response(request: &str, code: u16, reason: &str, to_tag: &str) -> Option<String> {
+    let response = build_simple_response(request, code, reason)?;
+    let to = extract_header(request, "To")?;
+    if to.contains("tag=") {
+        return Some(response);
+    }
+    Some(response.replace(&format!("To: {to}\r\n"), &format!("To: {to};tag={to_tag}\r\n")))
+}
 
 /// Build a simple SIP response (no body) from a request
 pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<String> {

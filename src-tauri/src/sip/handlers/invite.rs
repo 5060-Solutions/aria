@@ -6,11 +6,88 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::sip::auth::DigestAuth;
 use crate::sip::builder::{
-    self, build_ack, build_invite_with_public_ip, extract_all_headers, extract_header, extract_to_tag,
-    extract_via_branch, parse_sdp_connection, AuthHeaderType,
+    self, build_ack, build_bye_with_routes, build_invite_with_public_ip, extract_all_headers,
+    extract_header, extract_to_tag, extract_via_branch, parse_sdp_connection, AuthHeaderType,
 };
+use crate::sip::state::call::TransitionResult;
 use crate::sip::state::CallFSMEvent;
 use crate::sip::{codec, media, CallEvent, ManagerState, SipEvent};
+
+/// The sequence number in a response's CSeq header.
+fn response_cseq(text: &str) -> Option<u32> {
+    extract_header(text, "CSeq")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Whether a final non-2xx response belongs to an INVITE we have since
+/// superseded.
+///
+/// After an auth retry the live INVITE has CSeq 2. The server keeps
+/// retransmitting the 407 for CSeq 1 until Timer H if it never matched our
+/// ACK, and each retransmission used to be handled as a fresh challenge:
+/// one more ended the call as an "auth loop", another sent a third INVITE on
+/// the same dialog. A response for an earlier CSeq is a finished transaction
+/// and needs nothing.
+async fn is_stale_final_response(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id_header: &str,
+    text: &str,
+) -> bool {
+    let Some(cseq) = response_cseq(text) else { return false };
+    let s = state.read().await;
+    s.find_call_by_header(call_id_header)
+        .is_some_and(|(_, call)| cseq < call.invite_cseq)
+}
+
+/// Send a BYE for a dialog the far end confirmed after we had already ended
+/// the call on our side.
+///
+/// Our CANCEL and their 200 OK crossed. The ACK (already sent) confirms the
+/// dialog, and the only thing that ends a confirmed dialog is a BYE (RFC 3261
+/// §9.1, §15). Without it the callee stayed connected to silence until their
+/// PBX gave up on its own.
+async fn bye_crossed_dialog(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id_header: &str,
+    to_tag: &str,
+    remote_contact: Option<&str>,
+    route_set: &[String],
+) {
+    let bye = {
+        let mut s = state.write().await;
+        let Some((_, call)) = s.find_call_by_header_mut(call_id_header) else { return };
+        let cseq = call.next_cseq();
+        let remote_uri = call.remote_uri.clone();
+        let local_uri = call.local_uri.clone();
+        let from_tag = call.from_tag.clone();
+        let account_id = call.account_id.clone();
+        let Some(account) = s.get_account(&account_id) else { return };
+        let (Some(transport), Some(server_addr)) = (account.transport.clone(), account.server_addr)
+        else {
+            return;
+        };
+        let local_addr = account.local_addr.unwrap_or_else(|| transport.local_addr());
+        let msg = build_bye_with_routes(
+            remote_contact.unwrap_or(&remote_uri),
+            local_addr,
+            call_id_header,
+            cseq,
+            &from_tag,
+            to_tag,
+            account.config.transport.param(),
+            route_set,
+            &local_uri,
+            &remote_uri,
+        );
+        (msg, transport, server_addr)
+    };
+    let (msg, transport, server_addr) = bye;
+    log::info!("200 OK crossed our CANCEL for {}; sending BYE", call_id_header);
+    let _ = transport.send_to(msg.as_bytes(), server_addr).await;
+}
 
 /// Handle INVITE response (100 Trying, 180 Ringing, 200 OK, auth challenges, errors).
 pub async fn handle_invite_response(
@@ -118,14 +195,18 @@ pub async fn handle_invite_response(
                 let call_id = call.id.clone();
                 let remote_uri = call.remote_uri.clone();
                 let was_ringing = call.is_ringing();
-                let _ = call.process(CallFSMEvent::RemoteRinging);
+                let transitioned = matches!(
+                    call.process(CallFSMEvent::RemoteRinging),
+                    TransitionResult::Ok
+                );
 
                 if let Some(session) = early_session {
                     call.set_early_media(session);
                 }
 
-                // Only emit ringing event if we weren't already ringing
-                if !was_ringing {
+                // Only when the call actually moved to ringing. A stray 180 for
+                // a connected call must not tell the UI it is ringing again.
+                if transitioned && !was_ringing {
                     let _ = event_tx.send(SipEvent::CallStateChanged(
                         CallEvent::new(&account_id, &call_id, "ringing", &remote_uri, "outbound")
                             .with_sip_call_id(&call_id_header)
@@ -227,8 +308,28 @@ pub async fn handle_invite_response(
             // needs the ACK above and nothing else. Running the rest again
             // started a second media session, and a second auto-recording
             // that split the call's audio across two files.
+            //
+            // A 200 for a call we already ended is different: the far end
+            // answered as we cancelled. The ACK has just confirmed that
+            // dialog, so it has to be closed with a BYE.
             if already_answered {
-                log::info!("Retransmitted 200 OK for {}, re-sent ACK", call_internal_id);
+                let ended_unconfirmed = state
+                    .read()
+                    .await
+                    .find_call_by_header(&call_id_header)
+                    .is_some_and(|(_, call)| call.is_ended());
+                if ended_unconfirmed {
+                    bye_crossed_dialog(
+                        state,
+                        &call_id_header,
+                        &to_tag,
+                        remote_contact_uri.as_deref(),
+                        &route_set,
+                    )
+                    .await;
+                } else {
+                    log::info!("Retransmitted 200 OK for {}, re-sent ACK", call_internal_id);
+                }
                 return;
             }
 
@@ -253,12 +354,27 @@ pub async fn handle_invite_response(
                     call.remote_contact = remote_contact_uri.clone();
                     let early_media = call.take_early_media();
                     call.set_to_tag(to_tag.clone());
-                    let _ = call.process(CallFSMEvent::Answered {
+                    let result = call.process(CallFSMEvent::Answered {
                         to_tag: to_tag.clone(),
                         remote_rtp: remote_rtp_addr,
-                        route_set,
+                        route_set: route_set.clone(),
                         session_expires,
                     });
+                    if matches!(result, TransitionResult::AlreadyEnded) {
+                        // Hung up between the check above and here: same
+                        // crossed CANCEL/200 case, one lock scope later.
+                        drop(s);
+                        drop(early_media);
+                        bye_crossed_dialog(
+                            state,
+                            &call_id_header,
+                            &to_tag,
+                            remote_contact_uri.as_deref(),
+                            &route_set,
+                        )
+                        .await;
+                        return;
+                    }
                     early_media
                 } else {
                     None
@@ -416,6 +532,9 @@ pub async fn handle_invite_response(
             }
         }
         486 | 600 | 603 => {
+            if is_stale_final_response(state, &call_id_header, text).await {
+                return;
+            }
             log::info!("Call rejected ({})", status);
             send_non_2xx_ack(state, &call_id_header, text).await;
             let mut s = state.write().await;
@@ -423,13 +542,28 @@ pub async fn handle_invite_response(
                 let account_id = account_id.to_string();
                 let call_id = call.id.clone();
                 let remote_uri = call.remote_uri.clone();
-                let _ = call.process(CallFSMEvent::Reject { status });
-                let _ = event_tx.send(SipEvent::CallStateChanged(
-                    CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                ));
+                // A rejection for an already-ended call changes nothing; the
+                // UI has had its ended event.
+                if matches!(call.process(CallFSMEvent::Reject { status }), TransitionResult::Ok) {
+                    let _ = event_tx.send(SipEvent::CallStateChanged(
+                        CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
+                    ));
+                }
             }
         }
         401 | 407 => {
+            if is_stale_final_response(state, &call_id_header, text).await {
+                log::debug!("Ignoring retransmitted {} for a superseded INVITE", status);
+                return;
+            }
+
+            // A non-2xx final response is ACKed with the INVITE's branch so
+            // the server transaction can match it (RFC 3261 §17.1.1.3). This
+            // arm used to build its own ACK with a fresh branch; the PBX never
+            // matched it and retransmitted the 407 for 32 s, and each
+            // retransmission came back through here.
+            send_non_2xx_ack(state, &call_id_header, text).await;
+
             // Check if auth was already attempted
             {
                 let mut s = state.write().await;
@@ -439,12 +573,14 @@ pub async fn handle_invite_response(
                         log::error!("INVITE auth already attempted, giving up (loop guard)");
                         let call_id = call.id.clone();
                         let remote_uri = call.remote_uri.clone();
-                        let _ = call.process(CallFSMEvent::Fail {
+                        let result = call.process(CallFSMEvent::Fail {
                             reason: "Auth loop prevented".to_string(),
                         });
-                        let _ = event_tx.send(SipEvent::CallStateChanged(
-                            CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                        ));
+                        if matches!(result, TransitionResult::Ok) {
+                            let _ = event_tx.send(SipEvent::CallStateChanged(
+                                CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
+                            ));
+                        }
                         return;
                     }
                     call.set_auth_attempted();
@@ -470,57 +606,6 @@ pub async fn handle_invite_response(
                     return;
                 }
             };
-
-            // Extract ACK info
-            let ack_data = {
-                let s = state.read().await;
-                s.find_call_by_header(&call_id_header).map(|(account, call)| {
-                    let transport = account.transport.clone();
-                    let server_addr = account.server_addr;
-                    let local_addr = account.local_addr.unwrap_or_else(|| {
-                        account.transport.as_ref().map(|t| t.local_addr()).unwrap_or_else(|| "0.0.0.0:0".parse().unwrap())
-                    });
-                    let transport_param = account.config.transport.param().to_string();
-                    (
-                        transport,
-                        server_addr,
-                        local_addr,
-                        transport_param,
-                        call.remote_uri.clone(),
-                        call.call_id_header.clone(),
-                        call.cseq,
-                        call.from_tag.clone(),
-                    )
-                })
-            };
-
-            let (transport, server_addr, local_addr, transport_param, remote_uri, sip_call_id, cseq, from_tag) = match ack_data {
-                Some((Some(t), Some(sa), la, tp, ru, sci, cs, ft)) => (t, sa, la, tp, ru, sci, cs, ft),
-                _ => return,
-            };
-
-            let (ack_from_uri, ack_to_uri) = {
-                let s = state.read().await;
-                if let Some((_, call)) = s.find_call_by_header(&call_id_header) {
-                    (call.local_uri.clone(), call.remote_uri.clone())
-                } else {
-                    (format!("sip:unknown@{}", local_addr.ip()), remote_uri.clone())
-                }
-            };
-
-            let ack = build_ack(
-                &remote_uri,
-                local_addr,
-                &sip_call_id,
-                cseq,
-                &from_tag,
-                &extract_to_tag(text).unwrap_or_default(),
-                &transport_param,
-                &builder::generate_branch(),
-                &ack_from_uri,
-                &ack_to_uri,
-            );
-            let _ = transport.send_to(ack.as_bytes(), server_addr).await;
 
             // Get account and call info for auth retry
             let retry_data = {
@@ -608,6 +693,7 @@ pub async fn handle_invite_response(
                 let mut s = state.write().await;
                 if let Some((_, call)) = s.find_call_by_header_mut(&sip_call_id) {
                     call.last_invite_branch = branch;
+                    call.invite_cseq = new_cseq;
                     // Update SRTP key (new key for auth retry SDP)
                     if new_srtp_key.is_some() {
                         call.local_srtp_key = new_srtp_key;
@@ -620,6 +706,9 @@ pub async fn handle_invite_response(
             }
         }
         _ if status >= 400 => {
+            if is_stale_final_response(state, &call_id_header, text).await {
+                return;
+            }
             log::warn!("Call failed ({})", status);
             send_non_2xx_ack(state, &call_id_header, text).await;
             let mut s = state.write().await;
@@ -627,12 +716,14 @@ pub async fn handle_invite_response(
                 let account_id = account_id.to_string();
                 let call_id = call.id.clone();
                 let remote_uri = call.remote_uri.clone();
-                let _ = call.process(CallFSMEvent::Fail {
+                let result = call.process(CallFSMEvent::Fail {
                     reason: format!("Call failed: {}", status),
                 });
-                let _ = event_tx.send(SipEvent::CallStateChanged(
-                    CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                ));
+                if matches!(result, TransitionResult::Ok) {
+                    let _ = event_tx.send(SipEvent::CallStateChanged(
+                        CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
+                    ));
+                }
             }
         }
         _ => {}

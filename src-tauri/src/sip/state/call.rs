@@ -220,8 +220,17 @@ pub struct CallFSM {
     pub remote_rtp_addr: Option<SocketAddr>,
     /// Last INVITE branch (for CANCEL matching)
     pub last_invite_branch: Option<String>,
+    /// CSeq of the most recent INVITE we sent. A CANCEL must carry it (RFC
+    /// 3261 §9.1); after an auth retry it is no longer 1.
+    pub invite_cseq: u32,
     /// Whether auth has been attempted (to prevent loops)
     pub auth_attempted: bool,
+    /// When the call reached `Ended`, so the record can be pruned later.
+    ///
+    /// The record outlives the call on purpose: a 200 OK that crosses our
+    /// CANCEL, or a retransmitted final response, still has to be matched to
+    /// the dialog and answered (ACK, then BYE) for up to Timer H (32 s).
+    pub ended_at: Option<Instant>,
     /// Local SRTP key (base64 encoded) for outbound encryption
     pub local_srtp_key: Option<String>,
     /// Whether this call's media is actually encrypted.
@@ -275,7 +284,9 @@ impl CallFSM {
             local_rtp_port,
             remote_rtp_addr: None,
             last_invite_branch: Some(invite_branch.clone()),
+            invite_cseq: 1,
             auth_attempted: false,
+            ended_at: None,
             local_srtp_key: None,
             srtp_active: false,
             remote_contact: None,
@@ -301,7 +312,9 @@ impl CallFSM {
             local_rtp_port: params.local_rtp_port,
             remote_rtp_addr: None,
             last_invite_branch: None,
+            invite_cseq: 1,
             auth_attempted: false,
+            ended_at: None,
             local_srtp_key: None,
             srtp_active: false,
             remote_contact: None,
@@ -393,10 +406,11 @@ impl CallFSM {
 
     /// Check if auth was already attempted (for loop prevention)
     pub fn auth_attempted(&self) -> bool {
-        match &self.state {
-            CallState::Dialing { auth_attempted, .. } => *auth_attempted,
-            _ => false,
-        }
+        // The field, not the Dialing state's copy: a second challenge can
+        // arrive after a 180 has moved the call to Ringing, and reading only
+        // the Dialing variant made that look like a first challenge, which
+        // sent a third INVITE on the same dialog.
+        self.auth_attempted
     }
 
     /// Mark auth as attempted
@@ -509,6 +523,9 @@ impl CallFSM {
         let (new_state, result) = self.compute_transition(event);
         if let Some(state) = new_state {
             self.state = state;
+            if self.state.is_ended() {
+                self.ended_at = Some(Instant::now());
+            }
         }
         result
     }
@@ -795,6 +812,22 @@ impl CallFSM {
     pub fn end(&mut self, reason: EndReason) {
         self.stop_media();
         self.state = CallState::Ended { reason };
+        self.ended_at = Some(Instant::now());
+    }
+
+    /// The dialog's tags as (ours, theirs).
+    ///
+    /// `from_tag`/`to_tag` are stored as the INVITE carried them, so which one
+    /// is ours depends on who sent the INVITE. Every in-dialog request we
+    /// originate — BYE, REFER, NOTIFY — puts our tag in From and theirs in To,
+    /// whichever direction the call was. REFER used to pass `from_tag` as
+    /// ours regardless, so transferring an inbound call got a 481.
+    pub fn dialog_tags(&self) -> (String, String) {
+        let to_tag = self.to_tag.clone().unwrap_or_default();
+        match self.direction {
+            CallDirection::Outbound => (self.from_tag.clone(), to_tag),
+            CallDirection::Inbound => (to_tag, self.from_tag.clone()),
+        }
     }
 }
 

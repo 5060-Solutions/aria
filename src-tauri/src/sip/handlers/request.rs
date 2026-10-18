@@ -386,37 +386,40 @@ pub async fn handle_incoming_request(
                 }
             }
         }
-        _ => {
-            log::debug!("Unhandled incoming request: {}", method);
+        // ACK is the end of the INVITE transaction and has no response.
+        "ACK" => {}
+        // INFO is in our Allow list (DTMF relay). Nothing acts on it, but an
+        // unanswered request is retransmitted for 32 s; it is answered so the
+        // sender stops.
+        "INFO" => {
+            send_simple(state, account_id, remote, text, 200, "OK").await;
         }
+        _ => {
+            log::debug!("Unsupported incoming request {}; answering 405", method);
+            send_simple(state, account_id, remote, text, 405, "Method Not Allowed").await;
+        }
+    }
+}
+
+/// Answer `request` with a bodiless response on the account's transport.
+async fn send_simple(
+    state: &Arc<RwLock<ManagerState>>,
+    account_id: &str,
+    remote: SocketAddr,
+    request: &str,
+    code: u16,
+    reason: &str,
+) {
+    let Some(resp) = build_simple_response(request, code, reason) else { return };
+    let s = state.read().await;
+    if let Some(transport) = s.get_account(account_id).and_then(|a| a.transport.clone()) {
+        let _ = transport.send_to(resp.as_bytes(), remote).await;
     }
 }
 
 /// Build a 487 Request Terminated response for an INVITE that was cancelled.
 pub fn build_terminated_response(request: &str, to_tag: &str) -> Option<String> {
-    let via = extract_header(request, "Via")?;
-    let from = extract_header(request, "From")?;
-    let to_raw = extract_header(request, "To")?;
-    let call_id = extract_header(request, "Call-ID")?;
-    let cseq = extract_header(request, "CSeq")?;
-
-    let to = if to_raw.contains("tag=") {
-        to_raw
-    } else {
-        format!("{};tag={}", to_raw, to_tag)
-    };
-
-    Some(format!(
-        "SIP/2.0 487 Request Terminated\r\n\
-         Via: {via}\r\n\
-         From: {from}\r\n\
-         To: {to}\r\n\
-         Call-ID: {call_id}\r\n\
-         CSeq: {cseq}\r\n\
-         User-Agent: {ua}\r\n\
-         Content-Length: 0\r\n\r\n",
-        ua = builder::USER_AGENT,
-    ))
+    builder::build_final_response(request, 487, "Request Terminated", to_tag)
 }
 
 /// Build a 180 Ringing response from an INVITE request.

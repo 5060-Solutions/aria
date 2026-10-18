@@ -83,7 +83,7 @@ pub async fn handle_incoming_refer(
     }));
 
     // Extract dialog info for sending NOTIFY
-    let (notify_target, notify_call_id, notify_from_tag, notify_to_tag, transport_str, transport) = {
+    let (notify_target, notify_remote_uri, notify_local_uri, notify_call_id, notify_from_tag, notify_to_tag, transport_str, transport) = {
         let s = state.read().await;
         let account = match s.get_account(account_id) {
             Some(a) => a,
@@ -98,11 +98,17 @@ pub async fn handle_incoming_refer(
             None => return,
         };
         let tp = account.config.transport.param().to_string();
+        // Ours in From, theirs in To (RFC 3261 §12.2.1.1); `from_tag` is the
+        // caller's tag on an inbound call, and sending that as ours got every
+        // NOTIFY a 481. The request goes to the remote Contact, like the BYE.
+        let (our_tag, their_tag) = call.dialog_tags();
         (
+            call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone()),
             call.remote_uri.clone(),
+            call.local_uri.clone(),
             call.call_id_header.clone(),
-            call.from_tag.clone(),
-            call.to_tag.clone().unwrap_or_default(),
+            our_tag,
+            their_tag,
             tp,
             transport,
         )
@@ -121,6 +127,8 @@ pub async fn handle_incoming_refer(
             let local_addr = transport.local_addr();
             let notify = build_notify_refer(
                 &notify_target,
+                &notify_local_uri,
+                &notify_remote_uri,
                 local_addr,
                 &notify_call_id,
                 cseq,
@@ -231,6 +239,8 @@ pub async fn handle_incoming_refer(
             let local_addr = transport.local_addr();
             let notify = build_notify_refer(
                 &notify_target,
+                &notify_local_uri,
+                &notify_remote_uri,
                 local_addr,
                 &notify_call_id,
                 cseq,
