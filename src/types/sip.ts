@@ -77,6 +77,8 @@ export interface SipAccount {
   srtpMode?: SrtpMode;
   /** Codec configuration - if not set, uses DEFAULT_CODECS */
   codecs?: CodecConfig[];
+  /** What to dial to reach voicemail (e.g. *97). From provisioning or Settings. */
+  voicemailNumber?: string;
 }
 
 /** Account data stored in localStorage (without password) */
@@ -95,6 +97,22 @@ export interface StoredAccount {
   autoRecord?: boolean;
   srtpMode?: SrtpMode;
   codecs?: CodecConfig[];
+  voicemailNumber?: string;
+}
+
+/** Message-waiting state for one account, from the PBX's NOTIFY. */
+export interface VoicemailStatus {
+  hasMessages: boolean;
+  newMessages: number;
+  oldMessages: number;
+}
+
+/** Progress of a transfer the user started, from the backend's REFER handling. */
+export interface TransferStatus {
+  callId: string;
+  /** SIP status: 100 while in progress, 2xx done, 4xx and up failed. */
+  status: number;
+  message: string;
 }
 
 export interface AccountState {

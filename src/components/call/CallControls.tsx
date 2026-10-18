@@ -23,7 +23,9 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 import CallIcon from "@mui/icons-material/Call";
-import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceMerge, sipSwapCalls, sipSendDtmf } from "../../hooks/useSip";
+import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceMerge, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
+import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
+import { toSipUri } from "../../utils/sipUri";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
 
@@ -98,6 +100,8 @@ export function CallControls() {
   const updateCall = useAppStore((s) => s.updateCall);
   const setPrimaryCall = useAppStore((s) => s.setPrimaryCall);
   const createConference = useAppStore((s) => s.createConference);
+  const endConference = useAppStore((s) => s.endConference);
+  const accounts = useAppStore((s) => s.accounts);
 
   const selectedInputDevice = useAppStore((s) => s.selectedInputDevice);
   const selectedOutputDevice = useAppStore((s) => s.selectedOutputDevice);
@@ -106,6 +110,9 @@ export function CallControls() {
 
   const [addCallDialogOpen, setAddCallDialogOpen] = useState(false);
   const [newCallUri, setNewCallUri] = useState("");
+  const [transferDialogOpen, setTransferDialogOpen] = useState(false);
+  const [transferUri, setTransferUri] = useState("");
+  const [transferring, setTransferring] = useState(false);
   const [dtmfAnchor, setDtmfAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioAnchor, setAudioAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
@@ -198,6 +205,15 @@ export function CallControls() {
   // Stopping the recording and filing history both happen when the backend
   // reports the call ended, so hangup is the same whichever side ends it.
   const handleHangup = async () => {
+    // In a conference, End hangs up every leg. It used to hang up only the
+    // primary one, leaving the other leg live and still marked "conferenced".
+    if (isInConference && activeCall.conferenceId) {
+      const legs = activeCalls.filter((c) => c.conferenceId === activeCall.conferenceId);
+      await sipConferenceEnd(activeCall.conferenceId).catch(() => {});
+      endConference(activeCall.conferenceId);
+      await Promise.all(legs.map((c) => hangupCall(c).catch(() => {})));
+      return;
+    }
     await hangupCall(activeCall);
   };
 
@@ -239,14 +255,32 @@ export function CallControls() {
     try {
       await sipHold(activeCall.id, true);
       updateCall(activeCall.id, { held: true, state: "held" });
+      const domain = accounts.find((a) => a.id === activeCall.accountId)?.domain ?? "";
       await placeCall(
-        { uri: newCallUri.trim(), accountId: activeCall.accountId },
+        { uri: toSipUri(newCallUri, domain), accountId: activeCall.accountId },
         { asAdditionalCall: true },
       );
       setAddCallDialogOpen(false);
       setNewCallUri("");
     } catch (e) {
       log.error("Add call failed:", e);
+    }
+  };
+
+  const handleTransfer = async () => {
+    if (!transferUri.trim()) return;
+    setTransferring(true);
+    const domain = accounts.find((a) => a.id === activeCall.accountId)?.domain ?? "";
+    try {
+      await sipTransferBlind(activeCall.id, toSipUri(transferUri, domain));
+      // The backend ends the call when the transfer is accepted; closing the
+      // dialog is enough here.
+      setTransferDialogOpen(false);
+      setTransferUri("");
+    } catch (e) {
+      log.error("Transfer failed:", e);
+    } finally {
+      setTransferring(false);
     }
   };
 
@@ -340,6 +374,13 @@ export function CallControls() {
               icon={<AddIcCallIcon />}
               label={t("call.addCall", "Add Call")}
               onClick={() => setAddCallDialogOpen(true)}
+            />
+          )}
+          {canAddCall && (
+            <ControlButton
+              icon={<PhoneForwardedIcon />}
+              label={t("call.transfer", "Transfer")}
+              onClick={() => setTransferDialogOpen(true)}
             />
           )}
         </Box>
@@ -623,6 +664,45 @@ export function CallControls() {
             </Button>
             <Button variant="contained" onClick={handleAddCall} disabled={!newCallUri.trim()}>
               {t("call.dial", "Dial")}
+            </Button>
+          </Box>
+        </DialogContent>
+      </Dialog>
+
+      {/* Blind transfer dialog */}
+      <Dialog
+        open={transferDialogOpen}
+        onClose={() => setTransferDialogOpen(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>{t("call.transfer", "Transfer")}</DialogTitle>
+        <DialogContent>
+          <Typography variant="caption" sx={{ color: "text.secondary", display: "block", mb: 1 }}>
+            {t("call.transferHint", "Send this call to another number or extension.")}
+          </Typography>
+          <TextField
+            autoFocus
+            margin="dense"
+            label={t("call.phoneNumber", "Phone Number or SIP URI")}
+            fullWidth
+            variant="outlined"
+            value={transferUri}
+            onChange={(e) => setTransferUri(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleTransfer();
+            }}
+          />
+          <Box sx={{ display: "flex", gap: 1, mt: 2, justifyContent: "flex-end" }}>
+            <Button onClick={() => setTransferDialogOpen(false)}>
+              {t("common.cancel", "Cancel")}
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleTransfer}
+              disabled={!transferUri.trim() || transferring}
+            >
+              {t("call.transfer", "Transfer")}
             </Button>
           </Box>
         </DialogContent>

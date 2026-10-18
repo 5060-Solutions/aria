@@ -1,12 +1,15 @@
 import { useState, useMemo } from "react";
-import { Box, Chip, alpha, useTheme, Menu, MenuItem, Typography } from "@mui/material";
+import { Box, Chip, alpha, useTheme, Menu, MenuItem, Typography, Badge, IconButton, Tooltip } from "@mui/material";
 import CircleIcon from "@mui/icons-material/Circle";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import CheckIcon from "@mui/icons-material/Check";
 import AccountCircleIcon from "@mui/icons-material/AccountCircle";
+import VoicemailIcon from "@mui/icons-material/Voicemail";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
-import { sipSetActiveAccount } from "../../hooks/useSip";
+import { placeCall, sipSetActiveAccount } from "../../hooks/useSip";
+import { toSipUri } from "../../utils/sipUri";
+import { log } from "../../utils/log";
 
 const stateColors: Record<string, string> = {
   registered: "#4caf50",
@@ -34,9 +37,26 @@ export function StatusBar() {
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
 
+  const voicemail = useAppStore((s) => s.voicemail);
+
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
   const activeState = activeAccountId ? accountStates[activeAccountId] : null;
   const registrationState = activeState?.registrationState ?? "unregistered";
+
+  const vm = activeAccountId ? voicemail[activeAccountId] : undefined;
+  const hasVoicemail = !!vm?.hasMessages;
+
+  const handleCallVoicemail = async () => {
+    if (!activeAccount) return;
+    // Dial the account's voicemail number (from provisioning); fall back to
+    // the common *97 feature code when none was configured.
+    const number = activeAccount.voicemailNumber?.trim() || "*97";
+    await placeCall({
+      uri: toSipUri(number, activeAccount.domain),
+      accountId: activeAccount.id,
+      remoteName: t("status.voicemail"),
+    }).catch((e) => log.error("[StatusBar] Could not call voicemail:", e));
+  };
 
   const availableAccounts = useMemo(() => {
     return accounts.filter((a) => {
@@ -153,19 +173,41 @@ export function StatusBar() {
           {activeAccount ? activeAccount.displayName : t("status.noAccount")}
         </Box>
       )}
-      <Chip
-        icon={<CircleIcon sx={{ fontSize: 8, color: `${color} !important` }} />}
-        label={t(stateLabelsKeys[registrationState])}
-        size="small"
-        variant="outlined"
-        sx={{
-          height: 24,
-          fontSize: "0.7rem",
-          borderColor: alpha(color, 0.3),
-          color: "text.secondary",
-          WebkitAppRegion: "no-drag",
-        }}
-      />
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+        {hasVoicemail && (
+          <Tooltip
+            title={t("status.voicemailWaiting", { count: vm?.newMessages ?? 0 })}
+            placement="bottom"
+          >
+            <IconButton
+              onClick={handleCallVoicemail}
+              size="small"
+              sx={{ WebkitAppRegion: "no-drag", color: "warning.main" }}
+            >
+              <Badge
+                badgeContent={vm?.newMessages || undefined}
+                color="error"
+                sx={{ "& .MuiBadge-badge": { fontSize: "0.55rem", height: 14, minWidth: 14 } }}
+              >
+                <VoicemailIcon sx={{ fontSize: 18 }} />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+        )}
+        <Chip
+          icon={<CircleIcon sx={{ fontSize: 8, color: `${color} !important` }} />}
+          label={t(stateLabelsKeys[registrationState])}
+          size="small"
+          variant="outlined"
+          sx={{
+            height: 24,
+            fontSize: "0.7rem",
+            borderColor: alpha(color, 0.3),
+            color: "text.secondary",
+            WebkitAppRegion: "no-drag",
+          }}
+        />
+      </Box>
     </Box>
   );
 }

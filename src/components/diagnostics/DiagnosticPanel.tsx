@@ -46,6 +46,11 @@ interface DiagnosticLog {
   raw: string;
 }
 
+/** A key that follows a message rather than its position in the list. */
+function logKey(log: DiagnosticLog): string {
+  return `${log.timestamp}-${log.direction}-${log.remoteAddr}-${log.raw.length}`;
+}
+
 interface RtpStats {
   packetsSent: number;
   packetsReceived: number;
@@ -533,17 +538,14 @@ function SipLogEntry({
   }), [i18n.language]);
 
   const summaryLine = log.summary;
-  const isError =
-    summaryLine.includes("4") ||
-    summaryLine.includes("5") ||
-    summaryLine.includes("6");
-  const isSuccess =
-    summaryLine.startsWith("SIP/2.0 200") ||
-    summaryLine.startsWith("SIP/2.0 202");
-  const isAuth =
-    summaryLine.includes("401") || summaryLine.includes("407");
-  const isRinging =
-    summaryLine.includes("180") || summaryLine.includes("183");
+  // The response's status code, not "does the line contain a 4/5/6": a
+  // request line like "REGISTER sip:pbx:5060" or "INVITE sip:1456@…" was
+  // painted red because it happened to contain those digits.
+  const statusCode = summaryLine.match(/^SIP\/2\.0 (\d{3})/)?.[1];
+  const isError = statusCode ? /^[456]/.test(statusCode) : false;
+  const isSuccess = statusCode === "200" || statusCode === "202";
+  const isAuth = statusCode === "401" || statusCode === "407";
+  const isRinging = statusCode === "180" || statusCode === "183";
 
   const methodColor = isError
     ? theme.palette.error.main
@@ -973,8 +975,8 @@ function AccountTabContent({
   account: AccountStatus;
   logs: DiagnosticLog[];
   latencyMs: number | null;
-  expandedSet: Set<number>;
-  toggleExpanded: (idx: number) => void;
+  expandedSet: Set<string>;
+  toggleExpanded: (key: string) => void;
 }) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1027,10 +1029,10 @@ function AccountTabContent({
         )}
         {logs.map((log, i) => (
           <SipLogEntry
-            key={`${log.timestamp}-${i}`}
+            key={`${logKey(log)}-${i}`}
             log={log}
-            isSelected={expandedSet.has(i)}
-            onToggle={() => toggleExpanded(i)}
+            isSelected={expandedSet.has(logKey(log))}
+            onToggle={() => toggleExpanded(logKey(log))}
           />
         ))}
       </Box>
@@ -1063,20 +1065,20 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [selectedTab, setSelectedTab] = useState(0);
-  const [expandedSet, setExpandedSet] = useState<Set<number>>(new Set());
+  const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<"messages" | "ladder">("messages");
   const [activeFilters, setActiveFilters] = useState<Set<MessageCategory>>(
     () => new Set(["calls", "register", "other"]),
   );
   const [exportMenuAnchor, setExportMenuAnchor] = useState<HTMLElement | null>(null);
 
-  const toggleExpanded = useCallback((idx: number) => {
+  const toggleExpanded = useCallback((key: string) => {
     setExpandedSet((prev) => {
       const next = new Set(prev);
-      if (next.has(idx)) {
-        next.delete(idx);
+      if (next.has(key)) {
+        next.delete(key);
       } else {
-        next.add(idx);
+        next.add(key);
       }
       return next;
     });

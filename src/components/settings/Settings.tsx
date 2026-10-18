@@ -113,6 +113,13 @@ interface AccountFormData {
   codecs: CodecConfig[];
 }
 
+/** A port the backend's u16 will accept; 5060 if the field is empty or junk. */
+function clampPort(value: string): number {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return 5060;
+  return Math.min(Math.max(n, 1), 65535);
+}
+
 const emptyForm: AccountFormData = {
   server: "",
   username: "",
@@ -139,6 +146,7 @@ export function Settings() {
   const addAccount = useAppStore((s) => s.addAccount);
   const updateAccount = useAppStore((s) => s.updateAccount);
   const removeAccount = useAppStore((s) => s.removeAccount);
+  const resetAccounts = useAppStore((s) => s.resetAccounts);
   const setActiveAccount = useAppStore((s) => s.setActiveAccount);
   const setAccountRegistrationState = useAppStore(
     (s) => s.setAccountRegistrationState
@@ -150,6 +158,7 @@ export function Settings() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<SipAccount | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [showAdvancedInDialog, setShowAdvancedInDialog] = useState(false);
   const [form, setForm] = useState<AccountFormData>(emptyForm);
   const [showPassword, setShowPassword] = useState(false);
@@ -318,11 +327,13 @@ export function Settings() {
   const handleOpenAddDialog = () => {
     setEditingAccount(null);
     resetForm();
+    setSaveError(null);
     setDialogOpen(true);
   };
 
   const handleOpenEditDialog = (account: SipAccount) => {
     setEditingAccount(account);
+    setSaveError(null);
     setDialogOpen(true);
   };
 
@@ -333,63 +344,73 @@ export function Settings() {
     setShowPassword(false);
   };
 
-  const canSave = form.server && form.username && form.password;
+  const canSave = form.server.trim() && form.username.trim() && form.password;
 
   const handleSaveAccount = async () => {
     if (!canSave) return;
     setSaving(true);
 
+    // Trim the text fields: a stray space in the server or username fails at
+    // DNS or auth with a message that does not point at the real cause.
     const accountData: SipAccount = {
       id: editingAccount?.id ?? crypto.randomUUID(),
-      displayName: form.displayName || form.username,
-      username: form.username,
-      domain: form.server,
+      displayName: form.displayName.trim() || form.username.trim(),
+      username: form.username.trim(),
+      domain: form.server.trim(),
       password: form.password,
       transport: form.transport,
       port: form.port,
-      registrar: form.registrar || undefined,
-      outboundProxy: form.outboundProxy || undefined,
-      authUsername: form.authUsername || undefined,
-      authRealm: form.authRealm || undefined,
+      registrar: form.registrar.trim() || undefined,
+      outboundProxy: form.outboundProxy.trim() || undefined,
+      authUsername: form.authUsername.trim() || undefined,
+      authRealm: form.authRealm.trim() || undefined,
       enabled: editingAccount?.enabled ?? true,
       autoRecord: form.autoRecord,
       srtpMode: form.srtpMode,
       codecs: form.codecs,
     };
 
-    // Save password to secure storage (OS keychain)
-    if (form.password) {
-      await saveAccountPassword(accountData.id, form.password);
-    }
-
-    // Store account without password in local state
-    const accountForStore = { ...accountData, password: "" };
-    if (editingAccount) {
-      updateAccount(accountForStore);
-    } else {
-      addAccount(accountForStore);
-    }
-
-    // If this is the first account, set it as active
-    if (accounts.length === 0) {
-      setActiveAccount(accountData.id);
-    }
-
-    // Register this account if enabled
-    if (accountData.enabled) {
-      setAccountRegistrationState(accountData.id, "registering");
-      try {
-        // Use accountData which still has the password for registration
-        await sipRegister(accountData);
-        // Also set it active in the backend
-        await sipSetActiveAccount(accountData.id).catch(() => {});
-      } catch (e) {
-        setAccountRegistrationState(accountData.id, "error", String(e));
+    // try/finally so a keychain error cannot leave the Save button spinning
+    // forever with no way out but Cancel.
+    try {
+      // Save password to secure storage (OS keychain)
+      if (form.password) {
+        await saveAccountPassword(accountData.id, form.password);
       }
-    }
 
-    setSaving(false);
-    handleCloseDialog();
+      // Store account without password in local state
+      const accountForStore = { ...accountData, password: "" };
+      if (editingAccount) {
+        updateAccount(accountForStore);
+      } else {
+        addAccount(accountForStore);
+      }
+
+      // If this is the first account, set it as active
+      if (accounts.length === 0) {
+        setActiveAccount(accountData.id);
+      }
+
+      // Register this account if enabled
+      if (accountData.enabled) {
+        setAccountRegistrationState(accountData.id, "registering");
+        try {
+          // Use accountData which still has the password for registration
+          await sipRegister(accountData);
+          // Also set it active in the backend
+          await sipSetActiveAccount(accountData.id).catch(() => {});
+        } catch (e) {
+          setAccountRegistrationState(accountData.id, "error", String(e));
+        }
+      }
+
+      handleCloseDialog();
+    } catch (e) {
+      log.error("[Settings] Could not save the account:", e);
+      setSaveError(String(e));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleSwitchAccount = async (accountId: string) => {
@@ -444,7 +465,10 @@ export function Settings() {
       await sipUnregisterAccount(account.id).catch(() => {});
       await deleteAccountPassword(account.id).catch(() => {});
     }
-    localStorage.removeItem("aria_accounts_v2");
+    // Clear the store, not just localStorage: the accounts lived on in memory,
+    // and the wizard's first saved account was persisted alongside them,
+    // bringing the signed-out accounts back without their passwords.
+    resetAccounts();
     localStorage.removeItem("aria_setup_complete");
     setSetupComplete(false);
   };
@@ -1506,9 +1530,7 @@ export function Settings() {
                     size="small"
                     type="number"
                     value={form.port}
-                    onChange={(e) =>
-                      update("port", parseInt(e.target.value) || 5060)
-                    }
+                    onChange={(e) => update("port", clampPort(e.target.value))}
                     sx={{ ...inputSx, width: 90 }}
                   />
                 </Box>
@@ -1673,6 +1695,14 @@ export function Settings() {
             </Collapse>
           </Box>
         </DialogContent>
+        {saveError && (
+          <Typography
+            variant="caption"
+            sx={{ px: 3, pb: 1, display: "block", color: "error.main" }}
+          >
+            {saveError}
+          </Typography>
+        )}
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={handleCloseDialog} sx={{ borderRadius: "12px" }}>
             {t("common.cancel")}

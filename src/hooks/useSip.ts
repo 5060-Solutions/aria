@@ -40,6 +40,21 @@ interface CallPayload {
   sipCallId?: string;
   /** Set on the "ended" event when the call produced a recording. */
   recordingPath?: string;
+  /** Set on "connected": whether the media is encrypted, as negotiated. */
+  srtpActive?: boolean;
+}
+
+interface VoicemailPayload {
+  accountId: string;
+  hasMessages: boolean;
+  newMessages: number;
+  oldMessages: number;
+}
+
+interface TransferPayload {
+  callId: string;
+  status: number;
+  message: string;
 }
 
 interface RecordingPayload {
@@ -182,7 +197,10 @@ function finishCall(
     direction: call.direction,
     startTime: call.startTime ?? endTime,
     duration: call.connectTime ? Math.floor((endTime - call.connectTime) / 1000) : 0,
-    missed: !call.connectTime,
+    // Only an inbound call that never connected was missed. An outbound call
+    // that failed or was cancelled while ringing is not, and used to be filed
+    // with the red "missed" marker all the same.
+    missed: call.direction === "inbound" && !call.connectTime,
     // The backend attaches the path on every ended event, however the call
     // ended, because it is the one that finishes the recording.
     recordingPath: details.recordingPath ?? call.recordingPath,
@@ -260,7 +278,26 @@ export function useSipEvents() {
       }
 
       if (p.state === "incoming") {
-        if (hasLiveCall()) return;
+        // Busy: one call at a time in the UI. Decline it so the backend sends
+        // 486 and the caller stops ringing, and file the missed call — a
+        // second incoming call used to be dropped silently, so the caller
+        // rang into nothing and no history row was written.
+        if (hasLiveCall()) {
+          log.info("[useSipEvents] Second incoming call while busy; declining", p.callId);
+          store.addCallHistory({
+            id: p.callId,
+            accountId: p.accountId,
+            remoteUri: p.remoteUri,
+            remoteName: p.remoteName ?? undefined,
+            direction: "inbound",
+            startTime: Date.now(),
+            duration: 0,
+            missed: true,
+            sipCallId: p.sipCallId,
+          });
+          void sipHangup(p.callId).catch(() => {});
+          return;
+        }
         store.setActiveCall({
           id: p.callId,
           accountId: p.accountId,
@@ -281,13 +318,50 @@ export function useSipEvents() {
       // Any call we know about, not only the one on screen: a held call in a
       // three-way still changes state.
       const call = store.activeCalls.find((c) => c.id === p.callId);
-      if (!call || call.state === "ended") return;
+      if (!call || call.state === "ended") {
+        // A live state for a call the UI has never seen: the backend set it
+        // up itself. Being transferred (REFER) or being the target of an
+        // attended transfer (INVITE with Replaces) connects a new call with
+        // no prior "incoming"/"dialing" — without this it had no card and no
+        // way to hang up. "ended" for an unknown call is nothing to show.
+        if (p.state === "connected" || p.state === "ringing" || p.state === "dialing") {
+          store.setActiveCall({
+            id: p.callId,
+            accountId: p.accountId,
+            remoteUri: p.remoteUri,
+            remoteName: p.remoteName ?? undefined,
+            state: p.state as CallState,
+            direction: p.direction === "inbound" ? "inbound" : "outbound",
+            startTime: Date.now(),
+            connectTime: p.state === "connected" ? Date.now() : undefined,
+            muted: false,
+            held: false,
+            recording: false,
+            sipCallId: p.sipCallId,
+            srtpActive: p.srtpActive,
+          });
+          store.setCurrentView("dialer");
+        }
+        return;
+      }
       store.updateCall(p.callId, {
         state: p.state as CallState,
         connectTime:
           p.state === "connected" && !call.connectTime ? Date.now() : call.connectTime,
         sipCallId: p.sipCallId ?? call.sipCallId,
+        srtpActive: p.srtpActive ?? call.srtpActive,
       });
+    });
+
+    const unlistenVoicemail = listen<VoicemailPayload>("sip-voicemail", (event) => {
+      const { accountId, hasMessages, newMessages, oldMessages } = event.payload;
+      useAppStore.getState().setVoicemailStatus(accountId, { hasMessages, newMessages, oldMessages });
+    });
+
+    const unlistenTransfer = listen<TransferPayload>("sip-transfer", (event) => {
+      const { callId, status, message } = event.payload;
+      log.info("[useSipEvents] Transfer progress:", { callId, status, message });
+      useAppStore.getState().setTransferStatus({ callId, status, message });
     });
 
     // Auto-record is started by the backend, so the UI only learns a call is
@@ -303,6 +377,8 @@ export function useSipEvents() {
       unlistenCall.then((fn_) => fn_());
       unlistenPresence.then((fn_) => fn_());
       unlistenRecording.then((fn_) => fn_());
+      unlistenVoicemail.then((fn_) => fn_());
+      unlistenTransfer.then((fn_) => fn_());
     };
   }, []);
 }
@@ -324,6 +400,15 @@ export async function placeCall(
   { asAdditionalCall = false }: { asAdditionalCall?: boolean } = {},
 ): Promise<void> {
   const store = useAppStore.getState();
+  // Already on a call: this is a call-waiting swap, not a second live call.
+  // Hold the current one and add the new one. Placing it straight used to
+  // leave both connected, both sending mic audio.
+  const live = store.activeCalls.find((c) => c.state === "connected" || c.state === "held");
+  const addOn = asAdditionalCall || !!live;
+  if (live && !live.held) {
+    await sipHold(live.id, true).catch(() => {});
+    store.updateCall(live.id, { held: true, state: "held" });
+  }
   const id = crypto.randomUUID();
   const newCall: ActiveCall = {
     id,
@@ -338,15 +423,18 @@ export async function placeCall(
     recording: false,
   };
 
-  if (asAdditionalCall) {
+  if (addOn) {
     store.addCall(newCall);
     store.setPrimaryCall(id);
   } else {
     store.setActiveCall(newCall);
   }
+  // So the call screen shows: placing from Contacts/History used to leave the
+  // user on that list with a live call and no controls in sight.
+  store.setCurrentView("dialer");
 
   try {
-    await (asAdditionalCall ? sipAddCall(call.uri, id) : sipMakeCall(call.uri, id));
+    await (addOn ? sipAddCall(call.uri, id) : sipMakeCall(call.uri, id));
   } catch (e) {
     log.error("[placeCall] Failed to place call:", e);
     useAppStore.getState().removeCall(id);
@@ -478,6 +566,11 @@ export async function sipConferenceEnd(conferenceId: string): Promise<void> {
 /** Swap between two calls (put one on hold, resume other) */
 export async function sipSwapCalls(holdCallId: string, resumeCallId: string): Promise<void> {
   return invoke("sip_swap_calls", { holdCallId, resumeCallId });
+}
+
+/** Blind-transfer a call to another number or SIP URI. */
+export async function sipTransferBlind(callId: string, targetUri: string): Promise<void> {
+  return invoke("sip_transfer_blind", { callId, targetUri });
 }
 
 export async function getDefaultRecordingsDir(): Promise<string> {

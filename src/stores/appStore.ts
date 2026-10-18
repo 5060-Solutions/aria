@@ -13,6 +13,8 @@ import type {
   Conference,
   PresenceState,
   VoiceProcessingSettings,
+  VoicemailStatus,
+  TransferStatus,
 } from "../types/sip";
 import { storeCredential, getCredential, deleteCredential } from "../utils/credentials";
 import { log } from "../utils/log";
@@ -61,6 +63,8 @@ interface AppState {
   addAccount: (account: SipAccount) => void;
   updateAccount: (account: SipAccount) => void;
   removeAccount: (accountId: string) => void;
+  /** Forget every account: sign-out. Clears the store and what it persisted. */
+  resetAccounts: () => void;
   setActiveAccount: (accountId: string | null) => void;
   setAccountRegistrationState: (
     accountId: string,
@@ -102,6 +106,14 @@ interface AppState {
    * started on its own (auto-record) rather than at the UI's request.
    */
   setCallRecording: (callId: string, recording: boolean, path?: string) => void;
+
+  /** Voicemail waiting, per account. */
+  voicemail: Record<string, VoicemailStatus>;
+  setVoicemailStatus: (accountId: string, status: VoicemailStatus) => void;
+
+  /** The last word from the backend on a transfer in progress. */
+  transferStatus: TransferStatus | null;
+  setTransferStatus: (status: TransferStatus | null) => void;
 
   // Conference management
   createConference: (callIds: string[]) => string;
@@ -232,6 +244,14 @@ export const useAppStore = create<AppState>((set, get) => {
         return { accounts, accountStates, activeAccountId };
       }),
 
+    resetAccounts: () => {
+      // The store, not just localStorage: signing out used to clear the
+      // saved copy only, and the next account added was saved alongside the
+      // old ones still in memory, resurrecting them without their passwords.
+      localStorage.removeItem("aria_accounts_v2");
+      set({ accounts: [], activeAccountId: null, accountStates: {}, voicemail: {} });
+    },
+
     setActiveAccount: (accountId) =>
       set((s) => {
         saveAccounts(s.accounts, accountId);
@@ -319,16 +339,33 @@ export const useAppStore = create<AppState>((set, get) => {
     
     removeCall: (callId) =>
       set((s) => {
-        const activeCalls = s.activeCalls.filter((c) => c.id !== callId);
+        let activeCalls = s.activeCalls.filter((c) => c.id !== callId);
         let primaryCallId = s.primaryCallId;
         if (primaryCallId === callId) {
           primaryCallId = activeCalls.find((c) => c.state !== "ended")?.id ?? null;
+        }
+        // Take the call out of its conference. A conference down to one
+        // member is over: that call is an ordinary connected call again.
+        // Conferences used to be cleared only once every call was gone, so
+        // the survivor stayed "conferenced" with Add Call and Merge disabled.
+        const conferences: Conference[] = [];
+        for (const conf of s.conferences) {
+          const callIds = conf.callIds.filter((id) => id !== callId);
+          if (callIds.length >= 2) {
+            conferences.push({ ...conf, callIds });
+          } else {
+            activeCalls = activeCalls.map((c) =>
+              callIds.includes(c.id)
+                ? { ...c, conferenceId: undefined, state: "connected" as CallState }
+                : c
+            );
+          }
         }
         return {
           activeCalls,
           primaryCallId,
           activeCall: activeCalls.find((c) => c.id === primaryCallId) ?? null,
-          conferences: activeCalls.length === 0 ? [] : s.conferences,
+          conferences,
         };
       }),
     
@@ -393,9 +430,16 @@ export const useAppStore = create<AppState>((set, get) => {
       set((s) => {
         const callId = s.primaryCallId;
         if (!callId) return s;
-        const activeCalls = s.activeCalls.map((c) =>
-          c.id === callId ? { ...c, held: !c.held } : c
-        );
+        // `held` and `state` both describe hold and used to drift apart: the
+        // call screen's label and the swap button read `state`, this flipped
+        // only `held`. Keep them together.
+        const activeCalls = s.activeCalls.map((c) => {
+          if (c.id !== callId) return c;
+          const held = !c.held;
+          const state: CallState =
+            c.state === "connected" || c.state === "held" ? (held ? "held" : "connected") : c.state;
+          return { ...c, held, state };
+        });
         return {
           activeCalls,
           activeCall: activeCalls.find((c) => c.id === callId) ?? null,
@@ -431,6 +475,13 @@ export const useAppStore = create<AppState>((set, get) => {
         };
       }),
 
+
+    voicemail: {},
+    setVoicemailStatus: (accountId, status) =>
+      set((s) => ({ voicemail: { ...s.voicemail, [accountId]: status } })),
+
+    transferStatus: null,
+    setTransferStatus: (transferStatus) => set({ transferStatus }),
 
     // Conference management
     createConference: (callIds) => {

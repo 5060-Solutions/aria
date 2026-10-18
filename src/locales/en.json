@@ -11,7 +11,9 @@
     "reconnecting": "Reconnecting...",
     "notConnected": "Not connected",
     "connectionError": "Connection error",
-    "noAccount": "No account configured"
+    "noAccount": "No account configured",
+    "voicemail": "Voicemail",
+    "voicemailWaiting": "{{count}} new voicemail message(s) — click to listen"
   },
   "dialer": {
     "searchCountry": "Search country...",

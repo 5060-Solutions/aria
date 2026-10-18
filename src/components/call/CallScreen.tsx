@@ -112,9 +112,13 @@ export function CallScreen() {
   const cleaned = displayName.replace(/^sip:/, "");
   const initials = cleaned.substring(0, 2).toUpperCase();
 
-  const isConnected = activeCall.state === "connected";
+  // `held` is the source of truth for hold; the "held" state exists but the
+  // backend never emits it, so a held call stays state "connected" with
+  // held = true. Treat it as connected-but-on-hold.
+  const isConnected = activeCall.state === "connected" || activeCall.state === "held";
   const isRinging =
     activeCall.state === "dialing" || activeCall.state === "ringing";
+  const isOnHold = activeCall.held;
   const accountSrtpMode: SrtpMode =
     accounts.find((a) => a.id === activeCall.accountId)?.srtpMode ?? "disabled";
 
@@ -191,7 +195,13 @@ export function CallScreen() {
             fontWeight: isConnected ? 500 : 400,
           }}
         >
-          {isConnected ? elapsed : (stateMessageKeys[activeCall.state] ? t(stateMessageKeys[activeCall.state]) : "")}
+          {isOnHold
+            ? t("call.onHold")
+            : isConnected
+              ? elapsed
+              : stateMessageKeys[activeCall.state]
+                ? t(stateMessageKeys[activeCall.state])
+                : ""}
         </Typography>
 
         {isConnected && (

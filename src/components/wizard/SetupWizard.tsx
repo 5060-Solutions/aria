@@ -239,6 +239,9 @@ export function SetupWizard() {
       port: data.port,
       registrar: data.server,
       enabled: true,
+      // The QR payload carries the voicemail number; it was parsed and then
+      // dropped. Keep it so the voicemail button knows what to dial.
+      voicemailNumber: data.voicemail || undefined,
     };
 
     // Store pending account - will be saved to store only on successful registration
@@ -496,9 +499,10 @@ export function SetupWizard() {
                   size="small"
                   type="number"
                   value={form.port}
-                  onChange={(e) =>
-                    update("port", parseInt(e.target.value) || 5060)
-                  }
+                  onChange={(e) => {
+                    const n = parseInt(e.target.value, 10);
+                    update("port", Number.isFinite(n) ? Math.min(Math.max(n, 1), 65535) : 5060);
+                  }}
                   sx={{ ...inputSx, width: 90 }}
                 />
               </Box>

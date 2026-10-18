@@ -75,6 +75,7 @@ impl CallEventPayload {
             direction: call.direction_str().to_string(),
             sip_call_id: Some(call.call_id_header.clone()),
             recording_path: None,
+            srtp_active: Some(call.srtp_active),
         }
     }
 
@@ -96,7 +97,14 @@ impl CallEventPayload {
             direction: direction.into(),
             sip_call_id: None,
             recording_path: None,
+            srtp_active: None,
         }
+    }
+
+    /// Whether the call's media is encrypted, as negotiated; for "connected".
+    pub fn with_srtp_active(mut self, active: bool) -> Self {
+        self.srtp_active = Some(active);
+        self
     }
 
     /// Set the SIP Call-ID header value
@@ -133,6 +141,11 @@ pub struct CallEventPayload {
     /// it. Only the local-hangup path knew the path before.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording_path: Option<String>,
+    /// Whether the media is encrypted, on the "connected" event. The call
+    /// screen's padlock reads this; the backend computed it but never sent
+    /// it, so every call showed "Not encrypted".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub srtp_active: Option<bool>,
 }
 
 /// Protocol timers.
@@ -1470,6 +1483,7 @@ impl SipManager {
 
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&account_id, call_id, "connected", &remote_uri, "inbound")
+                .with_srtp_active(false),
         ));
 
         if let Some(event) = recording_event {

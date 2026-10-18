@@ -29,9 +29,15 @@ export function AppShell() {
   const activeCall = useAppStore((s) => s.activeCall);
 
   const ViewComponent = views[currentView];
+  // Over whichever view is open, not only the dialer: a call placed from
+  // Contacts or History, or one that comes in while the user is in Settings,
+  // has to be visible and hangupable wherever they are. The exception is the
+  // diagnostics panel, which exists to watch a call's signalling.
   const showCallScreen =
-    currentView === "dialer" &&
-    activeCall && activeCall.state !== "idle" && activeCall.state !== "ended";
+    currentView !== "diagnostics" &&
+    activeCall &&
+    activeCall.state !== "idle" &&
+    activeCall.state !== "ended";
 
   return (
     <Box

@@ -38,7 +38,9 @@ export function useKeyboardShortcuts() {
 
   const handleToggleHold = useCallback(async () => {
     const call = useAppStore.getState().activeCall;
-    if (!call || call.state !== "connected") return;
+    // A held call has state "held", so requiring "connected" meant Cmd+H
+    // could hold but never resume.
+    if (!call || (call.state !== "connected" && call.state !== "held")) return;
 
     useAppStore.getState().toggleHold();
     try {

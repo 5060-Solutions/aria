@@ -101,17 +101,37 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const [containerId] = useState(() => "qr-reader-" + Date.now());
   const hasProcessedRef = useRef(false);
+  const unmountedRef = useRef(false);
+
+  /**
+   * Stop and release the camera, tolerating html5-qrcode's synchronous
+   * throws: stop() throws when not scanning, clear() throws while scanning,
+   * and neither rejects — so a bare .catch() does not catch them.
+   */
+  const releaseScanner = useCallback(async (scanner: Html5Qrcode) => {
+    try {
+      await scanner.stop();
+    } catch {
+      // Not scanning (start still pending, or already stopped).
+    }
+    try {
+      scanner.clear();
+    } catch {
+      // Nothing rendered to clear.
+    }
+  }, []);
 
   // Cleanup camera on unmount
   useEffect(() => {
     return () => {
-      if (scannerRef.current) {
-        scannerRef.current.stop().catch(() => {});
-        scannerRef.current.clear();
-        scannerRef.current = null;
+      unmountedRef.current = true;
+      const scanner = scannerRef.current;
+      scannerRef.current = null;
+      if (scanner) {
+        void releaseScanner(scanner);
       }
     };
-  }, []);
+  }, [releaseScanner]);
 
   const handleScanSuccess = useCallback(
     (decodedText: string) => {
@@ -119,14 +139,16 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
       const data = parseAriaUri(decodedText);
       if (data) {
         hasProcessedRef.current = true;
-        // Stop camera before callback
-        if (scannerRef.current) {
-          scannerRef.current.stop().catch(() => {});
+        // Stop the camera before the callback (which unmounts us).
+        const scanner = scannerRef.current;
+        scannerRef.current = null;
+        if (scanner) {
+          void releaseScanner(scanner);
         }
         onProvisioned(data);
       }
     },
-    [onProvisioned]
+    [onProvisioned, releaseScanner]
   );
 
   const startCamera = useCallback(async () => {
@@ -153,6 +175,14 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
           // Ignore scan failures (no QR detected in frame)
         }
       );
+      // start() can take seconds (the OS camera prompt). If the user closed
+      // the scanner while it was pending, the cleanup already ran and found
+      // no scanner to stop; release this one now, or the camera stays on with
+      // nothing left to turn it off.
+      if (unmountedRef.current) {
+        scannerRef.current = null;
+        void releaseScanner(scanner);
+      }
     } catch (e) {
       log.error("[QrScanner] Camera error:", e);
       setCameraActive(false);
@@ -161,20 +191,16 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
       );
       setMode("choose");
     }
-  }, [handleScanSuccess, containerId]);
+  }, [handleScanSuccess, containerId, releaseScanner]);
 
   const stopCamera = useCallback(async () => {
-    if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop();
-        scannerRef.current.clear();
-      } catch {
-        // ignore
-      }
-      scannerRef.current = null;
+    const scanner = scannerRef.current;
+    scannerRef.current = null;
+    if (scanner) {
+      await releaseScanner(scanner);
     }
     setCameraActive(false);
-  }, []);
+  }, [releaseScanner]);
 
   const handlePaste = useCallback(() => {
     const trimmed = pasteValue.trim();

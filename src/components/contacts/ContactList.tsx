@@ -32,6 +32,7 @@ import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import type { Contact, PresenceState } from "../../types/sip";
 import { usePresence } from "../../hooks/usePresence";
+import { toSipUri } from "../../utils/sipUri";
 
 const inputSx = {
   "& .MuiOutlinedInput-root": {
@@ -431,7 +432,7 @@ export function ContactList() {
       }
 
       const number = uri.replace(/^sip:/, "").split("@")[0];
-      const fullUri = uri.startsWith("sip:") ? uri : `sip:${number}@${activeAccount.domain}`;
+      const fullUri = toSipUri(uri, activeAccount.domain);
 
       const { placeCall } = await import("../../hooks/useSip");
       // placeCall removes the call again if it could not be placed.

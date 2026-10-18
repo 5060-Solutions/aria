@@ -512,19 +512,21 @@ pub async fn handle_invite_response(
             // Hung up while media was starting: the call has already sent its
             // ended event, and a late "connected" would bring it back to life
             // in the UI.
-            let still_live = state
-                .read()
-                .await
-                .find_call(&call_internal_id)
-                .is_some_and(|(_, call)| call.is_established());
-            if !still_live {
-                log::info!("Call {} ended while media was starting", call_internal_id);
-                return;
-            }
+            let srtp_active = {
+                let s = state.read().await;
+                match s.find_call(&call_internal_id) {
+                    Some((_, call)) if call.is_established() => call.srtp_active,
+                    _ => {
+                        log::info!("Call {} ended while media was starting", call_internal_id);
+                        return;
+                    }
+                }
+            };
 
             let _ = event_tx.send(SipEvent::CallStateChanged(
                 CallEvent::new(&account_id, call_internal_id, "connected", remote_uri, "outbound")
                     .with_sip_call_id(&call_id_header)
+                    .with_srtp_active(srtp_active)
             ));
 
             if let Some(event) = recording_event {
