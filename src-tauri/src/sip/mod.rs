@@ -490,6 +490,13 @@ pub struct CallStatusInfo {
 impl SipManager {
     /// Create a new SipManager and return the event receiver separately.
     /// This allows the caller to set up event forwarding before managing the state.
+    ///
+    /// Must be called with a Tokio runtime in context: the constructor spawns
+    /// the background sweeper and timers (see `new_with_timing`), so `tokio::spawn`
+    /// has to find a reactor. Tests get one from `#[tokio::test]`; `run()` in
+    /// `lib.rs` enters Tauri's runtime before calling this. v0.5.0 shipped without
+    /// that guard and panicked on launch ("there is no reactor running") — the
+    /// `smoke-launch` CI gate now launches the built binary to catch any recurrence.
     pub fn new_with_receiver() -> (Self, mpsc::UnboundedReceiver<SipEvent>) {
         Self::new_with_timing(Timing::default())
     }
