@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { placeCall } from "../../hooks/useSip";
-import { toSipUri } from "../../utils/sipUri";
+import { toSipUri, formatDialNumber } from "../../utils/sipUri";
 import { DialerButton } from "./DialerButton";
 import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
 
@@ -127,26 +127,19 @@ export function Dialer() {
 
   const displayCountry = detectedCountry || defaultCountry;
   
-  // Determine if we should show the country selector (hide for extensions)
+  // Determine if we should show the country selector (hide for extensions and when auto-country code is disabled)
   const digits = dialInput.replace(/\D/g, "");
   const isInternational = dialInput.startsWith("+");
-  const showCountrySelector = !dialInput || isInternational || digits.length > 6;
+  const autoCountryCode = activeAccount?.autoCountryCode ?? false;
+  const showCountrySelector = autoCountryCode
+    ? (!dialInput || isInternational || digits.length > 6)
+    : isInternational;
 
   const handleCall = useCallback(async () => {
     if (!dialInput.trim() || !activeAccountId || !activeAccount) return;
     
-    let numberToCall = dialInput.replace(/[\s\-()]/g, "");
-    
-    try {
-      const parsed = parsePhoneNumber(dialInput, defaultCountry);
-      if (parsed?.isValid()) {
-        numberToCall = parsed.number.replace("+", "");
-      }
-    } catch {
-      // Use raw input
-    }
-    
-    const uri = toSipUri(dialInput.includes("@") ? dialInput : numberToCall, activeAccount.domain);
+    const numberToCall = formatDialNumber(dialInput, activeAccount, defaultCountry);
+    const uri = toSipUri(numberToCall, activeAccount.domain);
 
     // placeCall removes the call again if it could not be placed.
     await placeCall({

@@ -126,7 +126,17 @@
     "autoRecord": "Enregistrement automatique",
     "autoRecordNote": "Enregistrer automatiquement tous les appels de ce compte",
     "codecPriority": "Priorité des codecs",
-    "codecPriorityNote": "Utilisez les flèches pour réorganiser ou activer/désactiver les codecs"
+    "codecPriorityNote": "Utilisez les flèches pour réorganiser ou activer/désactiver les codecs",
+    "dialingRules": "Règles de numérotation",
+    "dialingRulesNote": "Configurer la manipulation et le formatage des numéros pour les appels sortants",
+    "autoCountryCode": "Ajouter automatiquement l'indicatif pays",
+    "autoCountryCodeNote": "Formater les numéros avec l'indicatif de pays par défaut (E.164) lors de la numérotation",
+    "stripPrefix": "Préfixe à supprimer",
+    "stripPrefixPlaceholder": "ex. 0 ou 33",
+    "stripPrefixHelper": "Supprime ce préfixe des numéros composés (ex. supprimer l'indicatif de pays)",
+    "prependPrefix": "Préfixe à ajouter",
+    "prependPrefixPlaceholder": "ex. 9 ou 0",
+    "prependPrefixHelper": "Ajoute ce préfixe au début des numéros composés (ex. 9 pour une ligne externe)"
   },
   "update": {
     "title": "Mise à jour disponible",

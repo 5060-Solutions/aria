@@ -141,7 +141,17 @@
       "dtls": "DTLS"
     },
     "codecPriority": "Codec Priority",
-    "codecPriorityNote": "Drag to reorder or toggle to enable/disable codecs"
+    "codecPriorityNote": "Drag to reorder or toggle to enable/disable codecs",
+    "dialingRules": "Dialing Rules",
+    "dialingRulesNote": "Configure number manipulation and formatting for outgoing calls",
+    "autoCountryCode": "Auto-add country code",
+    "autoCountryCodeNote": "Format dialed numbers with default country code (E.164) when calling",
+    "stripPrefix": "Prefix to remove",
+    "stripPrefixPlaceholder": "e.g. 0 or 98",
+    "stripPrefixHelper": "Removes this prefix from dialed numbers (e.g. remove country code)",
+    "prependPrefix": "Prefix to prepend",
+    "prependPrefixPlaceholder": "e.g. 9 or 0",
+    "prependPrefixHelper": "Adds this prefix before dialed numbers (e.g. 9 for outside line)"
   },
   "update": {
     "title": "Update available",

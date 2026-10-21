@@ -111,6 +111,9 @@ interface AccountFormData {
   autoRecord: boolean;
   srtpMode: "disabled" | "sdes" | "dtls";
   codecs: CodecConfig[];
+  autoCountryCode: boolean;
+  stripPrefix: string;
+  prependPrefix: string;
 }
 
 /** A port the backend's u16 will accept; 5060 if the field is empty or junk. */
@@ -134,6 +137,9 @@ const emptyForm: AccountFormData = {
   autoRecord: false,
   srtpMode: "disabled",
   codecs: [...DEFAULT_CODECS],
+  autoCountryCode: false,
+  stripPrefix: "",
+  prependPrefix: "",
 };
 
 export function Settings() {
@@ -267,6 +273,9 @@ export function Settings() {
           autoRecord: editingAccount.autoRecord ?? false,
           srtpMode: editingAccount.srtpMode ?? "disabled",
           codecs: editingAccount.codecs ?? [...DEFAULT_CODECS],
+          autoCountryCode: editingAccount.autoCountryCode ?? false,
+          stripPrefix: editingAccount.stripPrefix || "",
+          prependPrefix: editingAccount.prependPrefix || "",
         });
       });
     }
@@ -314,7 +323,7 @@ export function Settings() {
     handleCloseMenu();
   };
 
-  const update = (field: keyof AccountFormData, value: string | number) => {
+  const update = (field: keyof AccountFormData, value: string | number | boolean) => {
     setForm((f) => {
       const next = { ...f, [field]: value };
       if (field === "transport") {
@@ -368,6 +377,9 @@ export function Settings() {
       autoRecord: form.autoRecord,
       srtpMode: form.srtpMode,
       codecs: form.codecs,
+      autoCountryCode: form.autoCountryCode,
+      stripPrefix: form.stripPrefix.trim() || undefined,
+      prependPrefix: form.prependPrefix.trim() || undefined,
     };
 
     // try/finally so a keychain error cannot leave the Save button spinning
@@ -1580,6 +1592,50 @@ export function Settings() {
                 <Typography variant="caption" sx={{ color: "text.disabled", mt: -0.5 }}>
                   {t("settings.autoRecordNote")}
                 </Typography>
+
+                {/* Dialing Rules */}
+                <Divider sx={{ my: 1.5 }} />
+                <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 0.5 }}>
+                  {t("settings.dialingRules")}
+                </Typography>
+                <Typography variant="caption" sx={{ color: "text.disabled", mb: 1, display: "block" }}>
+                  {t("settings.dialingRulesNote")}
+                </Typography>
+
+                <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mt: 0.5 }}>
+                  <Typography variant="body2" sx={{ color: "text.secondary" }}>
+                    {t("settings.autoCountryCode")}
+                  </Typography>
+                  <Switch
+                    checked={form.autoCountryCode}
+                    onChange={(e) => setForm(f => ({ ...f, autoCountryCode: e.target.checked }))}
+                    size="small"
+                  />
+                </Box>
+                <Typography variant="caption" sx={{ color: "text.disabled", mt: -0.5, mb: 1 }}>
+                  {t("settings.autoCountryCodeNote")}
+                </Typography>
+
+                <Box sx={{ display: "flex", gap: 1.5, mt: 0.5 }}>
+                  <TextField
+                    label={t("settings.stripPrefix")}
+                    size="small"
+                    value={form.stripPrefix}
+                    onChange={(e) => update("stripPrefix", e.target.value)}
+                    placeholder={t("settings.stripPrefixPlaceholder")}
+                    helperText={t("settings.stripPrefixHelper")}
+                    sx={{ ...inputSx, flex: 1 }}
+                  />
+                  <TextField
+                    label={t("settings.prependPrefix")}
+                    size="small"
+                    value={form.prependPrefix}
+                    onChange={(e) => update("prependPrefix", e.target.value)}
+                    placeholder={t("settings.prependPrefixPlaceholder")}
+                    helperText={t("settings.prependPrefixHelper")}
+                    sx={{ ...inputSx, flex: 1 }}
+                  />
+                </Box>
 
                 {/* SRTP Mode */}
                 <Box sx={{ mt: 2 }}>

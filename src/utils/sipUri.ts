@@ -1,3 +1,56 @@
+import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
+import type { SipAccount } from "../types/sip";
+
+/**
+ * Format and prepare a dialed number according to account rules:
+ * 1. If it's a full SIP URI or contains '@', return as-is.
+ * 2. If autoCountryCode is enabled on the account, parse with defaultCountry
+ *    and format as E.164 (without '+').
+ * 3. Apply stripPrefix if the number starts with it (handles matching with or without leading '+').
+ * 4. Apply prependPrefix if configured.
+ */
+export function formatDialNumber(
+  input: string,
+  account?: Pick<SipAccount, "autoCountryCode" | "stripPrefix" | "prependPrefix"> | null,
+  defaultCountry?: string,
+): string {
+  const trimmed = input.trim();
+  if (!trimmed || trimmed.includes("@")) {
+    return trimmed;
+  }
+
+  let number = trimmed.replace(/[\s\-()]/g, "");
+
+  // Option 1: Auto-add country code only if explicitly enabled
+  if (account?.autoCountryCode && defaultCountry) {
+    try {
+      const parsed = parsePhoneNumber(number, defaultCountry as CountryCode);
+      if (parsed?.isValid()) {
+        number = parsed.number.replace("+", "");
+      }
+    } catch {
+      // Keep input as-is if parsing fails
+    }
+  }
+
+  // Option 3: Dial plan / prefix manipulation
+  const strip = account?.stripPrefix?.trim();
+  if (strip) {
+    if (number.startsWith("+") && number.slice(1).startsWith(strip)) {
+      number = number.slice(1 + strip.length);
+    } else if (number.startsWith(strip)) {
+      number = number.slice(strip.length);
+    }
+  }
+
+  const prepend = account?.prependPrefix?.trim();
+  if (prepend) {
+    number = `${prepend}${number}`;
+  }
+
+  return number;
+}
+
 /**
  * The SIP URI to dial for what the user typed or picked.
  *
