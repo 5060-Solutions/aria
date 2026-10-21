@@ -36,6 +36,9 @@ pub fn run() {
         .format_timestamp_millis()
         .init();
 
+    // Enter Tauri's Tokio runtime context so synchronous startup code can invoke tokio::spawn
+    let _runtime_guard = tauri::async_runtime::handle().inner().enter();
+
     // Create manager and take receiver before moving into Tauri
     let (manager, event_rx) = sip::SipManager::new_with_receiver();
     let audio_test_manager = audio_test::AudioTestManager::new();

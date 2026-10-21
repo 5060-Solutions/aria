@@ -103,7 +103,8 @@ jobs:
             libasound2-dev \
             libssl-dev \
             libgtk-3-dev \
-            patchelf
+            patchelf \
+            xvfb
 
       - name: Import Apple Developer ID certificate
         if: matrix.platform == 'macos-latest'
@@ -147,6 +148,17 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+      # A build "succeeding" only means the bundle was produced. v0.5.0 was
+      # built, signed, published and auto-updated to users -- and panicked on
+      # the first line of startup, because nothing ever launched it. Launch the
+      # artifact here and fail the release if it crashes on startup, so the
+      # broken build stays in the draft and never reaches the updater. The crash
+      # was cross-platform; Windows GUI launch in CI is a known follow-up.
+      - name: Smoke-launch the built app
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/smoke-launch.sh ${{ matrix.target }}
 
       - name: Sign Windows artifacts with Azure Trusted Signing
         if: matrix.platform == 'windows-latest'
@@ -276,6 +288,12 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target universal-apple-darwin
+
+      # Launch the universal bundle before it can be published. See the matrix
+      # build job for why: a built-but-unlaunched binary shipped in v0.5.0.
+      - name: Smoke-launch the built app
+        shell: bash
+        run: scripts/smoke-launch.sh universal-apple-darwin
 
   # Builds land in a draft so a partial release never reaches the updater.
   # Once every build has uploaded its artifacts and its share of latest.json,
