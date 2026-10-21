@@ -153,11 +153,44 @@ export function Dialer() {
     setDialInput(dialInput.slice(0, -1));
   }, [dialInput, setDialInput]);
 
+  // Native paste covers Cmd+V on macOS and Ctrl+V on Windows/Linux.
+  useEffect(() => {
+    const handlePaste = (event: ClipboardEvent) => {
+      const target = event.target;
+      if (
+        event.defaultPrevented ||
+        (target instanceof HTMLElement &&
+          (target.closest("input, textarea, select") || target.isContentEditable))
+      ) return;
+
+      const text = event.clipboardData?.getData("text/plain").trim();
+      if (!text) return;
+
+      const normalized = text.replace(/[\u0660-\u0669\u06f0-\u06f9]/g, (digit) =>
+        String(digit.charCodeAt(0) - (digit.charCodeAt(0) <= 0x0669 ? 0x0660 : 0x06f0))
+      );
+      // Reject prose, lists and multiline content rather than joining unrelated numbers.
+      if (!/^\+?[0-9*#() \u00a0\u202f.-]+$/.test(normalized)) return;
+      const number = normalized.replace(/[() \u00a0\u202f.-]/g, "");
+      if (!/[0-9*#]/.test(number)) return;
+
+      event.preventDefault();
+      setDialInput(number);
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [setDialInput]);
+
   // Keyboard input support
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is typing in an input field
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      // Leave native shortcuts and editable controls to their own handlers.
+      if (
+        e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey ||
+        (e.target instanceof HTMLElement &&
+          (e.target.closest("input, textarea, select") || e.target.isContentEditable))
+      ) {
         return;
       }
 
