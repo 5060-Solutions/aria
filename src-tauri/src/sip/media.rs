@@ -5,6 +5,28 @@ use tokio::net::UdpSocket;
 
 pub use rtp_engine::{CodecType, MediaSession, discover_public_address};
 
+/// Point a freshly started session at the payload types the peer's SDP
+/// named, for both the audio codec and DTMF.
+///
+/// Audio goes on the number the peer carries the codec on — Opus on a
+/// dynamic payload type other than 111 would otherwise be sent as 111 and
+/// dropped. DTMF goes on the telephone-event type whose clock matches the
+/// codec's (RFC 4733 §2.1), with the engine told that clock so a digit's
+/// duration is scaled to it: paired with Opus, `telephone-event/48000`
+/// expects 960 units per 20 ms, not 160.
+pub fn apply_negotiated_payload_types(session: &MediaSession, sdp: &str) {
+    use crate::sip::{builder, codec};
+
+    if let Some((_, pt)) = codec::negotiate_codec_with_pt(sdp) {
+        session.set_audio_payload_type(pt);
+    }
+    if let Some((pt, rate)) = builder::parse_telephone_event(sdp, session.codec().clock_rate()) {
+        log::info!("DTMF on telephone-event payload type {} at {} Hz", pt, rate);
+        session.set_dtmf_payload_type(pt);
+        session.set_dtmf_clock_rate(rate);
+    }
+}
+
 /// Allocate an RTP port and discover the public address via STUN.
 ///
 /// Returns `(local_port, public_ip, public_port)`. The public half is `None`

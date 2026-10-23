@@ -398,7 +398,7 @@ export function useSipEvents() {
 export async function placeCall(
   call: { uri: string; accountId: string; remoteName?: string },
   { asAdditionalCall = false }: { asAdditionalCall?: boolean } = {},
-): Promise<void> {
+): Promise<string> {
   const store = useAppStore.getState();
   // Already on a call: this is a call-waiting swap, not a second live call.
   // Hold the current one and add the new one. Placing it straight used to
@@ -440,6 +440,7 @@ export async function placeCall(
     useAppStore.getState().removeCall(id);
     throw e;
   }
+  return id;
 }
 
 /**

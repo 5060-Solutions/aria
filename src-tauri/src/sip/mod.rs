@@ -485,6 +485,31 @@ pub struct CallStatusInfo {
     pub duration_secs: Option<u64>,
     pub codec: Option<String>,
     pub rtp_stats: Option<media::RtpStats>,
+    /// Whether the media is actually encrypted, as negotiated.
+    pub srtp_active: bool,
+    /// SIP Call-ID header, for matching the call to its trace.
+    pub sip_call_id: String,
+}
+
+/// What an account is configured as, without anything secret.
+///
+/// For callers outside the SIP stack (the MCP server) that need to list
+/// accounts: `AccountConfig` carries the password, so it never leaves here.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountSummary {
+    pub account_id: String,
+    pub display_name: String,
+    pub username: String,
+    pub domain: String,
+    pub transport: String,
+    pub port: u16,
+    pub registrar: Option<String>,
+    pub registration_state: String,
+    pub registration_error: Option<String>,
+    pub srtp_mode: String,
+    pub auto_record: bool,
+    pub is_active: bool,
 }
 
 impl SipManager {
@@ -1488,10 +1513,8 @@ impl SipManager {
             }
         };
 
-        // DTMF goes on the payload type the caller named for telephone-event.
-        if let Some(pt) = builder::parse_telephone_event_pt(sdp) {
-            media.set_dtmf_payload_type(pt);
-        }
+        // Audio and DTMF go on the payload types the caller's offer named.
+        media::apply_negotiated_payload_types(&media, sdp);
 
         // Discover public IP via STUN for NAT traversal in SDP
         // A server on a private network is answered with the local address:
@@ -2059,6 +2082,49 @@ impl SipManager {
         s.diagnostic_store.get_all().await
     }
 
+    /// Tests only: put an entry into the diagnostic store as a transport would.
+    #[cfg(test)]
+    pub(crate) async fn push_diagnostic_for_test(&self, entry: DiagnosticLog) {
+        let s = self.state.read().await;
+        s.diagnostic_store.push(entry).await;
+    }
+
+    /// Record something the app did (not a SIP message) in the trace, so it
+    /// shows in the Diagnostics panel in sequence with the signalling.
+    pub async fn log_app_event(&self, account_id: &str, summary: &str, detail: &str) {
+        let diag = DiagnosticLog::app_event(account_id, summary, detail);
+        {
+            let s = self.state.read().await;
+            s.diagnostic_store.push(diag.clone()).await;
+        }
+        self.emit(SipEvent::DiagnosticMessage(diag));
+    }
+
+    /// Every configured account, without credentials.
+    pub async fn account_summaries(&self) -> Vec<AccountSummary> {
+        let s = self.state.read().await;
+        let mut out: Vec<AccountSummary> = s
+            .accounts
+            .values()
+            .map(|a| AccountSummary {
+                account_id: a.config.id.clone(),
+                display_name: a.config.display_name.clone(),
+                username: a.config.username.clone(),
+                domain: a.config.domain.clone(),
+                transport: format!("{:?}", a.config.transport).to_lowercase(),
+                port: a.config.port,
+                registrar: a.config.registrar.clone(),
+                registration_state: a.registration.state_name().to_string(),
+                registration_error: a.registration.error_reason().map(|e| e.to_string()),
+                srtp_mode: format!("{:?}", a.config.srtp_mode).to_lowercase(),
+                auto_record: a.config.auto_record,
+                is_active: s.active_account_id.as_deref() == Some(a.config.id.as_str()),
+            })
+            .collect();
+        out.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+        out
+    }
+
     pub async fn clear_diagnostics(&self) {
         let s = self.state.read().await;
         s.diagnostic_store.clear().await;
@@ -2409,6 +2475,8 @@ impl SipManager {
                         duration_secs,
                         codec,
                         rtp_stats,
+                        srtp_active: c.srtp_active,
+                        sip_call_id: c.call_id_header.clone(),
                     }
                 })
                 .collect();

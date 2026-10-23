@@ -292,5 +292,29 @@
     "noSpeech": "Aucune parole reconnue dans cet appel.",
     "narrowband": "Cet appel a été transmis à 8 kHz ; la transcription est donc moins précise.",
     "close": "Fermer"
+  },
+  "mcp": {
+    "title": "Assistants (MCP)",
+    "subtitle": "Laisser un assistant IA local lire l'état et les traces",
+    "intro": "Un serveur MCP local permet à un assistant sur cet ordinateur (Claude Code, par exemple) de lire l'état d'enregistrement, les appels et la trace SIP. Rien ne quitte cet ordinateur et les mots de passe ne sont jamais exposés.",
+    "enableRead": "Autoriser les assistants locaux à lire l'état et les traces",
+    "enableControl": "Autoriser les assistants à passer et contrôler des appels",
+    "enableControlNote": "Chaque nouvel appel vous demande toujours confirmation.",
+    "port": "Port",
+    "portNote": "Servi uniquement sur 127.0.0.1.",
+    "notRunning": "Le serveur n'a pas pu démarrer : {{error}}",
+    "token": "Jeton d'accès",
+    "copy": "Copier",
+    "copied": "Copié",
+    "regenerate": "Régénérer",
+    "regenerateNote": "Les assistants configurés avec l'ancien jeton auront besoin du nouveau.",
+    "setupLine": "Ajouter à Claude Code",
+    "setupNote": "Exécutez ceci dans un terminal ; l'assistant pourra ensuite utiliser les outils d'Aria.",
+    "callRequestTitle": "Un assistant souhaite passer un appel",
+    "callRequestBody": "Un assistant souhaite appeler {{number}} depuis {{account}}.",
+    "callRequestExpires": "Cette demande expire dans {{seconds}} s.",
+    "allow": "Autoriser",
+    "deny": "Refuser",
+    "noAccount": "Aucun compte disponible pour passer cet appel."
   }
 }

@@ -292,5 +292,29 @@
     "noSpeech": "In diesem Anruf wurde keine Sprache erkannt.",
     "narrowband": "Dieser Anruf wurde mit 8 kHz übertragen, daher ist das Transkript ungenauer.",
     "close": "Schließen"
+  },
+  "mcp": {
+    "title": "Assistenten (MCP)",
+    "subtitle": "Einem lokalen KI-Assistenten Status und Traces zugänglich machen",
+    "intro": "Ein lokaler MCP-Server lässt einen Assistenten auf diesem Computer (z. B. Claude Code) Registrierungsstatus, Anrufe und den SIP-Trace lesen. Nichts verlässt diesen Computer, Passwörter werden nie preisgegeben.",
+    "enableRead": "Lokalen Assistenten das Lesen von Status und Traces erlauben",
+    "enableControl": "Assistenten erlauben, Anrufe zu tätigen und zu steuern",
+    "enableControlNote": "Bei jedem neuen Anruf werden Sie weiterhin zuerst gefragt.",
+    "port": "Port",
+    "portNote": "Nur auf 127.0.0.1 erreichbar.",
+    "notRunning": "Der Server konnte nicht gestartet werden: {{error}}",
+    "token": "Zugriffstoken",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
+    "regenerate": "Neu erzeugen",
+    "regenerateNote": "Assistenten, die mit dem alten Token eingerichtet wurden, brauchen das neue.",
+    "setupLine": "Zu Claude Code hinzufügen",
+    "setupNote": "Im Terminal ausführen, danach kann der Assistent Arias Werkzeuge nutzen.",
+    "callRequestTitle": "Ein Assistent möchte anrufen",
+    "callRequestBody": "Ein Assistent möchte {{number}} über {{account}} anrufen.",
+    "callRequestExpires": "Diese Anfrage läuft in {{seconds}} s ab.",
+    "allow": "Erlauben",
+    "deny": "Ablehnen",
+    "noAccount": "Kein Konto verfügbar, um diesen Anruf zu tätigen."
   }
 }

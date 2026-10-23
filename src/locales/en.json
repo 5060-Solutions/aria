@@ -39,7 +39,6 @@
     "recordingInProgress": "Recording in progress",
     "encrypted": "Encrypted",
     "encryptionSdes": "SDES-SRTP",
-    "encryptionDtls": "DTLS-SRTP",
     "notEncrypted": "Not encrypted",
     "answer": "Answer",
     "decline": "Decline"
@@ -134,11 +133,10 @@
     "autoRecord": "Auto-record calls",
     "autoRecordNote": "Automatically record all calls for this account",
     "srtpMode": "Media Encryption",
-    "srtpModeNote": "Encrypts voice traffic. SDES uses key exchange in SDP. DTLS uses a TLS handshake for key exchange.",
+    "srtpModeNote": "Encrypts voice traffic between Aria and your server. SDES exchanges the keys in the SDP; the server must support it.",
     "srtp": {
       "disabled": "Off",
-      "sdes": "SDES",
-      "dtls": "DTLS"
+      "sdes": "SDES"
     },
     "codecPriority": "Codec Priority",
     "codecPriorityNote": "Drag to reorder or toggle to enable/disable codecs",
@@ -308,5 +306,29 @@
     "noSpeech": "No speech was recognised in this call.",
     "narrowband": "This call was carried at 8 kHz, so the transcript is less accurate.",
     "close": "Close"
+  },
+  "mcp": {
+    "title": "Assistants (MCP)",
+    "subtitle": "Let a local AI assistant read status and traces",
+    "intro": "A local MCP server lets an assistant on this computer (Claude Code, for example) read registration state, calls and the SIP trace. Nothing leaves this computer and passwords are never exposed.",
+    "enableRead": "Allow local assistants to read status and traces",
+    "enableControl": "Allow assistants to place and control calls",
+    "enableControlNote": "Each new call still asks you first.",
+    "port": "Port",
+    "portNote": "Served on 127.0.0.1 only.",
+    "notRunning": "The server could not start: {{error}}",
+    "token": "Access token",
+    "copy": "Copy",
+    "copied": "Copied",
+    "regenerate": "Regenerate",
+    "regenerateNote": "Assistants set up with the old token will need the new one.",
+    "setupLine": "Add to Claude Code",
+    "setupNote": "Run this in a terminal, then the assistant can use Aria's tools.",
+    "callRequestTitle": "An assistant wants to place a call",
+    "callRequestBody": "An assistant wants to call {{number}} from {{account}}.",
+    "callRequestExpires": "This request expires in {{seconds}} s.",
+    "allow": "Allow",
+    "deny": "Deny",
+    "noAccount": "No account is available to place this call."
   }
 }

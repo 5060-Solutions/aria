@@ -292,5 +292,29 @@
     "noSpeech": "No se reconoció voz en esta llamada.",
     "narrowband": "Esta llamada se transmitió a 8 kHz, por lo que la transcripción es menos precisa.",
     "close": "Cerrar"
+  },
+  "mcp": {
+    "title": "Asistentes (MCP)",
+    "subtitle": "Permitir que un asistente de IA local lea el estado y las trazas",
+    "intro": "Un servidor MCP local permite a un asistente en este equipo (por ejemplo, Claude Code) leer el estado de registro, las llamadas y la traza SIP. Nada sale de este equipo y las contraseñas nunca se exponen.",
+    "enableRead": "Permitir a los asistentes locales leer el estado y las trazas",
+    "enableControl": "Permitir a los asistentes realizar y controlar llamadas",
+    "enableControlNote": "Cada llamada nueva seguirá pidiéndote permiso primero.",
+    "port": "Puerto",
+    "portNote": "Solo se sirve en 127.0.0.1.",
+    "notRunning": "No se pudo iniciar el servidor: {{error}}",
+    "token": "Token de acceso",
+    "copy": "Copiar",
+    "copied": "Copiado",
+    "regenerate": "Regenerar",
+    "regenerateNote": "Los asistentes configurados con el token anterior necesitarán el nuevo.",
+    "setupLine": "Añadir a Claude Code",
+    "setupNote": "Ejecútalo en una terminal; después el asistente podrá usar las herramientas de Aria.",
+    "callRequestTitle": "Un asistente quiere hacer una llamada",
+    "callRequestBody": "Un asistente quiere llamar a {{number}} desde {{account}}.",
+    "callRequestExpires": "Esta solicitud caduca en {{seconds}} s.",
+    "allow": "Permitir",
+    "deny": "Denegar",
+    "noAccount": "No hay ninguna cuenta disponible para hacer esta llamada."
   }
 }

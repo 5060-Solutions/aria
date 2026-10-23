@@ -48,6 +48,8 @@ import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import ContactsIcon from "@mui/icons-material/Contacts";
 import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
 import { Transcription } from "./Transcription";
+import { Assistants } from "./Assistants";
+import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import SyncIcon from "@mui/icons-material/Sync";
 import CloudIcon from "@mui/icons-material/Cloud";
 import PhoneIphoneIcon from "@mui/icons-material/PhoneIphone";
@@ -81,7 +83,7 @@ import type {
   VoiceProcessingSettings,
   VoiceProcessingStatus,
 } from "../../types/sip";
-import { DEFAULT_CODECS, CODEC_INFO } from "../../types/sip";
+import { DEFAULT_CODECS, CODEC_INFO, normalizeSrtpMode } from "../../types/sip";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 
@@ -109,7 +111,7 @@ interface AccountFormData {
   registrar: string;
   outboundProxy: string;
   autoRecord: boolean;
-  srtpMode: "disabled" | "sdes" | "dtls";
+  srtpMode: "disabled" | "sdes";
   codecs: CodecConfig[];
   autoCountryCode: boolean;
   stripPrefix: string;
@@ -183,6 +185,7 @@ export function Settings() {
   const [showAudioSettings, setShowAudioSettings] = useState(false);
   const [showContactsSettings, setShowContactsSettings] = useState(false);
   const [showTranscription, setShowTranscription] = useState(false);
+  const [showAssistants, setShowAssistants] = useState(false);
   const [micTesting, setMicTesting] = useState(false);
   const [tonePlaying, setTonePlaying] = useState(false);
   const [recordingsDir, setRecordingsDir] = useState<string>("");
@@ -271,7 +274,7 @@ export function Settings() {
           registrar: editingAccount.registrar || "",
           outboundProxy: editingAccount.outboundProxy || "",
           autoRecord: editingAccount.autoRecord ?? false,
-          srtpMode: editingAccount.srtpMode ?? "disabled",
+          srtpMode: normalizeSrtpMode(editingAccount.srtpMode),
           codecs: editingAccount.codecs ?? [...DEFAULT_CODECS],
           autoCountryCode: editingAccount.autoCountryCode ?? false,
           stripPrefix: editingAccount.stripPrefix || "",
@@ -1404,6 +1407,33 @@ export function Settings() {
               }}
             />
           </ListItemButton>
+
+          {/* Assistants (MCP) */}
+          <ListItemButton
+            onClick={() => setShowAssistants((v) => !v)}
+            sx={{ borderRadius: "16px", mb: 0.5 }}
+          >
+            <ListItemIcon sx={{ minWidth: 40 }}>
+              <SmartToyOutlinedIcon sx={{ fontSize: 20 }} />
+            </ListItemIcon>
+            <ListItemText
+              primary={t("mcp.title")}
+              secondary={t("mcp.subtitle")}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: { sx: { fontSize: "0.7rem" } },
+              }}
+            />
+            {showAssistants ? <ExpandLessIcon sx={{ fontSize: 20 }} /> : <ExpandMoreIcon sx={{ fontSize: 20 }} />}
+          </ListItemButton>
+
+          {/* mountOnEnter: opening the panel is what reads the config and the
+              token, so it must not happen on every Settings render. */}
+          <Collapse in={showAssistants} mountOnEnter unmountOnExit>
+            <Box sx={{ px: 2, pb: 2 }}>
+              <Assistants />
+            </Box>
+          </Collapse>
         </List>
 
         <Divider sx={{ my: 1.5, opacity: 0.15 }} />
@@ -1643,7 +1673,7 @@ export function Settings() {
                     {t("settings.srtpMode")}
                   </Typography>
                   <Box sx={{ display: "flex", gap: 1 }}>
-                    {(["disabled", "sdes", "dtls"] as const).map((mode) => (
+                    {(["disabled", "sdes"] as const).map((mode) => (
                       <Chip
                         key={mode}
                         label={t(`settings.srtp.${mode}`)}
