@@ -1,7 +1,12 @@
 export type TransportType = "udp" | "tcp" | "tls";
 
 /** SRTP mode for media encryption */
-export type SrtpMode = "disabled" | "sdes" | "dtls";
+export type SrtpMode = "disabled" | "sdes";
+
+/** Stored accounts may still say "dtls", a mode that was never implemented and sent plain RTP. */
+export function normalizeSrtpMode(mode: string | undefined): SrtpMode {
+  return mode === "sdes" ? "sdes" : "disabled";
+}
 
 /** Audio codec types supported by Aria */
 export type CodecType = "pcmu" | "pcma" | "g729" | "opus";

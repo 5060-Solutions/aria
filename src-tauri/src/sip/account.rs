@@ -9,15 +9,19 @@ pub enum SrtpMode {
     Disabled,
     /// SDES-SRTP key exchange (RFC 4568)
     Sdes,
-    /// DTLS-SRTP key exchange (RFC 5764)
-    Dtls,
 }
 
 impl SrtpMode {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "sdes" | "optional" | "required" => SrtpMode::Sdes,
-            "dtls" => SrtpMode::Dtls,
+            // DTLS-SRTP was offered as a setting but never implemented: it sent
+            // plain RTP. Stored accounts that still say "dtls" keep that
+            // behaviour rather than silently changing what goes on the wire.
+            "dtls" => {
+                log::warn!("srtp mode \"dtls\" is no longer offered; treating as disabled");
+                SrtpMode::Disabled
+            }
             _ => SrtpMode::Disabled,
         }
     }

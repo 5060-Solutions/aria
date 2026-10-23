@@ -81,7 +81,7 @@ import type {
   VoiceProcessingSettings,
   VoiceProcessingStatus,
 } from "../../types/sip";
-import { DEFAULT_CODECS, CODEC_INFO } from "../../types/sip";
+import { DEFAULT_CODECS, CODEC_INFO, normalizeSrtpMode } from "../../types/sip";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 
@@ -109,7 +109,7 @@ interface AccountFormData {
   registrar: string;
   outboundProxy: string;
   autoRecord: boolean;
-  srtpMode: "disabled" | "sdes" | "dtls";
+  srtpMode: "disabled" | "sdes";
   codecs: CodecConfig[];
   autoCountryCode: boolean;
   stripPrefix: string;
@@ -271,7 +271,7 @@ export function Settings() {
           registrar: editingAccount.registrar || "",
           outboundProxy: editingAccount.outboundProxy || "",
           autoRecord: editingAccount.autoRecord ?? false,
-          srtpMode: editingAccount.srtpMode ?? "disabled",
+          srtpMode: normalizeSrtpMode(editingAccount.srtpMode),
           codecs: editingAccount.codecs ?? [...DEFAULT_CODECS],
           autoCountryCode: editingAccount.autoCountryCode ?? false,
           stripPrefix: editingAccount.stripPrefix || "",
@@ -1643,7 +1643,7 @@ export function Settings() {
                     {t("settings.srtpMode")}
                   </Typography>
                   <Box sx={{ display: "flex", gap: 1 }}>
-                    {(["disabled", "sdes", "dtls"] as const).map((mode) => (
+                    {(["disabled", "sdes"] as const).map((mode) => (
                       <Chip
                         key={mode}
                         label={t(`settings.srtp.${mode}`)}

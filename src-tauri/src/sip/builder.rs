@@ -229,10 +229,6 @@ pub fn build_invite_with_public_ip(
                 }
             }
         }
-        SrtpMode::Dtls => {
-            log::warn!("DTLS-SRTP not yet implemented, falling back to plain RTP");
-            None
-        }
         SrtpMode::Disabled => {
             log::info!("SRTP disabled for this account");
             None
@@ -931,7 +927,6 @@ pub fn build_invite_with_replaces(
                 .ok()
                 .map(|(_, key)| key)
         }
-        SrtpMode::Dtls => None,
         SrtpMode::Disabled => None,
     };
     let sdp = build_sdp_offer_with_codecs(local_addr.ip().to_string(), rtp_port, crypto_key.as_deref(), &account.codecs);
