@@ -29,10 +29,9 @@ function EncryptionIndicator({
   const { t } = useTranslation();
   const theme = useTheme();
 
-  // Only SDES actually encrypts today. DTLS-SRTP is not implemented — the
-  // media builder logs "falling back to plain RTP" and returns no keys — so
-  // treating it as encrypted put a padlock over a cleartext call, which is
-  // worse than showing nothing.
+  // Only SDES encrypts. The DTLS option was removed from Settings because it
+  // was never implemented and sent plain RTP; stored "dtls" accounts behave as
+  // disabled.
   //
   // This still reflects configuration rather than what was negotiated: a PBX
   // that strips the crypto line from its answer yields plain RTP while this

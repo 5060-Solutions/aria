@@ -1,7 +1,12 @@
 export type TransportType = "udp" | "tcp" | "tls";
 
 /** SRTP mode for media encryption */
-export type SrtpMode = "disabled" | "sdes" | "dtls";
+export type SrtpMode = "disabled" | "sdes";
+
+/** Stored accounts may still say "dtls", a mode that was never implemented and sent plain RTP. */
+export function normalizeSrtpMode(mode: string | undefined): SrtpMode {
+  return mode === "sdes" ? "sdes" : "disabled";
+}
 
 /** Audio codec types supported by Aria */
 export type CodecType = "pcmu" | "pcma" | "g729" | "opus";
@@ -151,7 +156,7 @@ export interface ActiveCall {
    *
    * Not the account's srtpMode: that is a preference, and the indicator used
    * to read it directly — so it showed a padlock whenever SRTP was configured,
-   * including for DTLS (unimplemented) and whenever the far end answered
+   * including for the since-removed DTLS option and whenever the far end answered
    * without a crypto line.
    */
   srtpActive?: boolean;

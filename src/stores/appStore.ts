@@ -734,10 +734,14 @@ function toStoredAccount(account: SipAccount): StoredAccount {
 
 /** Convert stored account to full account (password will be empty, needs to be loaded separately) */
 function fromStoredAccount(stored: StoredAccount): SipAccount {
-  // Migrate old srtpMode values: "optional" and "required" → "sdes"
+  // Migrate old srtpMode values: "optional" and "required" → "sdes"; "dtls"
+  // was never implemented and sent plain RTP, so it becomes "disabled" (what
+  // actually went on the wire) rather than silently turning encryption on.
   let srtpMode = stored.srtpMode;
   if (srtpMode === ("optional" as string) || srtpMode === ("required" as string)) {
     srtpMode = "sdes";
+  } else if (srtpMode === ("dtls" as string)) {
+    srtpMode = "disabled";
   }
   return { ...stored, srtpMode, password: "" };
 }

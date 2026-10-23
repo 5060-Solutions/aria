@@ -39,7 +39,6 @@
     "recordingInProgress": "Recording in progress",
     "encrypted": "Encrypted",
     "encryptionSdes": "SDES-SRTP",
-    "encryptionDtls": "DTLS-SRTP",
     "notEncrypted": "Not encrypted",
     "answer": "Answer",
     "decline": "Decline"
@@ -134,11 +133,10 @@
     "autoRecord": "Auto-record calls",
     "autoRecordNote": "Automatically record all calls for this account",
     "srtpMode": "Media Encryption",
-    "srtpModeNote": "Encrypts voice traffic. SDES uses key exchange in SDP. DTLS uses a TLS handshake for key exchange.",
+    "srtpModeNote": "Encrypts voice traffic between Aria and your server. SDES exchanges the keys in the SDP; the server must support it.",
     "srtp": {
       "disabled": "Off",
-      "sdes": "SDES",
-      "dtls": "DTLS"
+      "sdes": "SDES"
     },
     "codecPriority": "Codec Priority",
     "codecPriorityNote": "Drag to reorder or toggle to enable/disable codecs",
