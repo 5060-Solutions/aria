@@ -500,6 +500,80 @@ pub fn build_200_ok_invite_srtp(
 // SDP helpers (not SIP -- kept as-is)
 // ---------------------------------------------------------------------------
 
+/// The payload type this side offers `telephone-event/8000` on (RFC 4733),
+/// the near-universal convention for DTMF alongside the 8 kHz codecs.
+pub const TELEPHONE_EVENT_PT_8K: u8 = 101;
+
+/// The payload type this side offers `telephone-event/48000` on. RFC 4733
+/// §2.1 has the event's clock match the audio codec's, so an Opus call (a
+/// 48 kHz clock) is offered DTMF at 48 kHz as well as the classic 8 kHz.
+pub const TELEPHONE_EVENT_PT_48K: u8 = 102;
+
+/// One `a=rtpmap` entry from an SDP: payload type, lower-cased encoding name
+/// and clock rate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RtpMap {
+    pt: u8,
+    name: String,
+    rate: u32,
+}
+
+/// Every `a=rtpmap` line in the SDP, in order.
+fn parse_rtpmaps(sdp: &str) -> Vec<RtpMap> {
+    sdp.lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("a=rtpmap:")?;
+            let (pt, encoding) = rest.split_once(char::is_whitespace)?;
+            let pt = pt.trim().parse().ok()?;
+            let mut parts = encoding.trim().split('/');
+            let name = parts.next()?.to_ascii_lowercase();
+            let rate = parts.next()?.trim().parse().ok()?;
+            Some(RtpMap { pt, name, rate })
+        })
+        .collect()
+}
+
+/// What an offered payload type means, once its rtpmap (or, lacking one,
+/// the static assignment) has been read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OfferedPayload {
+    Codec(rtp_engine::CodecType),
+    TelephoneEvent(u32),
+}
+
+/// Classify one offered payload type. An `a=rtpmap` line is authoritative;
+/// without one the static numbers apply, plus the conventional dynamic ones
+/// (111 for Opus, 101 for telephone-event/8000).
+fn classify_payload(pt: u8, rtpmaps: &[RtpMap]) -> Option<OfferedPayload> {
+    use rtp_engine::CodecType;
+    match rtpmaps.iter().find(|m| m.pt == pt) {
+        Some(map) if map.name == "telephone-event" => Some(OfferedPayload::TelephoneEvent(map.rate)),
+        Some(map) => CodecType::from_name(&map.name)
+            .filter(|codec| codec.clock_rate() == map.rate)
+            .map(OfferedPayload::Codec),
+        None if pt == TELEPHONE_EVENT_PT_8K => Some(OfferedPayload::TelephoneEvent(8000)),
+        None => CodecType::from_payload_type(pt).map(OfferedPayload::Codec),
+    }
+}
+
+/// The `a=rtpmap` (and `a=fmtp`) lines for one codec on one payload type.
+fn codec_rtpmap(pt: u8, codec: rtp_engine::CodecType) -> String {
+    use rtp_engine::CodecType;
+    match codec {
+        CodecType::Pcmu => format!("a=rtpmap:{pt} PCMU/8000\r\n"),
+        CodecType::Pcma => format!("a=rtpmap:{pt} PCMA/8000\r\n"),
+        CodecType::G729 => format!("a=rtpmap:{pt} G729/8000\r\na=fmtp:{pt} annexb=no\r\n"),
+        CodecType::Opus => {
+            format!("a=rtpmap:{pt} opus/48000/2\r\na=fmtp:{pt} minptime=10;useinbandfec=1\r\n")
+        }
+    }
+}
+
+/// The `a=rtpmap` and `a=fmtp` lines for telephone-event at `rate` on `pt`.
+fn telephone_event_rtpmap(pt: u8, rate: u32) -> String {
+    format!("a=rtpmap:{pt} telephone-event/{rate}\r\na=fmtp:{pt} 0-16\r\n")
+}
+
 /// Build an SDP answer that only includes codecs from the offer that we support
 #[allow(dead_code)]
 pub fn build_sdp_answer(remote_sdp: &str, ip: String, rtp_port: u16) -> String {
@@ -540,20 +614,22 @@ pub fn build_sdp_answer_srtp(
     let use_srtp = remote_uses_savp && crypto_b64_key.is_some();
     let profile = if use_srtp { "RTP/SAVP" } else { "RTP/AVP" };
 
-    // Our supported codecs: 0=PCMU, 8=PCMA, 18=G729, 111=Opus, 101=telephone-event
-    let supported = [0u8, 8, 18, 111, 101];
-    let mut common: Vec<u8> = offered_pts
+    // Keep every offered payload type we can carry, on the number the
+    // offer gave it: the static codecs, Opus on whatever dynamic type the
+    // peer put it on (not only 111), and telephone-event at every rate the
+    // peer offered, so DTMF can run on the clock that matches the codec.
+    let rtpmaps = parse_rtpmaps(remote_sdp);
+    let mut common: Vec<(u8, OfferedPayload)> = offered_pts
         .iter()
-        .filter(|pt| supported.contains(pt))
-        .copied()
+        .filter_map(|&pt| classify_payload(pt, &rtpmaps).map(|p| (pt, p)))
         .collect();
-    if common.is_empty() {
-        common.push(0); // fallback to PCMU
+    if !common.iter().any(|(_, p)| matches!(p, OfferedPayload::Codec(_))) {
+        common.insert(0, (0, OfferedPayload::Codec(rtp_engine::CodecType::Pcmu))); // fallback to PCMU
     }
 
     let pt_list: String = common
         .iter()
-        .map(|pt| pt.to_string())
+        .map(|(pt, _)| pt.to_string())
         .collect::<Vec<_>>()
         .join(" ");
 
@@ -571,23 +647,10 @@ pub fn build_sdp_answer_srtp(
         pts = pt_list,
     );
 
-    for pt in &common {
-        match pt {
-            0 => sdp.push_str("a=rtpmap:0 PCMU/8000\r\n"),
-            8 => sdp.push_str("a=rtpmap:8 PCMA/8000\r\n"),
-            18 => {
-                sdp.push_str("a=rtpmap:18 G729/8000\r\n");
-                sdp.push_str("a=fmtp:18 annexb=no\r\n");
-            }
-            111 => {
-                sdp.push_str("a=rtpmap:111 opus/48000/2\r\n");
-                sdp.push_str("a=fmtp:111 minptime=10;useinbandfec=1\r\n");
-            }
-            101 => {
-                sdp.push_str("a=rtpmap:101 telephone-event/8000\r\n");
-                sdp.push_str("a=fmtp:101 0-16\r\n");
-            }
-            _ => {}
+    for (pt, payload) in &common {
+        match payload {
+            OfferedPayload::Codec(codec) => sdp.push_str(&codec_rtpmap(*pt, *codec)),
+            OfferedPayload::TelephoneEvent(rate) => sdp.push_str(&telephone_event_rtpmap(*pt, *rate)),
         }
     }
 
@@ -612,19 +675,24 @@ pub fn parse_sdp_crypto(sdp: &str) -> Option<String> {
     super::srtp::parse_sdp_crypto(sdp)
 }
 
-/// The payload type the peer named for `telephone-event` (DTMF, RFC 4733), if
-/// any. DTMF must be sent on the type the peer offered; 101 is only the usual
-/// default.
-pub fn parse_telephone_event_pt(sdp: &str) -> Option<u8> {
-    sdp.lines().find_map(|line| {
-        let rest = line.trim().strip_prefix("a=rtpmap:")?;
-        let (pt, codec) = rest.split_once(char::is_whitespace)?;
-        if codec.to_ascii_lowercase().starts_with("telephone-event") {
-            pt.trim().parse().ok()
-        } else {
-            None
-        }
-    })
+/// The payload type and clock rate of the peer's `telephone-event` (DTMF,
+/// RFC 4733), if any. DTMF must be sent on the type the peer offered; 101 is
+/// only the usual default. When the peer named several, this prefers the entry
+/// whose clock matches `audio_clock_rate` — the codec's RTP clock — since RFC
+/// 4733 §2.1 measures a digit's duration and timestamp on the event's clock
+/// and the two are meant to agree. A peer that offered only one rate gets
+/// that one, whatever the codec.
+pub fn parse_telephone_event(sdp: &str, audio_clock_rate: u32) -> Option<(u8, u32)> {
+    let events: Vec<(u8, u32)> = parse_rtpmaps(sdp)
+        .into_iter()
+        .filter(|m| m.name == "telephone-event")
+        .map(|m| (m.pt, m.rate))
+        .collect();
+    events
+        .iter()
+        .find(|(_, rate)| *rate == audio_clock_rate)
+        .or_else(|| events.first())
+        .copied()
 }
 
 /// Whether an SDP offer's audio media uses an SRTP profile (RTP/SAVP).
@@ -677,12 +745,18 @@ pub fn build_sdp_offer_with_codecs(
         .map(|c| c.codec.payload_type())
         .collect();
 
-    // Always include telephone-event for DTMF
-    pts.push(101);
-
     // Fallback to PCMU if no codecs enabled
-    if pts.len() == 1 {
-        pts.insert(0, 0);
+    if pts.is_empty() {
+        pts.push(CodecType::Pcmu.payload_type());
+    }
+
+    // Always include telephone-event for DTMF, at 8 kHz for the telephone
+    // codecs and also at 48 kHz when Opus is on offer, so the peer can pair
+    // DTMF with the codec's own clock.
+    let offers_opus = codecs.iter().any(|c| c.enabled && c.codec == CodecType::Opus);
+    pts.push(TELEPHONE_EVENT_PT_8K);
+    if offers_opus {
+        pts.push(TELEPHONE_EVENT_PT_48K);
     }
 
     let pt_list = pts.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
@@ -703,27 +777,14 @@ pub fn build_sdp_offer_with_codecs(
 
     // Add rtpmap for each enabled codec in priority order
     for codec_pref in codecs.iter().filter(|c| c.enabled) {
-        match codec_pref.codec {
-            CodecType::Pcmu => {
-                sdp.push_str("a=rtpmap:0 PCMU/8000\r\n");
-            }
-            CodecType::Pcma => {
-                sdp.push_str("a=rtpmap:8 PCMA/8000\r\n");
-            }
-            CodecType::G729 => {
-                sdp.push_str("a=rtpmap:18 G729/8000\r\n");
-                sdp.push_str("a=fmtp:18 annexb=no\r\n");
-            }
-            CodecType::Opus => {
-                sdp.push_str("a=rtpmap:111 opus/48000/2\r\n");
-                sdp.push_str("a=fmtp:111 minptime=10;useinbandfec=1\r\n");
-            }
-        }
+        sdp.push_str(&codec_rtpmap(codec_pref.codec.payload_type(), codec_pref.codec));
     }
 
     // Telephone event for DTMF
-    sdp.push_str("a=rtpmap:101 telephone-event/8000\r\n");
-    sdp.push_str("a=fmtp:101 0-16\r\n");
+    sdp.push_str(&telephone_event_rtpmap(TELEPHONE_EVENT_PT_8K, 8000));
+    if offers_opus {
+        sdp.push_str(&telephone_event_rtpmap(TELEPHONE_EVENT_PT_48K, 48000));
+    }
     sdp.push_str("a=ptime:20\r\n");
     sdp.push_str("a=sendrecv\r\n");
 
@@ -1276,11 +1337,107 @@ mod tests {
 
     #[test]
     fn telephone_event_pt_is_read_from_the_offer() {
-        assert_eq!(parse_telephone_event_pt(SAVP_OFFER), Some(96));
+        assert_eq!(parse_telephone_event(SAVP_OFFER, 8000), Some((96, 8000)));
         assert_eq!(
-            parse_telephone_event_pt("a=rtpmap:0 PCMU/8000\r\n"),
+            parse_telephone_event("a=rtpmap:0 PCMU/8000\r\n", 8000),
             None
         );
+    }
+
+    /// A peer that named telephone-event at both rates gets DTMF on the one
+    /// matching the codec's clock; one that named a single rate gets that
+    /// one whatever the codec, since it is the only thing it can decode.
+    #[test]
+    fn telephone_event_is_picked_by_the_codecs_clock() {
+        let both = "m=audio 20000 RTP/AVP 111 0 101 102\r\n\
+                    a=rtpmap:111 opus/48000/2\r\n\
+                    a=rtpmap:0 PCMU/8000\r\n\
+                    a=rtpmap:101 telephone-event/8000\r\n\
+                    a=rtpmap:102 telephone-event/48000\r\n";
+        assert_eq!(parse_telephone_event(both, 48000), Some((102, 48000)));
+        assert_eq!(parse_telephone_event(both, 8000), Some((101, 8000)));
+
+        let only_8k = "m=audio 20000 RTP/AVP 111 96\r\n\
+                       a=rtpmap:111 opus/48000/2\r\n\
+                       a=rtpmap:96 telephone-event/8000\r\n";
+        assert_eq!(parse_telephone_event(only_8k, 48000), Some((96, 8000)));
+        assert_eq!(parse_telephone_event("a=rtpmap:0 PCMU/8000\r\n", 8000), None);
+    }
+
+    /// Offering Opus also offers telephone-event at 48 kHz, on its own
+    /// payload type, beside the classic 8 kHz one. Without Opus only the
+    /// 8 kHz entry goes out.
+    #[test]
+    fn offer_carries_telephone_event_at_48k_only_with_opus() {
+        use super::super::account::CodecPreference;
+        use rtp_engine::CodecType;
+
+        let with_opus = build_sdp_offer_with_codecs(
+            "10.0.0.2".to_string(),
+            40000,
+            None,
+            &[
+                CodecPreference { codec: CodecType::Opus, enabled: true, priority: 1 },
+                CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
+            ],
+        );
+        assert!(with_opus.contains("m=audio 40000 RTP/AVP 111 0 101 102\r\n"), "{with_opus}");
+        assert!(with_opus.contains("a=rtpmap:111 opus/48000/2\r\n"));
+        assert!(with_opus.contains("a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-16\r\n"));
+        assert!(with_opus.contains("a=rtpmap:102 telephone-event/48000\r\na=fmtp:102 0-16\r\n"));
+
+        let without_opus = build_sdp_offer_with_codecs(
+            "10.0.0.2".to_string(),
+            40000,
+            None,
+            &[
+                CodecPreference { codec: CodecType::Opus, enabled: false, priority: 1 },
+                CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
+            ],
+        );
+        assert!(without_opus.contains("m=audio 40000 RTP/AVP 0 101\r\n"), "{without_opus}");
+        assert!(!without_opus.contains("telephone-event/48000"));
+        assert!(!without_opus.contains("opus"));
+    }
+
+    /// The answer echoes Opus on the payload type the offer carried it on
+    /// (not a fixed 111), and every telephone-event rate the offer named, each
+    /// on its own number.
+    #[test]
+    fn answer_echoes_opus_and_telephone_event_on_the_offered_payload_types() {
+        let offer = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+                     m=audio 20000 RTP/AVP 96 0 97 98\r\n\
+                     a=rtpmap:96 opus/48000/2\r\n\
+                     a=fmtp:96 useinbandfec=1\r\n\
+                     a=rtpmap:0 PCMU/8000\r\n\
+                     a=rtpmap:97 telephone-event/48000\r\n\
+                     a=rtpmap:98 telephone-event/8000\r\n";
+        let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000);
+        assert!(answer.contains("m=audio 30000 RTP/AVP 96 0 97 98\r\n"), "{answer}");
+        assert!(answer.contains("a=rtpmap:96 opus/48000/2\r\na=fmtp:96 minptime=10;useinbandfec=1\r\n"));
+        assert!(answer.contains("a=rtpmap:0 PCMU/8000\r\n"));
+        assert!(answer.contains("a=rtpmap:97 telephone-event/48000\r\na=fmtp:97 0-16\r\n"));
+        assert!(answer.contains("a=rtpmap:98 telephone-event/8000\r\na=fmtp:98 0-16\r\n"));
+        assert!(!answer.contains("111"), "{answer}");
+    }
+
+    /// An rtpmap is authoritative: 111 mapped to something else is not Opus,
+    /// an unknown codec is left out, and the static numbers still work bare.
+    #[test]
+    fn answer_drops_what_it_cannot_carry_and_keeps_static_types_bare() {
+        let offer = "m=audio 20000 RTP/AVP 111 9 18 8 101\r\n\
+                     a=rtpmap:111 speex/16000\r\n\
+                     a=rtpmap:9 G722/8000\r\n";
+        let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000);
+        assert!(answer.contains("m=audio 30000 RTP/AVP 18 8 101\r\n"), "{answer}");
+        assert!(answer.contains("a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\n"));
+        assert!(answer.contains("a=rtpmap:8 PCMA/8000\r\n"));
+        assert!(answer.contains("a=rtpmap:101 telephone-event/8000\r\n"));
+        assert!(!answer.contains("speex") && !answer.contains("G722"));
+
+        // Nothing usable at all: PCMU is the fallback.
+        let none = build_sdp_answer("m=audio 20000 RTP/AVP 9\r\na=rtpmap:9 G722/8000\r\n", "10.0.0.2".to_string(), 30000);
+        assert!(none.contains("m=audio 30000 RTP/AVP 0\r\n"), "{none}");
     }
 
     /// Given a key and a SAVP offer, the 200 OK answers RTP/SAVP with a crypto

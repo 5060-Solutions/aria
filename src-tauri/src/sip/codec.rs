@@ -1,6 +1,6 @@
 //! Audio codec re-exports from rtp-engine.
 
-pub use rtp_engine::codec::negotiate_codec;
+pub use rtp_engine::codec::{negotiate_codec, negotiate_codec_with_pt};
 
 // Re-export additional types that may be needed
 #[allow(unused_imports)]

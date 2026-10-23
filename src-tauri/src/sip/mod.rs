@@ -1513,10 +1513,8 @@ impl SipManager {
             }
         };
 
-        // DTMF goes on the payload type the caller named for telephone-event.
-        if let Some(pt) = builder::parse_telephone_event_pt(sdp) {
-            media.set_dtmf_payload_type(pt);
-        }
+        // Audio and DTMF go on the payload types the caller's offer named.
+        media::apply_negotiated_payload_types(&media, sdp);
 
         // Discover public IP via STUN for NAT traversal in SDP
         // A server on a private network is answered with the local address:
