@@ -178,6 +178,10 @@ pub async fn handle_invite_response(
                 match result {
                     Ok(session) => {
                         log::info!("Early media session started successfully");
+                        // The 183's SDP is the answer this session runs on,
+                        // and a DTMF sent during early media (an IVR prompt)
+                        // must already be on the negotiated payload type.
+                        media::apply_negotiated_payload_types(&session, sdp);
                         Some(session)
                     }
                     Err(e) => {
@@ -485,11 +489,9 @@ pub async fn handle_invite_response(
 
                 match media_result {
                     Ok(session) => {
-                        // DTMF goes on the payload type the answer named for
-                        // telephone-event, not a hardcoded 101.
-                        if let Some(pt) = builder::parse_telephone_event_pt(sdp) {
-                            session.set_dtmf_payload_type(pt);
-                        }
+                        // Audio and DTMF go on the payload types the answer
+                        // named, not a hardcoded 111 and 101.
+                        media::apply_negotiated_payload_types(&session, sdp);
                         let mut s = state.write().await;
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.srtp_active = srtp_active;

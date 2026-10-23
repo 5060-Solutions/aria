@@ -3170,7 +3170,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 3.5.0",
+ "proc-macro-crate 2.0.2",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4229,7 +4229,7 @@ dependencies = [
 [[package]]
 name = "rtp-engine"
 version = "0.1.0"
-source = "git+https://github.com/5060-Solutions/rtp-engine.git#eda2dfed1c17ddce339574afd70237263c48f393"
+source = "git+https://github.com/5060-Solutions/rtp-engine.git#38707e8df19c42b5b4d9572d32699971487267b8"
 dependencies = [
  "aes",
  "audioadapter-buffers",
@@ -5522,7 +5522,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
