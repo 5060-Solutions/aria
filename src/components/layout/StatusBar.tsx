@@ -8,7 +8,7 @@ import VoicemailIcon from "@mui/icons-material/Voicemail";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { placeCall, sipSetActiveAccount } from "../../hooks/useSip";
-import { toSipUri } from "../../utils/sipUri";
+import { dialUri } from "../../utils/sipUri";
 import { log } from "../../utils/log";
 
 const stateColors: Record<string, string> = {
@@ -49,10 +49,11 @@ export function StatusBar() {
   const handleCallVoicemail = async () => {
     if (!activeAccount) return;
     // Dial the account's voicemail number (from provisioning); fall back to
-    // the common *97 feature code when none was configured.
+    // the common *97 feature code when none was configured. A feature code
+    // passes through the dialing rules untouched; a plain extension gets them.
     const number = activeAccount.voicemailNumber?.trim() || "*97";
     await placeCall({
-      uri: toSipUri(number, activeAccount.domain),
+      uri: dialUri(number, activeAccount, useAppStore.getState().defaultCountry),
       accountId: activeAccount.id,
       remoteName: t("status.voicemail"),
     }).catch((e) => log.error("[StatusBar] Could not call voicemail:", e));
