@@ -153,10 +153,10 @@ jobs:
       # built, signed, published and auto-updated to users -- and panicked on
       # the first line of startup, because nothing ever launched it. Launch the
       # artifact here and fail the release if it crashes on startup, so the
-      # broken build stays in the draft and never reaches the updater. The crash
-      # was cross-platform; Windows GUI launch in CI is a known follow-up.
+      # broken build stays in the draft and never reaches the updater. Runs on
+      # every platform, and before the Windows artifacts are signed and
+      # re-uploaded, so a broken Windows build is never signed.
       - name: Smoke-launch the built app
-        if: runner.os != 'Windows'
         shell: bash
         run: scripts/smoke-launch.sh ${{ matrix.target }}
 

@@ -85,6 +85,10 @@ pub fn run() {
             // Spawn the event forwarding task with the receiver we took earlier
             let mut rx = event_rx;
             tauri::async_runtime::spawn(async move {
+                // scripts/smoke-launch.sh waits for this exact line to decide
+                // the app came up: it is logged unconditionally at info once
+                // the app is built and its event loop is running. Change the
+                // text there if you change it here.
                 log::info!("SIP event forwarding started");
                 while let Some(event) = rx.recv().await {
                         match event {
