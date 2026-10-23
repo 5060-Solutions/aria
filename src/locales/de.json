@@ -126,7 +126,17 @@
     "autoRecord": "Automatisch aufnehmen",
     "autoRecordNote": "Alle Anrufe dieses Kontos automatisch aufnehmen",
     "codecPriority": "Codec-Priorität",
-    "codecPriorityNote": "Pfeile verwenden um Reihenfolge zu ändern oder aktivieren/deaktivieren"
+    "codecPriorityNote": "Pfeile verwenden um Reihenfolge zu ändern oder aktivieren/deaktivieren",
+    "dialingRules": "Wahlregeln",
+    "dialingRulesNote": "Nummernmanipulation und Formatierung für ausgehende Anrufe konfigurieren",
+    "autoCountryCode": "Ländercode automatisch hinzufügen",
+    "autoCountryCodeNote": "Nummern beim Wählen mit dem Standard-Ländercode (E.164) formatieren",
+    "stripPrefix": "Zu entfernendes Präfix",
+    "stripPrefixPlaceholder": "z.B. 0 oder 49",
+    "stripPrefixHelper": "Entfernt dieses Präfix von gewählten Nummern (z.B. Ländercode entfernen)",
+    "prependPrefix": "Voranzustellendes Präfix",
+    "prependPrefixPlaceholder": "z.B. 9 oder 0",
+    "prependPrefixHelper": "Fügt dieses Präfix vor gewählten Nummern ein (z.B. 9 für Amtsleitung)"
   },
   "update": {
     "title": "Update verfügbar",

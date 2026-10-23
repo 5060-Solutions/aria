@@ -126,7 +126,17 @@
     "autoRecord": "Grabar automáticamente",
     "autoRecordNote": "Graba automáticamente todas las llamadas de esta cuenta",
     "codecPriority": "Prioridad de códecs",
-    "codecPriorityNote": "Usa las flechas para reordenar o el interruptor para habilitar/deshabilitar"
+    "codecPriorityNote": "Usa las flechas para reordenar o el interruptor para habilitar/deshabilitar",
+    "dialingRules": "Reglas de marcación",
+    "dialingRulesNote": "Configurar manipulación y formato de números para llamadas salientes",
+    "autoCountryCode": "Añadir código de país automáticamente",
+    "autoCountryCodeNote": "Formatear números con el código de país predeterminado (E.164) al marcar",
+    "stripPrefix": "Prefijo a eliminar",
+    "stripPrefixPlaceholder": "ej. 0 o 34",
+    "stripPrefixHelper": "Elimina este prefijo de los números marcados (ej. quitar código de país)",
+    "prependPrefix": "Prefijo a anteponer",
+    "prependPrefixPlaceholder": "ej. 9 o 0",
+    "prependPrefixHelper": "Añade este prefijo a los números marcados (ej. 9 para línea externa)"
   },
   "update": {
     "title": "Actualización disponible",

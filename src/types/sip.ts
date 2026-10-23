@@ -79,6 +79,12 @@ export interface SipAccount {
   codecs?: CodecConfig[];
   /** What to dial to reach voicemail (e.g. *97). From provisioning or Settings. */
   voicemailNumber?: string;
+  /** Whether to automatically add country code to dialed numbers */
+  autoCountryCode?: boolean;
+  /** Prefix to remove from dialed numbers before calling (e.g. "0" or "98") */
+  stripPrefix?: string;
+  /** Prefix to prepend to dialed numbers before calling (e.g. "9" or "0") */
+  prependPrefix?: string;
 }
 
 /** Account data stored in localStorage (without password) */
@@ -98,6 +104,9 @@ export interface StoredAccount {
   srtpMode?: SrtpMode;
   codecs?: CodecConfig[];
   voicemailNumber?: string;
+  autoCountryCode?: boolean;
+  stripPrefix?: string;
+  prependPrefix?: string;
 }
 
 /** Message-waiting state for one account, from the PBX's NOTIFY. */
