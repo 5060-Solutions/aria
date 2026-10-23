@@ -156,7 +156,7 @@ export interface ActiveCall {
    *
    * Not the account's srtpMode: that is a preference, and the indicator used
    * to read it directly — so it showed a padlock whenever SRTP was configured,
-   * including for DTLS (unimplemented) and whenever the far end answered
+   * including for the since-removed DTLS option and whenever the far end answered
    * without a crypto line.
    */
   srtpActive?: boolean;

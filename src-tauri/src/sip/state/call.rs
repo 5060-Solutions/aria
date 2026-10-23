@@ -238,7 +238,7 @@ pub struct CallFSM {
     /// Set when the media session starts, from what SRTP negotiation produced
     /// — not from configuration. The call screen used to derive its padlock
     /// from `srtp_mode`, so it claimed encryption whenever the setting was on,
-    /// including for DTLS (unimplemented) and whenever a peer stripped the
+    /// including for the since-removed DTLS option and whenever a peer stripped the
     /// crypto line from its answer.
     pub srtp_active: bool,
     /// Remote Contact URI from 200 OK (the URI to send BYE/re-INVITE to)

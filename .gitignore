@@ -29,3 +29,6 @@ dist-ssr
 
 # Signing keys and certificates
 keys/
+
+# Agent worktrees live inside the checkout
+.claude/worktrees/

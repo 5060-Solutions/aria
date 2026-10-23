@@ -39,7 +39,6 @@
     "recordingInProgress": "Recording in progress",
     "encrypted": "Encrypted",
     "encryptionSdes": "SDES-SRTP",
-    "encryptionDtls": "DTLS-SRTP",
     "notEncrypted": "Not encrypted",
     "answer": "Answer",
     "decline": "Decline"
