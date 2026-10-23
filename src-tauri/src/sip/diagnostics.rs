@@ -10,6 +10,10 @@ use super::SipEvent;
 pub enum MessageDirection {
     Sent,
     Received,
+    /// Not a SIP message: something the app itself did that belongs in the
+    /// trace next to the signalling it caused, such as an assistant placing
+    /// or hanging up a call over MCP. Exports that expect SIP skip these.
+    App,
 }
 
 /// A single SIP message log entry
@@ -25,6 +29,22 @@ pub struct DiagnosticLog {
     /// SIP Call-ID header value, if present (links SIP messages to calls)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
+}
+
+impl DiagnosticLog {
+    /// An app-level entry (see `MessageDirection::App`). `detail` is what the
+    /// expanded entry shows; `summary` is its one-line heading.
+    pub fn app_event(account_id: &str, summary: &str, detail: &str) -> Self {
+        Self {
+            timestamp: now_millis(),
+            account_id: account_id.to_string(),
+            direction: MessageDirection::App,
+            remote_addr: "aria".to_string(),
+            summary: summary.to_string(),
+            raw: detail.to_string(),
+            call_id: None,
+        }
+    }
 }
 
 /// Extract the Call-ID header from a raw SIP message.

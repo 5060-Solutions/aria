@@ -70,6 +70,41 @@ stays light.
    PBX, open **Advanced** and set **Auth Realm** to the realm your provider
    gives you.
 
+## Assistants (MCP)
+
+Aria can run a small [MCP](https://modelcontextprotocol.io) server on your
+computer so an AI assistant such as Claude Code or Claude Desktop can look at
+the phone for you: which accounts are registered, which calls are up, and the
+live SIP trace — enough to answer "why won't it register?" from the actual
+messages rather than a guess. It is off by default, listens on `127.0.0.1`
+only, and never hands out passwords: digest responses and SRTP keys are
+redacted from every trace it returns.
+
+Two switches in **Settings → Assistants (MCP)**:
+
+- **Allow local assistants to read status and traces** turns the server on
+  (default port 48060). This gives read-only tools: `get_status`,
+  `list_accounts`, `list_calls`, `get_sip_trace`, `list_recordings` and
+  `explain_last_failure`.
+- **Allow assistants to place and control calls** adds `place_call`,
+  `answer_call`, `hangup_call`, `send_dtmf`, `hold_call` and `transfer_call`.
+  Even then, every `place_call` pops up a dialog in Aria — *"An assistant
+  wants to call 1234 from Work"* — and nothing is dialled unless you click
+  **Allow** within 30 seconds. Allowed and denied requests are both written
+  to the Diagnostics panel.
+
+Every request must carry a bearer token. Aria generates one the first time
+you turn the server on and keeps it in the OS keychain; the Settings section
+shows it masked with **Copy** and **Regenerate** buttons. The same section
+gives you the one-line setup for Claude Code, ready to copy:
+
+```bash
+claude mcp add --transport http aria http://127.0.0.1:48060/mcp --header "Authorization: Bearer <token>"
+```
+
+The switches are stored in `mcp.json` in the app's data directory
+(`{ "enabled": false, "port": 48060, "allow_call_control": false }`).
+
 ## How it's built
 
 ```

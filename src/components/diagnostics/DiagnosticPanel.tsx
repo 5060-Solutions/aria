@@ -40,7 +40,8 @@ import { log } from "../../utils/log";
 interface DiagnosticLog {
   timestamp: number;
   accountId: string;
-  direction: "sent" | "received";
+  /** "app" is something Aria did (e.g. an MCP call-control action), not SIP. */
+  direction: "sent" | "received" | "app";
   remoteAddr: string;
   summary: string;
   raw: string;
@@ -1464,7 +1465,7 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
       >
         {selectedAccount ? (
           viewMode === "ladder" ? (
-            <SipLadderDiagram logs={filteredLogs} />
+            <SipLadderDiagram logs={filteredLogs.filter((l) => l.direction !== "app")} />
           ) : (
             <AccountTabContent
               account={selectedAccount}

@@ -117,6 +117,10 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
     write_u32le(&mut buf, 228);         // LINKTYPE_IPV4
 
     for log in logs {
+        // App-level entries are not SIP and have no peer to attribute them to.
+        if matches!(log.direction, sip::diagnostics::MessageDirection::App) {
+            continue;
+        }
         let payload = log.raw.as_bytes();
         let sip_len = payload.len();
         let udp_len = 8 + sip_len;
@@ -187,7 +191,7 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
 /// link decodes to a literal line break, which the builder would write
 /// straight into the INVITE: header injection. Whitespace has no place in a
 /// URI either.
-fn checked_target(uri: &str) -> Result<&str, String> {
+pub(crate) fn checked_target(uri: &str) -> Result<&str, String> {
     let uri = uri.trim();
     if uri.is_empty() {
         return Err("No number or address to call".to_string());
@@ -924,6 +928,7 @@ pub async fn export_sip_log_text(
         let dir = match log.direction {
             sip::diagnostics::MessageDirection::Sent => ">>> SENT",
             sip::diagnostics::MessageDirection::Received => "<<< RECEIVED",
+            sip::diagnostics::MessageDirection::App => "--- APP",
         };
         let ts = chrono_format(log.timestamp);
         out.push_str(&format!("── {} {} {} ──\n{}\n\n", dir, ts, log.remote_addr, log.raw));

@@ -4,6 +4,7 @@ import { useAppStore } from "../../stores/appStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
 import { useUpdateOnLaunch } from "../../hooks/useUpdater";
 import { UpdateDialog } from "../update/UpdateDialog";
+import { AssistantCallDialog } from "../mcp/AssistantCallDialog";
 import { NavRail } from "./NavRail";
 import { StatusBar } from "./StatusBar";
 import { Dialer } from "../dialer/Dialer";
@@ -87,6 +88,7 @@ export function AppShell() {
         </Box>
       </Box>
       <UpdateDialog />
+      <AssistantCallDialog />
     </Box>
   );
 }
