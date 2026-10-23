@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { placeCall } from "../../hooks/useSip";
-import { toSipUri, formatDialNumber } from "../../utils/sipUri";
+import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "./DialerButton";
 import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
 
@@ -138,8 +138,7 @@ export function Dialer() {
   const handleCall = useCallback(async () => {
     if (!dialInput.trim() || !activeAccountId || !activeAccount) return;
     
-    const numberToCall = formatDialNumber(dialInput, activeAccount, defaultCountry);
-    const uri = toSipUri(numberToCall, activeAccount.domain);
+    const uri = dialUri(dialInput, activeAccount, defaultCountry);
 
     // placeCall removes the call again if it could not be placed.
     await placeCall({

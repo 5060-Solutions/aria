@@ -32,7 +32,7 @@ import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { playRecording, exportCallPcap } from "../../hooks/useSip";
-import { toSipUri } from "../../utils/sipUri";
+import { dialUri } from "../../utils/sipUri";
 import type { CallHistoryEntry } from "../../types/sip";
 import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
 
@@ -138,7 +138,7 @@ export function CallHistory() {
     }
 
     const numberInfo = getNumberInfo(uri, defaultCountry);
-    const fullUri = toSipUri(uri, activeAccount.domain);
+    const fullUri = dialUri(uri, activeAccount, defaultCountry);
 
     const { placeCall } = await import("../../hooks/useSip");
     // placeCall removes the call again if it could not be placed.

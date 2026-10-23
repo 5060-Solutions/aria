@@ -25,7 +25,7 @@ import { useAppStore } from "../../stores/appStore";
 import CallIcon from "@mui/icons-material/Call";
 import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceMerge, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
 import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
-import { toSipUri } from "../../utils/sipUri";
+import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
 
@@ -259,9 +259,12 @@ export function CallControls() {
     try {
       await sipHold(activeCall.id, true);
       updateCall(activeCall.id, { held: true, state: "held" });
-      const domain = accounts.find((a) => a.id === activeCall.accountId)?.domain ?? "";
+      const account = accounts.find((a) => a.id === activeCall.accountId);
       await placeCall(
-        { uri: toSipUri(newCallUri, domain), accountId: activeCall.accountId },
+        {
+          uri: dialUri(newCallUri, account, useAppStore.getState().defaultCountry),
+          accountId: activeCall.accountId,
+        },
         { asAdditionalCall: true },
       );
       setAddCallDialogOpen(false);
@@ -274,9 +277,12 @@ export function CallControls() {
   const handleTransfer = async () => {
     if (!transferUri.trim()) return;
     setTransferring(true);
-    const domain = accounts.find((a) => a.id === activeCall.accountId)?.domain ?? "";
+    const account = accounts.find((a) => a.id === activeCall.accountId);
     try {
-      await sipTransferBlind(activeCall.id, toSipUri(transferUri, domain));
+      await sipTransferBlind(
+        activeCall.id,
+        dialUri(transferUri, account, useAppStore.getState().defaultCountry),
+      );
       // The backend ends the call when the transfer is accepted; closing the
       // dialog is enough here.
       setTransferDialogOpen(false);
