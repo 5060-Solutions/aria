@@ -104,7 +104,9 @@ impl McpConfig {
 
 // ── Token ───────────────────────────────────────────────────────────────────
 
+#[cfg(not(feature = "dev-insecure"))]
 const KEYRING_SERVICE: &str = "aria-mcp";
+#[cfg(not(feature = "dev-insecure"))]
 const KEYRING_USER: &str = "token";
 
 /// A fresh bearer token: 32 random bytes, base64url without padding.
