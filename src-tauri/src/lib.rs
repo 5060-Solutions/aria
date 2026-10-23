@@ -1,6 +1,7 @@
 mod ai;
 mod audio_test;
 mod commands;
+mod mcp;
 mod sip;
 mod system_contacts;
 
@@ -175,6 +176,22 @@ pub fn run() {
                 ),
             }
 
+            // The local MCP server for assistants. Off unless the user turned
+            // it on; the state is managed either way so Settings can turn it
+            // on later. Spawned, not blocked on: binding the port and reading
+            // the token from the keychain must not hold up the window.
+            match app.path().app_data_dir() {
+                Ok(data_dir) => {
+                    let sip_manager = app.state::<sip::SipManager>().inner().clone();
+                    app.manage(mcp::McpState::new(app.handle().clone(), sip_manager, data_dir));
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        handle.state::<mcp::McpState>().start_if_enabled().await;
+                    });
+                }
+                Err(e) => log::error!("Could not resolve app data dir; MCP server is unavailable: {}", e),
+            }
+
             // Listen for health probe requests from frontend (network/visibility changes)
             let probe_manager = app.state::<sip::SipManager>().inner().clone();
             app.listen("probe-health", move |_event| {
@@ -253,6 +270,11 @@ pub fn run() {
             commands::ai_clear_insights,
             commands::ai_auto_transcribe,
             commands::ai_set_auto_transcribe,
+            mcp::mcp_get_config,
+            mcp::mcp_set_config,
+            mcp::mcp_get_token,
+            mcp::mcp_rotate_token,
+            mcp::mcp_call_decision,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Aria")
