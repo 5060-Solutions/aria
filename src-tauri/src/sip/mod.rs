@@ -15,6 +15,8 @@ pub mod transfer;
 pub mod transport;
 #[cfg(test)]
 mod voip_stack_harness;
+#[cfg(test)]
+mod pbx_e2e;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
