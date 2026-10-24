@@ -486,7 +486,7 @@ async fn a_retransmitted_200_is_acked_but_not_answered_twice() {
     let (pbx, seen) = start_pbx_with(InviteReply::AnswerTwiceThenHangUp).await;
     let (mgr, mut rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
 
     let mut states = Vec::new();
     let mut ended_direction = None;
@@ -668,7 +668,7 @@ async fn a_challenged_invite_is_acked_on_its_own_branch_and_resent_challenges_ar
     let (pbx, seen) = start_pbx_with(InviteReply::ChallengeThenAnswer).await;
     let (mgr, mut rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
 
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
     assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
@@ -709,7 +709,7 @@ async fn a_200_that_crosses_our_cancel_is_acked_and_then_byed() {
     let (pbx, seen) = start_pbx_with(InviteReply::AnswerOnCancel).await;
     let (mgr, mut rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
     call_states_until(&mut rx, &call_id, "ringing", Duration::from_secs(5)).await;
 
     mgr.hangup(&call_id).await.expect("cancelled");
