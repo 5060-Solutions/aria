@@ -33,6 +33,7 @@
 //! softphone rather than the PBX's relay.
 
 use super::account::{default_codec_preferences, AccountConfig, SrtpMode};
+use super::diagnostics::MessageDirection;
 use super::transport::TransportType;
 use super::{RegistrationState, SipEvent, SipManager};
 use std::time::Duration;
@@ -266,6 +267,45 @@ impl Endpoint {
         Ok(stats)
     }
 
+    /// Every SDP `c=` line and `m=` port this side put in the messages it
+    /// sent whose start line begins with `start` (a method, or `SIP/2.0 200`)
+    /// in the dialog `sip_call_id` must be the same: the media address decided
+    /// for a call is not allowed to change between the INVITE and its
+    /// authenticated retry, or between the first answer and a re-INVITE's.
+    /// Prints what it found, so a passing run shows the addresses too.
+    async fn assert_consistent_sdp(&self, sip_call_id: &str, start: &str) -> Step<Vec<(String, String)>> {
+        let found: Vec<(String, String)> = self
+            .mgr
+            .get_diagnostics()
+            .await
+            .into_iter()
+            .filter(|log| {
+                matches!(log.direction, MessageDirection::Sent)
+                    && log.call_id.as_deref() == Some(sip_call_id)
+                    && log.raw.starts_with(start)
+                    && log.raw.contains("\r\nm=audio ")
+            })
+            .map(|log| {
+                let body = log.raw.split("\r\n\r\n").nth(1).unwrap_or_default();
+                let line = |prefix: &str| {
+                    body.lines().find(|l| l.starts_with(prefix)).unwrap_or_default().to_owned()
+                };
+                (line("c="), line("m="))
+            })
+            .collect();
+        for (c, m) in &found {
+            eprintln!("[{}] sent {start}: {c}  {m}", self.label);
+        }
+        check!(!found.is_empty(), "{}: sent no {start} with SDP for {sip_call_id}", self.label);
+        let (c0, m0) = &found[0];
+        let port = |m: &str| m.split_whitespace().nth(1).unwrap_or_default().to_owned();
+        for (c, m) in &found[1..] {
+            check!(c == c0, "{}: {start} changed its media address: {c0} then {c}", self.label);
+            check!(port(m) == port(m0), "{}: {start} changed its media port: {m0} then {m}", self.label);
+        }
+        Ok(found)
+    }
+
     /// Print this side's SIP trace, for a failed run.
     async fn dump_trace(&self) {
         eprintln!("---- SIP trace, endpoint {} ----", self.label);
@@ -383,6 +423,17 @@ async fn inbound_call_through_the_pbx() {
             tokio::time::sleep(Duration::from_secs(3)).await;
             a.assert_media_flowing(&a_call).await?;
             b.assert_media_flowing(&b_call).await?;
+
+            // The PBX challenges the INVITE, so B sent it twice. Both must
+            // offer the same media address: the retry used to rebuild its
+            // SDP from the registration-time address and flip `c=` from the
+            // STUN-discovered public address to the LAN one.
+            let b_sip_call_id = b.status(&b_call).await?.sip_call_id;
+            b.assert_consistent_sdp(&b_sip_call_id, "INVITE").await?;
+            // Likewise every 200 OK A sent for an INVITE in its dialog: the
+            // first answer and any re-INVITE refresh the PBX sent meanwhile.
+            let a_sip_call_id = a.status(&a_call).await?.sip_call_id;
+            a.assert_consistent_sdp(&a_sip_call_id, "SIP/2.0 200").await?;
 
             // DTMF from the caller. rtp-engine has no receive-side DTMF
             // counter, so this is only asserted not to fail.

@@ -50,7 +50,7 @@
 //!                              └─────────────┘
 //! ```
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Instant;
 
 use super::super::media::MediaSession;
@@ -216,6 +216,17 @@ pub struct CallFSM {
     pub cseq: u32,
     /// Local RTP port
     pub local_rtp_port: u16,
+    /// The connection address (`c=`) our SDP for this call carries.
+    ///
+    /// Decided once, when the first offer or answer is built — from a per-call
+    /// STUN probe, the registrar's view of us, or the local interface — and
+    /// reused by everything that rebuilds the SDP later: the authenticated
+    /// INVITE after a 401/407, the 200 OK to a re-INVITE. Those used to
+    /// recompute it from the account's registration-time address alone, so
+    /// the retry could offer a different address from the INVITE it replaced
+    /// (the LAN address after a STUN-discovered public one), and a server
+    /// that sends RTP where the SDP says got one-way audio.
+    pub sdp_public_ip: Option<IpAddr>,
     /// Remote RTP address
     pub remote_rtp_addr: Option<SocketAddr>,
     /// Last INVITE branch (for CANCEL matching)
@@ -282,6 +293,7 @@ impl CallFSM {
             to_tag: None,
             cseq: 1,
             local_rtp_port,
+            sdp_public_ip: None,
             remote_rtp_addr: None,
             last_invite_branch: Some(invite_branch.clone()),
             invite_cseq: 1,
@@ -310,6 +322,7 @@ impl CallFSM {
             to_tag: Some(params.to_tag),
             cseq: 1,
             local_rtp_port: params.local_rtp_port,
+            sdp_public_ip: None,
             remote_rtp_addr: None,
             last_invite_branch: None,
             invite_cseq: 1,

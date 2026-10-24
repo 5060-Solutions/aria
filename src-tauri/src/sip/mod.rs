@@ -1170,14 +1170,12 @@ impl SipManager {
         // private network, neither (see `media::sdp_address`). This was
         // `Some(stun).or_else(..)`, which is always Some — so the fallback never
         // ran, and a failed STUN lookup's `0.0.0.0` went into the SDP (#4).
-        let public_ip = Some(
-            media::sdp_address(
-                local_addr.ip(),
-                stun_public_ip.or_else(|| public_addr.map(|a| a.ip())),
-                Some(server_addr.ip()),
-            )
-            .to_string(),
+        let sdp_ip = media::sdp_address(
+            local_addr.ip(),
+            stun_public_ip.or_else(|| public_addr.map(|a| a.ip())),
+            Some(server_addr.ip()),
         );
+        let public_ip = Some(sdp_ip.to_string());
         let (invite, local_srtp_key) = builder::build_invite_with_public_ip(
             &account_config, uri, local_addr, rtp_port, &call_id, 1, &from_tag, None,
             public_ip.as_deref(),
@@ -1188,6 +1186,8 @@ impl SipManager {
         let local_uri = format!("sip:{}@{}", account_config.username, account_config.domain);
         let mut call = CallFSM::new_outbound(&aid, uri, call_id, from_tag, rtp_port, branch, local_uri);
         call.local_srtp_key = local_srtp_key;
+        // The address this offer carries; the authenticated retry reuses it.
+        call.sdp_public_ip = Some(sdp_ip);
         if let Some(id) = call_id_override {
             call.id = id;
         }
@@ -1550,9 +1550,8 @@ impl SipManager {
                 }
             }
         };
-        let public_ip = Some(
-            media::sdp_address(local_addr.ip(), stun_ip, Some(server_addr.ip())).to_string(),
-        );
+        let sdp_ip = media::sdp_address(local_addr.ip(), stun_ip, Some(server_addr.ip()));
+        let public_ip = Some(sdp_ip.to_string());
 
         // Our crypto line only when the session actually came up encrypted,
         // so the answer never claims SRTP the media is not using.
@@ -1588,6 +1587,9 @@ impl SipManager {
             if srtp_active {
                 call.local_srtp_key = our_srtp_key.clone();
             }
+            // And the address this answer carries, so a re-INVITE is answered
+            // with the same one the media is already flowing to.
+            call.sdp_public_ip = Some(sdp_ip);
 
             // Only once the session is on the call, so a recording is never
             // started for a call that is already gone.

@@ -179,14 +179,12 @@ pub async fn handle_incoming_refer(
         };
 
         // Use STUN-discovered public IP for SDP, fallback to registration-discovered public IP
-        let public_ip = Some(
-            super::media::sdp_address(
-                local_addr.ip(),
-                stun_public_ip.or_else(|| public_addr.map(|a| a.ip())),
-                Some(server_addr.ip()),
-            )
-            .to_string(),
+        let sdp_ip = super::media::sdp_address(
+            local_addr.ip(),
+            stun_public_ip.or_else(|| public_addr.map(|a| a.ip())),
+            Some(server_addr.ip()),
         );
+        let public_ip = Some(sdp_ip.to_string());
         let (invite, local_srtp_key) = builder::build_invite_with_public_ip(
             &account_config,
             &refer_to,
@@ -203,6 +201,7 @@ pub async fn handle_incoming_refer(
         let local_uri = format!("sip:{}@{}", account_config.username, account_config.domain);
         let mut new_call = CallFSM::new_outbound(account_id, &refer_to, new_call_id, new_from_tag, rtp_port, branch, local_uri);
         new_call.local_srtp_key = local_srtp_key;
+        new_call.sdp_public_ip = Some(sdp_ip);
         let new_id = new_call.id.clone();
 
         let send_result = transport.send_to(invite.as_bytes(), server_addr).await;

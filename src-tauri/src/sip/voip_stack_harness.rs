@@ -700,6 +700,48 @@ async fn a_challenged_invite_is_acked_on_its_own_branch_and_resent_challenges_ar
     assert!(s.cancels.is_empty(), "no CANCEL for an answered call");
 }
 
+/// The SDP line starting with `prefix` in a message's body.
+fn sdp_line<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
+    msg.split("\r\n\r\n").nth(1)?.lines().find(|l| l.starts_with(prefix))
+}
+
+/// The authenticated INVITE after a 407 must offer the same media address and
+/// port as the INVITE it replaces. The first offer's address comes from a
+/// per-call STUN probe; the retry used to rebuild it from the account's
+/// registration-time address alone, so against a public PBX the `c=` line
+/// flipped from the STUN-discovered public address to the LAN one between the
+/// two INVITEs, and a server that sends RTP where the SDP says got one-way
+/// audio. On loopback every address rule lands on 127.0.0.1, so this pins the
+/// invariant rather than the NAT case; `pbx_e2e::inbound_call_through_the_pbx`
+/// checks it against a real PBX.
+#[tokio::test]
+async fn an_authenticated_invite_offers_the_same_media_address_as_the_first() {
+    let (pbx, seen) = start_pbx_with(InviteReply::ChallengeThenAnswer).await;
+    let (mgr, mut rx) = manager();
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+
+    {
+        let s = seen.lock().unwrap();
+        assert_eq!(s.invites.len(), 2, "one INVITE, one authenticated retry");
+        let (first, retry) = (&s.invites[0], &s.invites[1]);
+        assert!(header(retry, "Proxy-Authorization").is_some(), "the second INVITE carries credentials");
+        for prefix in ["c=", "m="] {
+            let a = sdp_line(first, prefix).unwrap_or_else(|| panic!("first INVITE has no {prefix} line"));
+            let b = sdp_line(retry, prefix).unwrap_or_else(|| panic!("retried INVITE has no {prefix} line"));
+            assert_eq!(a, b, "the authenticated INVITE changed its {prefix} line");
+        }
+        // The origin's session id is fresh per offer; its address is not.
+        let origin_addr = |msg: &str| sdp_line(msg, "o=").and_then(|o| o.split_whitespace().last()).map(str::to_owned);
+        assert_eq!(origin_addr(first), origin_addr(retry), "the authenticated INVITE changed its o= address");
+        assert_eq!(sdp_line(first, "c="), Some("c=IN IP4 127.0.0.1"));
+    }
+
+    mgr.hangup(&call_id).await.expect("hung up");
+}
+
 /// The caller hangs up as the callee answers. Our CANCEL and their 200 OK
 /// cross: the 200 confirms a dialog the CANCEL cannot touch, so after the ACK
 /// a BYE must follow (RFC 3261 §9.1, §15). Before, the 200 was ACKed and left

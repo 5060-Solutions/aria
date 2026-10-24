@@ -43,6 +43,7 @@ pub async fn handle_incoming_request(
                         (
                             c.id.clone(),
                             c.local_rtp_port,
+                            c.sdp_public_ip,
                             c.is_incoming(),
                             c.is_established(),
                             c.to_tag.clone().unwrap_or_default(),
@@ -50,7 +51,7 @@ pub async fn handle_incoming_request(
                     })
                 };
 
-                if let Some((call_internal_id, rtp_port, ringing_here, established, our_tag)) = existing {
+                if let Some((call_internal_id, rtp_port, answered_ip, ringing_here, established, our_tag)) = existing {
                     let in_dialog = extract_header(text, "To").is_some_and(|to| to.contains("tag="));
                     let s = state.read().await;
                     let Some(account) = s.get_account(account_id) else { return };
@@ -83,15 +84,20 @@ pub async fn handle_incoming_request(
                             // with; redirecting it needs support in rtp-engine.
                             log::info!("re-INVITE offers RTP target {} for call {}", target, call_internal_id);
                         }
-                        // The same address rules as the original offer/answer,
-                        // so a re-INVITE behind NAT does not advertise a
-                        // private address the PBX cannot reach.
-                        let media_ip = crate::sip::media::sdp_address(
-                            la.ip(),
-                            account.public_addr.map(|a| a.ip()),
-                            account.server_addr.map(|a| a.ip()),
-                        )
-                        .to_string();
+                        // The address the call's own offer/answer carried, so
+                        // the refresh keeps media where it already flows. The
+                        // registration-time fallback is for a call that was
+                        // set up before the address was recorded; recomputing
+                        // from it alone could move `c=` to the LAN address.
+                        let media_ip = answered_ip
+                            .unwrap_or_else(|| {
+                                crate::sip::media::sdp_address(
+                                    la.ip(),
+                                    account.public_addr.map(|a| a.ip()),
+                                    account.server_addr.map(|a| a.ip()),
+                                )
+                            })
+                            .to_string();
                         // Keep the call's crypto on a session refresh: an SRTP
                         // call answered RTP/AVP here would be torn down by the
                         // PBX (media_encryption=sdes) or lose audio. Reuse the

@@ -630,14 +630,15 @@ pub async fn handle_invite_response(
                         call.call_id_header.clone(),
                         call.from_tag.clone(),
                         call.local_rtp_port,
+                        call.sdp_public_ip,
                         account.public_addr,
                         call.local_srtp_key.clone(),
                     )
                 })
             };
 
-            let (_account_id, account_config, local_addr, server_addr, transport, remote_uri, sip_call_id, from_tag, rtp_port, public_addr, _existing_srtp_key) = match retry_data {
-                Some((aid, ac, Some(la), Some(sa), Some(t), ru, sci, ft, rp, pa, sk)) => (aid, ac, la, sa, t, ru, sci, ft, rp, pa, sk),
+            let (_account_id, account_config, local_addr, server_addr, transport, remote_uri, sip_call_id, from_tag, rtp_port, offered_ip, public_addr, _existing_srtp_key) = match retry_data {
+                Some((aid, ac, Some(la), Some(sa), Some(t), ru, sci, ft, rp, oi, pa, sk)) => (aid, ac, la, sa, t, ru, sci, ft, rp, oi, pa, sk),
                 _ => return,
             };
 
@@ -674,16 +675,22 @@ pub async fn handle_invite_response(
                 AuthHeaderType::Authorization
             };
 
-            // Use public IP in SDP for NAT traversal if discovered during registration
-            // The same decision as the INVITE being retried, so the offer
-            // does not change address between the two attempts.
+            // The address the INVITE being retried offered, so the offer does
+            // not change between the two attempts. The first INVITE's address
+            // comes from a per-call STUN probe; rebuilding it here from the
+            // registration-time address alone (the fallback, for a call
+            // placed before the field existed) flipped `c=` from the public
+            // address to the LAN one on the authenticated INVITE.
             let public_ip = Some(
-                crate::sip::media::sdp_address(
-                    local_addr.ip(),
-                    public_addr.map(|a| a.ip()),
-                    Some(server_addr.ip()),
-                )
-                .to_string(),
+                offered_ip
+                    .unwrap_or_else(|| {
+                        crate::sip::media::sdp_address(
+                            local_addr.ip(),
+                            public_addr.map(|a| a.ip()),
+                            Some(server_addr.ip()),
+                        )
+                    })
+                    .to_string(),
             );
             let (invite, new_srtp_key) = build_invite_with_public_ip(
                 &account_config,
