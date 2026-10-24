@@ -37,10 +37,9 @@ pub fn run() {
         .format_timestamp_millis()
         .init();
 
-    // Enter Tauri's Tokio runtime context so synchronous startup code can invoke tokio::spawn
-    let _runtime_guard = tauri::async_runtime::handle().inner().enter();
-
-    // Create manager and take receiver before moving into Tauri
+    // Create manager and take receiver before moving into Tauri. This runs on
+    // the bare main thread with no Tokio runtime: construction spawns nothing,
+    // and the manager's background loops start in setup() below.
     let (manager, event_rx) = sip::SipManager::new_with_receiver();
     let audio_test_manager = audio_test::AudioTestManager::new();
 
@@ -80,6 +79,16 @@ pub fn run() {
         .manage(manager)
         .manage(audio_test_manager)
         .setup(move |app| {
+            // Start the manager's sweeper and timers. setup() itself runs on
+            // the main thread from the event loop's Ready handler, with no
+            // Tokio runtime in context (Tauri does not enter one), so the
+            // start goes through Tauri's runtime: inside this task `tokio::spawn`
+            // has a reactor. A bare call here would panic like v0.5.0 did.
+            let sip_manager = app.state::<sip::SipManager>().inner().clone();
+            tauri::async_runtime::spawn(async move {
+                sip_manager.start_background_tasks();
+            });
+
             // Set up event forwarding from SIP manager to frontend ONCE at startup
             let app_handle = app.handle().clone();
             

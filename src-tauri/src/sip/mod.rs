@@ -183,6 +183,9 @@ impl Default for Timing {
 pub struct SipManager {
     state: Arc<RwLock<ManagerState>>,
     event_tx: mpsc::UnboundedSender<SipEvent>,
+    /// Fired by the first `start_background_tasks`; shared by every clone so
+    /// the process-wide loops are started once however many handles exist.
+    background_tasks: Arc<std::sync::Once>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -516,12 +519,8 @@ impl SipManager {
     /// Create a new SipManager and return the event receiver separately.
     /// This allows the caller to set up event forwarding before managing the state.
     ///
-    /// Must be called with a Tokio runtime in context: the constructor spawns
-    /// the background sweeper and timers (see `new_with_timing`), so `tokio::spawn`
-    /// has to find a reactor. Tests get one from `#[tokio::test]`; `run()` in
-    /// `lib.rs` enters Tauri's runtime before calling this. v0.5.0 shipped without
-    /// that guard and panicked on launch ("there is no reactor running") — the
-    /// `smoke-launch` CI gate now launches the built binary to catch any recurrence.
+    /// Construction is pure: it needs no runtime and spawns nothing. The
+    /// background loops are started by `start_background_tasks`.
     pub fn new_with_receiver() -> (Self, mpsc::UnboundedReceiver<SipEvent>) {
         Self::new_with_timing(Timing::default())
     }
@@ -540,13 +539,32 @@ impl SipManager {
                 recordings_dir: None,
             })),
             event_tx,
+            background_tasks: Arc::new(std::sync::Once::new()),
         };
-        manager.start_ended_call_sweeper();
-        // Process-wide loops, started once. They used to be spawned by every
-        // `register()` call and never stopped.
-        manager.start_session_timer();
-        manager.start_subscribe_refresh_timer();
         (manager, event_rx)
+    }
+
+    /// Start the process-wide loops: the ended-call sweeper, the session
+    /// timer and the subscription refresh timer.
+    ///
+    /// Must be called from inside a Tokio runtime, once the manager is in
+    /// place — `setup()` in `lib.rs` does it from a task on Tauri's runtime,
+    /// and tests that need the loops do it from `#[tokio::test]`. Calling it
+    /// again is harmless: the loops are started exactly once per manager.
+    ///
+    /// The constructor used to spawn these, which made construction demand a
+    /// runtime it had no way to ask for: v0.5.0 built the manager on the bare
+    /// main thread and panicked on launch ("there is no reactor running").
+    /// Keeping the spawns out of construction is what makes
+    /// `manager_constructs_without_a_runtime` possible.
+    pub fn start_background_tasks(&self) {
+        self.background_tasks.call_once(|| {
+            self.start_ended_call_sweeper();
+            // Process-wide loops, started once. They used to be spawned by
+            // every `register()` call and never stopped.
+            self.start_session_timer();
+            self.start_subscribe_refresh_timer();
+        });
     }
 
     /// How long an ended call's record is kept.
@@ -3147,6 +3165,38 @@ fn connection_changed(current: &AccountConfig, next: &AccountConfig) -> bool {
     key(current) != key(next)
 }
 
+
+#[cfg(test)]
+mod construction_tests {
+    use super::SipManager;
+
+    /// The v0.5.0 launch panic: `run()` builds the manager on the bare main
+    /// thread, where there is no Tokio runtime. Construction must not need
+    /// one. Deliberately a plain `#[test]` on a fresh thread — `#[tokio::test]`
+    /// would supply the runtime the app does not have at that point and hide
+    /// the regression, which is why this test could not exist before the
+    /// spawns moved out of the constructor.
+    #[test]
+    fn manager_constructs_without_a_runtime() {
+        let built = std::thread::spawn(|| {
+            let (manager, _rx) = SipManager::new_with_receiver();
+            // A clone must not start anything either.
+            let _handle = manager.clone();
+        })
+        .join();
+        assert!(built.is_ok(), "constructing a SipManager without a runtime panicked");
+    }
+
+    /// `start_background_tasks` is the one place the loops start, and calling
+    /// it twice (or on a clone) must not start them twice.
+    #[tokio::test]
+    async fn background_tasks_start_once() {
+        let (manager, _rx) = SipManager::new_with_receiver();
+        manager.start_background_tasks();
+        manager.clone().start_background_tasks();
+        assert!(manager.background_tasks.is_completed());
+    }
+}
 
 #[cfg(test)]
 mod call_id_tests {
