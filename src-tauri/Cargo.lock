@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "aria"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "aria-ai-core",
  "axum",
