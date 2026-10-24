@@ -35,15 +35,19 @@ pub fn apply_negotiated_payload_types(session: &MediaSession, sdp: &str) {
 /// socket is bound to `0.0.0.0`, so a failed STUN lookup put `c=IN IP4 0.0.0.0`
 /// in the SDP. RFC 3264 reads that as "do not send me media", and a PBX that
 /// follows it withholds audio for the whole call (#4).
+///
+/// The port is held for the whole probe. This used to be
+/// `MediaSession::allocate_port()` — which binds the port, checks the RTCP
+/// port and closes both — followed by a second bind of the same port for the
+/// STUN probe. Anything that bound an ephemeral port in between could take
+/// it, and the second bind then failed the call with "address in use" before
+/// the INVITE went out (#15: the harness tests bind sockets in parallel, and
+/// Windows is where the freed port came straight back). `MediaSession::start`
+/// still rebinds the port when the call connects; that window is the
+/// engine's, and a failure there lands on a connected call's media, not on
+/// dialling.
 pub async fn allocate_port_with_stun() -> Result<(u16, Option<IpAddr>, Option<u16>), String> {
-    let rtp_port = MediaSession::allocate_port()
-        .await
-        .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
-
-    // A throwaway socket on the same port, for the STUN probe only.
-    let socket = UdpSocket::bind(format!("0.0.0.0:{}", rtp_port))
-        .await
-        .map_err(|e| format!("Failed to bind RTP socket for STUN: {}", e))?;
+    let (socket, rtp_port) = allocate_rtp_socket().await?;
 
     match discover_public_address(&socket).await {
         Ok(result) if !result.public_ip.is_unspecified() => {
@@ -64,6 +68,43 @@ pub async fn allocate_port_with_stun() -> Result<(u16, Option<IpAddr>, Option<u1
             Ok((rtp_port, None, None))
         }
     }
+}
+
+/// How many ephemeral ports to try for an even RTP port with a free RTCP
+/// port beside it before giving up. Each miss costs one bind.
+const RTP_PORT_ATTEMPTS: usize = 32;
+
+/// Bind an even ephemeral port whose odd neighbour (RTCP, RFC 3550 section
+/// 11) is also free, and return the socket still bound to it with the port.
+///
+/// The same rules as `MediaSession::allocate_port`, but the RTP socket is
+/// returned rather than closed, so the caller's use of the port cannot lose
+/// it to another bind in the meantime. The RTCP check socket is closed: it
+/// is only a probe, and the engine binds it itself when media starts.
+async fn allocate_rtp_socket() -> Result<(UdpSocket, u16), String> {
+    let mut last_error = None;
+    for _ in 0..RTP_PORT_ATTEMPTS {
+        let rtp_socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
+        let rtp_port = rtp_socket
+            .local_addr()
+            .map_err(|e| format!("Failed to allocate RTP port: {}", e))?
+            .port();
+        if rtp_port % 2 != 0 {
+            last_error = Some(format!("port {} is not usable for RTP", rtp_port));
+            continue;
+        }
+        match UdpSocket::bind(format!("0.0.0.0:{}", rtp_port + 1)).await {
+            Ok(_rtcp_probe) => return Ok((rtp_socket, rtp_port)),
+            Err(e) => last_error = Some(format!("RTCP port {} is taken: {}", rtp_port + 1, e)),
+        }
+    }
+    Err(format!(
+        "Failed to allocate RTP port: no even port with a free RTCP port in {} attempts (last: {})",
+        RTP_PORT_ATTEMPTS,
+        last_error.unwrap_or_default()
+    ))
 }
 
 /// The address to advertise for media (the SDP `c=` and `o=` lines).

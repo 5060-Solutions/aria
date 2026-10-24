@@ -101,6 +101,19 @@ impl Default for PbxOptions {
     }
 }
 
+/// A manager with its background loops running, as the app has one: the
+/// subscription refresh tests depend on the refresh timer. Construction alone
+/// starts nothing (see `SipManager::start_background_tasks`).
+fn manager() -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
+    manager_with(super::Timing::default())
+}
+
+fn manager_with(timing: super::Timing) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
+    let (mgr, rx) = SipManager::new_with_timing(timing);
+    mgr.start_background_tasks();
+    (mgr, rx)
+}
+
 /// Timers shrunk so a lost REGISTER, its deadline and the reconnect play out
 /// in a couple of seconds.
 fn fast_timing() -> super::Timing {
@@ -401,7 +414,7 @@ async fn register(mgr: &SipManager, cfg: AccountConfig) -> Result<(), String> {
 #[tokio::test]
 async fn a_wizard_saved_domain_realm_recovers_to_the_servers_realm() {
     let (pbx, seen) = start_pbx().await;
-    let (mgr, _rx) = SipManager::new_with_receiver();
+    let (mgr, _rx) = manager();
     let result = register(&mgr, account(pbx, Some("harness.lan"), PASSWORD)).await;
     let s = seen.lock().unwrap();
     assert!(result.is_ok(), "did not register: {result:?}; realms tried {:?}", s.register_realms);
@@ -412,7 +425,7 @@ async fn a_wizard_saved_domain_realm_recovers_to_the_servers_realm() {
 #[tokio::test]
 async fn a_blank_realm_registers_on_the_first_attempt() {
     let (pbx, seen) = start_pbx().await;
-    let (mgr, _rx) = SipManager::new_with_receiver();
+    let (mgr, _rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
     let s = seen.lock().unwrap();
     assert_eq!(s.register_realms, [REALM]);
@@ -424,7 +437,7 @@ async fn a_blank_realm_registers_on_the_first_attempt() {
 #[tokio::test]
 async fn a_wrong_password_still_fails_and_does_not_loop() {
     let (pbx, seen) = start_pbx().await;
-    let (mgr, _rx) = SipManager::new_with_receiver();
+    let (mgr, _rx) = manager();
     let result = register(&mgr, account(pbx, Some("harness.lan"), "wrong")).await;
     assert!(result.is_err(), "a wrong password registered");
     let s = seen.lock().unwrap();
@@ -440,7 +453,7 @@ async fn a_wrong_password_still_fails_and_does_not_loop() {
 #[tokio::test]
 async fn an_invite_to_a_lan_pbx_advertises_the_local_address() {
     let (pbx, seen) = start_pbx().await;
-    let (mgr, _rx) = SipManager::new_with_receiver();
+    let (mgr, _rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
     let _ = mgr.make_call("sip:11@harness.lan").await;
 
@@ -471,9 +484,9 @@ async fn an_invite_to_a_lan_pbx_advertises_the_local_address() {
 #[tokio::test]
 async fn a_retransmitted_200_is_acked_but_not_answered_twice() {
     let (pbx, seen) = start_pbx_with(InviteReply::AnswerTwiceThenHangUp).await;
-    let (mgr, mut rx) = SipManager::new_with_receiver();
+    let (mgr, mut rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
 
     let mut states = Vec::new();
     let mut ended_direction = None;
@@ -522,7 +535,7 @@ async fn registered_client(
     pbx: SocketAddr,
     seen: &Arc<Mutex<Seen>>,
 ) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, SocketAddr) {
-    let (mgr, rx) = SipManager::new_with_receiver();
+    let (mgr, rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
     let client = seen.lock().unwrap().client.expect("client address");
     (mgr, rx, client)
@@ -653,9 +666,9 @@ fn via_branch(msg: &str) -> String {
 #[tokio::test]
 async fn a_challenged_invite_is_acked_on_its_own_branch_and_resent_challenges_are_ignored() {
     let (pbx, seen) = start_pbx_with(InviteReply::ChallengeThenAnswer).await;
-    let (mgr, mut rx) = SipManager::new_with_receiver();
+    let (mgr, mut rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
 
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
     assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
@@ -694,9 +707,9 @@ async fn a_challenged_invite_is_acked_on_its_own_branch_and_resent_challenges_ar
 #[tokio::test]
 async fn a_200_that_crosses_our_cancel_is_acked_and_then_byed() {
     let (pbx, seen) = start_pbx_with(InviteReply::AnswerOnCancel).await;
-    let (mgr, mut rx) = SipManager::new_with_receiver();
+    let (mgr, mut rx) = manager();
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
     call_states_until(&mut rx, &call_id, "ringing", Duration::from_secs(5)).await;
 
     mgr.hangup(&call_id).await.expect("cancelled");
@@ -745,7 +758,7 @@ async fn wait_for_registration(
 #[tokio::test]
 async fn a_registration_refreshes_at_half_the_granted_expires_without_duplicate_requests() {
     let (pbx, seen, _) = start_pbx_with_options(PbxOptions { register_expires: 2, ..PbxOptions::default() }).await;
-    let (mgr, _rx) = SipManager::new_with_timing(fast_timing());
+    let (mgr, _rx) = manager_with(fast_timing());
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
 
     // Granted 2 s → refresh every 1 s (the floor). Three should land in 3.5 s.
@@ -772,7 +785,7 @@ async fn a_lost_refresh_reconnects_and_keeps_refreshing_afterwards() {
     let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
     let drop_next = opts.drop_next_register.clone();
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
-    let (mgr, mut rx) = SipManager::new_with_timing(fast_timing());
+    let (mgr, mut rx) = manager_with(fast_timing());
     let cfg = account(pbx, None, PASSWORD);
     let id = cfg.id.clone();
     register(&mgr, cfg).await.expect("registered");
@@ -812,7 +825,7 @@ async fn a_lost_refresh_reconnects_and_keeps_refreshing_afterwards() {
 #[tokio::test]
 async fn unregistering_answers_the_challenge_and_clears_the_binding() {
     let (pbx, seen, _) = start_pbx_with_options(PbxOptions::default()).await;
-    let (mgr, mut rx) = SipManager::new_with_timing(fast_timing());
+    let (mgr, mut rx) = manager_with(fast_timing());
     let cfg = account(pbx, None, PASSWORD);
     let id = cfg.id.clone();
     register(&mgr, cfg).await.expect("registered");
@@ -840,7 +853,7 @@ async fn unregistering_answers_the_challenge_and_clears_the_binding() {
 #[tokio::test]
 async fn a_subscription_refresh_stays_in_the_dialog_and_follows_the_granted_expires() {
     let (pbx, seen, _) = start_pbx_with_options(PbxOptions { subscribe_expires: 2, ..PbxOptions::default() }).await;
-    let (mgr, _rx) = SipManager::new_with_timing(fast_timing());
+    let (mgr, _rx) = manager_with(fast_timing());
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
 
     mgr.subscribe_presence("sip:1002@harness.lan", super::state::EventType::Dialog)
@@ -868,7 +881,7 @@ async fn a_subscription_refresh_stays_in_the_dialog_and_follows_the_granted_expi
 #[tokio::test]
 async fn a_subscribe_that_is_always_challenged_is_abandoned() {
     let (pbx, seen, _) = start_pbx_with_options(PbxOptions { reject_subscribe_auth: true, ..PbxOptions::default() }).await;
-    let (mgr, _rx) = SipManager::new_with_timing(fast_timing());
+    let (mgr, _rx) = manager_with(fast_timing());
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
 
     mgr.subscribe_presence("sip:1003@harness.lan", super::state::EventType::Dialog)

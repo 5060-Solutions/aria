@@ -147,6 +147,8 @@ struct Harness {
 impl Harness {
     async fn start() -> Self {
         let (manager, events) = SipManager::new_with_receiver();
+        // As the app runs it: setup() starts the loops after construction.
+        manager.start_background_tasks();
         let settings = Arc::new(RwLock::new(ToolSettings::default()));
         let consent = Arc::new(ConsentRegistry::new());
         let sink = Arc::new(RecordingSink::default());
