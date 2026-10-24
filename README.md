@@ -159,6 +159,32 @@ pnpm tauri build --features ai                    # with on-device transcription
 
 Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed.
 
+### End-to-end test against a PBX
+
+`src-tauri/src/sip/pbx_e2e.rs` registers two real `SipManager`s on two
+extensions of a live PBX and has one call the other through it: the inbound
+INVITE is answered, RTP is checked in both directions, DTMF is sent, the
+callee holds and resumes, the caller hangs up and the callee sees the BYE.
+Companion tests cover an outbound call to voicemail, a blind transfer and an
+SDES-SRTP offer. They are `#[ignore]`d — they need the network, audio devices
+and two extensions (a third for the transfer: this PBX only transfers to a
+registered extension) — so they run on demand, not in CI:
+
+```bash
+# existing extensions
+ARIA_E2E_PBX_DOMAIN=test.ariaroute.com ARIA_E2E_PBX_SERVER=sip.ariaroute.com \
+ARIA_E2E_EXT_A=1901 ARIA_E2E_PASS_A=… ARIA_E2E_EXT_B=1902 ARIA_E2E_PASS_B=… \
+scripts/pbx-e2e.sh
+
+# or let the script create and delete throwaway extensions
+ARIA_API_KEY=… ARIA_TENANT=… scripts/pbx-e2e.sh
+```
+
+The header of `scripts/pbx-e2e.sh` lists every variable. A failing test prints
+both endpoints' SIP traces. Extensions can also be created with the aria-pbx
+MCP server's `create_extension` tool and removed with
+`call_api extensions delete <id>`.
+
 ## License
 
 Free for non-commercial use. Commercial use requires a license. See [LICENSE](LICENSE).

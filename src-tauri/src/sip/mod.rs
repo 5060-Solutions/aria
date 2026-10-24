@@ -15,6 +15,8 @@ pub mod transfer;
 pub mod transport;
 #[cfg(test)]
 mod voip_stack_harness;
+#[cfg(test)]
+mod pbx_e2e;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -1636,24 +1638,24 @@ impl SipManager {
         ));
     }
 
+    /// Put the call on hold, or take it off.
+    ///
+    /// The FSM's `hold()`/`unhold()` move the call between Connected and
+    /// Held and mute the media. This used to feed the FSM `CallFSMEvent::Hold`
+    /// instead, which the transition table treats as a no-op, so the backend
+    /// kept reporting a held call as "connected"; the UI did not notice
+    /// because it tracks hold itself. The PBX end-to-end test asserts the
+    /// state from the status report, which is how it surfaced.
     pub async fn hold(&self, call_id: &str, hold: bool) -> Result<(), String> {
         let mut s = self.state.write().await;
-        if let Some((_, call)) = s.find_call_mut(call_id) {
-            if hold {
-                if let Some(media) = call.media_mut() {
-                    media.set_mute(true);
-                }
-                let _ = call.process(CallFSMEvent::Hold);
-            } else {
-                if let Some(media) = call.media_mut() {
-                    media.set_mute(false);
-                }
-                let _ = call.process(CallFSMEvent::Unhold);
-            }
-            Ok(())
-        } else {
-            Err("Call not found".into())
+        let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
+        let result = if hold { call.hold() } else { call.unhold() };
+        if let state::call::TransitionResult::InvalidTransition { from, event } = result {
+            // Already there, or not in a call that can be held: not an error
+            // for the caller, same as before.
+            log::warn!("Call {call_id}: {event} ignored in state {from}");
         }
+        Ok(())
     }
 
     pub async fn mute(&self, call_id: &str, mute: bool) -> Result<(), String> {
