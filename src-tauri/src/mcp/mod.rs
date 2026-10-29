@@ -111,9 +111,11 @@ const KEYRING_USER: &str = "token";
 
 /// A fresh bearer token: 32 random bytes, base64url without padding.
 pub fn generate_token() -> String {
-    use rand::RngCore;
+    use rand::TryRng;
     let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    rand::rngs::SysRng
+        .try_fill_bytes(&mut bytes)
+        .expect("the operating system random source is unavailable");
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
