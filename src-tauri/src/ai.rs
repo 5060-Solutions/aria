@@ -150,8 +150,8 @@ mod enabled {
     }
 
     fn getrandom(buf: &mut [u8]) -> Result<(), String> {
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(buf);
+        use rand::Rng;
+        rand::rng().fill_bytes(buf);
         Ok(())
     }
 

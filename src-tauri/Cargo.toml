@@ -46,7 +46,7 @@ env_logger = "0.11"
 # Shared SIP protocol utilities
 
 sip-5060 = { git = "https://github.com/5060-Solutions/5060-sip.git" }
-rand = "0.8"
+rand = "0.10"
 socket2 = "0.5"
 tokio-util = "0.7.18"
 bytes = "1.11.1"
@@ -58,7 +58,7 @@ rustls-pki-types = "1"
 rtp-engine = { git = "https://github.com/5060-Solutions/rtp-engine.git", features = ["device", "srtp", "opus", "audio-proc"] }
 
 # Filesystem utilities (for recordings directory)
-dirs = "6"
+dirs = "7"
 
 # On-device transcription. Optional: a build without `ai` keeps the plain
 # softphone, and the commands report it as unavailable at runtime.
@@ -70,7 +70,7 @@ aria-ai-core = { git = "https://github.com/5060-Solutions/aria-ai-core.git", opt
 ] }
 
 # HTTP client for Google People API
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 rustls-platform-verifier = "0.7.0"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
@@ -108,5 +108,5 @@ llama-cpp-sys-2 = { git = "https://github.com/5060-Solutions/aria-vendor.git", p
 webrtc-audio-processing-sys = { git = "https://github.com/5060-Solutions/webrtc-audio-processing.git", branch = "msvc-support" }
 
 [dev-dependencies]
-md-5 = "0.10"
+md-5 = "0.11"
 hex = "0.4"
