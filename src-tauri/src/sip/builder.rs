@@ -550,22 +550,37 @@ fn classify_payload(pt: u8, rtpmaps: &[RtpMap]) -> Option<OfferedPayload> {
         Some(map) if map.name == "telephone-event" => Some(OfferedPayload::TelephoneEvent(map.rate)),
         Some(map) => CodecType::from_name(&map.name)
             .filter(|codec| codec.clock_rate() == map.rate)
+            .filter(|codec| SUPPORTED_CODECS.contains(codec))
             .map(OfferedPayload::Codec),
         None if pt == TELEPHONE_EVENT_PT_8K => Some(OfferedPayload::TelephoneEvent(8000)),
-        None => CodecType::from_payload_type(pt).map(OfferedPayload::Codec),
+        None => CodecType::from_payload_type(pt)
+            .filter(|codec| SUPPORTED_CODECS.contains(codec))
+            .map(OfferedPayload::Codec),
     }
 }
 
+/// The codecs this softphone answers with. Named rather than "whatever
+/// rtp-engine knows", so a codec added to rtp-engine is not negotiated until
+/// the softphone chooses to carry it.
+const SUPPORTED_CODECS: [rtp_engine::CodecType; 4] = [
+    rtp_engine::CodecType::Pcmu,
+    rtp_engine::CodecType::Pcma,
+    rtp_engine::CodecType::G729,
+    rtp_engine::CodecType::Opus,
+];
+
 /// The `a=rtpmap` (and `a=fmtp`) lines for one codec on one payload type.
+///
+/// Keyed on the codec's SDP name rather than an exhaustive match on
+/// `CodecType`, so a codec added to rtp-engine gets a correct `name/clock`
+/// line instead of breaking the build.
 fn codec_rtpmap(pt: u8, codec: rtp_engine::CodecType) -> String {
-    use rtp_engine::CodecType;
-    match codec {
-        CodecType::Pcmu => format!("a=rtpmap:{pt} PCMU/8000\r\n"),
-        CodecType::Pcma => format!("a=rtpmap:{pt} PCMA/8000\r\n"),
-        CodecType::G729 => format!("a=rtpmap:{pt} G729/8000\r\na=fmtp:{pt} annexb=no\r\n"),
-        CodecType::Opus => {
+    match codec.name() {
+        "opus" => {
             format!("a=rtpmap:{pt} opus/48000/2\r\na=fmtp:{pt} minptime=10;useinbandfec=1\r\n")
         }
+        "G729" => format!("a=rtpmap:{pt} G729/8000\r\na=fmtp:{pt} annexb=no\r\n"),
+        name => format!("a=rtpmap:{pt} {name}/{}\r\n", codec.clock_rate()),
     }
 }
 
@@ -1220,6 +1235,22 @@ mod tests {
     }
 
     use super::*;
+
+    /// Every codec's rtpmap line, pinned: what the answer and offer carry.
+    #[test]
+    fn codec_rtpmap_lines() {
+        use rtp_engine::CodecType;
+        assert_eq!(codec_rtpmap(0, CodecType::Pcmu), "a=rtpmap:0 PCMU/8000\r\n");
+        assert_eq!(codec_rtpmap(8, CodecType::Pcma), "a=rtpmap:8 PCMA/8000\r\n");
+        assert_eq!(
+            codec_rtpmap(18, CodecType::G729),
+            "a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\n"
+        );
+        assert_eq!(
+            codec_rtpmap(111, CodecType::Opus),
+            "a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n"
+        );
+    }
 
     fn addr() -> SocketAddr {
         "192.168.1.100:5060".parse().unwrap()

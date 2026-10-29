@@ -688,12 +688,15 @@ pub async fn set_voice_processing(
     manager: State<'_, SipManager>,
     settings: VoiceProcessingSettings,
 ) -> Result<VoiceProcessingStatus, String> {
-    rtp_engine::audio_proc::set_default_config(rtp_engine::audio_proc::VoiceProcessorConfig {
-        echo_cancellation: settings.echo_cancellation,
-        noise_suppression: settings.noise_suppression,
-        noise_level: rtp_engine::audio_proc::NoiseLevel::Moderate,
-        gain_control: settings.gain_control,
-    });
+    // Start from rtp-engine's desktop preset and set only what the user
+    // controls, so a field rtp-engine adds later keeps the preset's value
+    // rather than breaking this.
+    let mut config = rtp_engine::audio_proc::VoiceProcessorConfig::desktop_default();
+    config.echo_cancellation = settings.echo_cancellation;
+    config.noise_suppression = settings.noise_suppression;
+    config.noise_level = rtp_engine::audio_proc::NoiseLevel::Moderate;
+    config.gain_control = settings.gain_control;
+    rtp_engine::audio_proc::set_default_config(config);
     // Deliberately not applied to a call already in progress: swapping the
     // canceller mid-call throws away the echo path it has adapted to, which is
     // audible. It takes effect on the next call.
