@@ -58,7 +58,7 @@ rustls-pki-types = "1"
 rtp-engine = { git = "https://github.com/5060-Solutions/rtp-engine.git", features = ["device", "srtp", "opus", "audio-proc"] }
 
 # Filesystem utilities (for recordings directory)
-dirs = "6"
+dirs = "7"
 
 # On-device transcription. Optional: a build without `ai` keeps the plain
 # softphone, and the commands report it as unavailable at runtime.
