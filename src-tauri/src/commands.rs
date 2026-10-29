@@ -320,13 +320,12 @@ pub async fn sip_register(
     manager: State<'_, SipManager>,
 ) -> Result<String, String> {
     log::info!(
-        "sip_register called: username={}, domain={}, transport={}, port={}, has_password={}, password_len={}",
+        "sip_register called: username={}, domain={}, transport={}, port={}, has_password={}",
         config.username,
         config.domain,
         config.transport,
         config.port,
         !config.password.is_empty(),
-        config.password.len()
     );
 
     let transport = match config.transport.as_str() {
