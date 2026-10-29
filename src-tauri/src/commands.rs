@@ -326,7 +326,6 @@ pub async fn sip_register(
         config.transport,
         config.port,
         !config.password.is_empty(),
-        config.password.len()
     );
 
     let transport = match config.transport.as_str() {
