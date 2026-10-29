@@ -550,22 +550,40 @@ fn classify_payload(pt: u8, rtpmaps: &[RtpMap]) -> Option<OfferedPayload> {
         Some(map) if map.name == "telephone-event" => Some(OfferedPayload::TelephoneEvent(map.rate)),
         Some(map) => CodecType::from_name(&map.name)
             .filter(|codec| codec.clock_rate() == map.rate)
+            .filter(|codec| SUPPORTED_CODECS.contains(codec))
             .map(OfferedPayload::Codec),
         None if pt == TELEPHONE_EVENT_PT_8K => Some(OfferedPayload::TelephoneEvent(8000)),
-        None => CodecType::from_payload_type(pt).map(OfferedPayload::Codec),
+        None => CodecType::from_payload_type(pt)
+            .filter(|codec| SUPPORTED_CODECS.contains(codec))
+            .map(OfferedPayload::Codec),
     }
 }
 
+/// The codecs this softphone offers and answers with. Named rather than
+/// "whatever rtp-engine knows", so a codec added to rtp-engine is not
+/// negotiated until the softphone chooses to carry it.
+///
+/// No G.729: rtp-engine's G.729 is not ITU-T G.729 compatible (its own
+/// bitstream on G.729's framing), so a real G.729 peer would hear noise both
+/// ways. It comes back only with a conformant implementation.
+const SUPPORTED_CODECS: [rtp_engine::CodecType; 3] = [
+    rtp_engine::CodecType::Pcmu,
+    rtp_engine::CodecType::Pcma,
+    rtp_engine::CodecType::Opus,
+];
+
 /// The `a=rtpmap` (and `a=fmtp`) lines for one codec on one payload type.
+///
+/// Keyed on the codec's SDP name rather than an exhaustive match on
+/// `CodecType`, so a codec added to rtp-engine gets a correct `name/clock`
+/// line instead of breaking the build.
 fn codec_rtpmap(pt: u8, codec: rtp_engine::CodecType) -> String {
-    use rtp_engine::CodecType;
-    match codec {
-        CodecType::Pcmu => format!("a=rtpmap:{pt} PCMU/8000\r\n"),
-        CodecType::Pcma => format!("a=rtpmap:{pt} PCMA/8000\r\n"),
-        CodecType::G729 => format!("a=rtpmap:{pt} G729/8000\r\na=fmtp:{pt} annexb=no\r\n"),
-        CodecType::Opus => {
+    match codec.name() {
+        "opus" => {
             format!("a=rtpmap:{pt} opus/48000/2\r\na=fmtp:{pt} minptime=10;useinbandfec=1\r\n")
         }
+        "G729" => format!("a=rtpmap:{pt} G729/8000\r\na=fmtp:{pt} annexb=no\r\n"),
+        name => format!("a=rtpmap:{pt} {name}/{}\r\n", codec.clock_rate()),
     }
 }
 
@@ -738,12 +756,13 @@ pub fn build_sdp_offer_with_codecs(
         "RTP/AVP"
     };
 
-    // Build payload type list from enabled codecs in priority order
-    let mut pts: Vec<u8> = codecs
+    // Build payload type list from enabled codecs in priority order. Only the
+    // codecs the softphone carries: a saved preference may still name G.729.
+    let offered: Vec<&super::account::CodecPreference> = codecs
         .iter()
-        .filter(|c| c.enabled)
-        .map(|c| c.codec.payload_type())
+        .filter(|c| c.enabled && SUPPORTED_CODECS.contains(&c.codec))
         .collect();
+    let mut pts: Vec<u8> = offered.iter().map(|c| c.codec.payload_type()).collect();
 
     // Fallback to PCMU if no codecs enabled
     if pts.is_empty() {
@@ -753,7 +772,7 @@ pub fn build_sdp_offer_with_codecs(
     // Always include telephone-event for DTMF, at 8 kHz for the telephone
     // codecs and also at 48 kHz when Opus is on offer, so the peer can pair
     // DTMF with the codec's own clock.
-    let offers_opus = codecs.iter().any(|c| c.enabled && c.codec == CodecType::Opus);
+    let offers_opus = offered.iter().any(|c| c.codec == CodecType::Opus);
     pts.push(TELEPHONE_EVENT_PT_8K);
     if offers_opus {
         pts.push(TELEPHONE_EVENT_PT_48K);
@@ -776,7 +795,7 @@ pub fn build_sdp_offer_with_codecs(
     );
 
     // Add rtpmap for each enabled codec in priority order
-    for codec_pref in codecs.iter().filter(|c| c.enabled) {
+    for codec_pref in &offered {
         sdp.push_str(&codec_rtpmap(codec_pref.codec.payload_type(), codec_pref.codec));
     }
 
@@ -1221,6 +1240,49 @@ mod tests {
 
     use super::*;
 
+    /// rtp-engine's G.729 is not ITU-T G.729, so the softphone neither offers
+    /// it (by default or from a saved preference) nor answers with it.
+    #[test]
+    fn g729_is_never_offered_or_answered() {
+        use super::super::account::{CodecPreference, default_codec_preferences};
+        use rtp_engine::CodecType;
+
+        let defaults = build_sdp_offer_with_codecs("10.0.0.2".to_string(), 40000, None, &default_codec_preferences());
+        assert!(defaults.contains("m=audio 40000 RTP/AVP 111 0 8 101 102\r\n"), "{defaults}");
+        assert!(!defaults.contains("G729"));
+
+        let saved = build_sdp_offer_with_codecs(
+            "10.0.0.2".to_string(),
+            40000,
+            None,
+            &[
+                CodecPreference { codec: CodecType::G729, enabled: true, priority: 1 },
+                CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
+            ],
+        );
+        assert!(saved.contains("m=audio 40000 RTP/AVP 0 101\r\n"), "{saved}");
+        assert!(!saved.contains("G729"));
+
+        let answer = build_sdp_answer("m=audio 20000 RTP/AVP 18 0\r\n", "10.0.0.2".to_string(), 30000);
+        assert!(answer.contains("m=audio 30000 RTP/AVP 0\r\n"), "{answer}");
+    }
+
+    /// Every codec's rtpmap line, pinned: what the answer and offer carry.
+    #[test]
+    fn codec_rtpmap_lines() {
+        use rtp_engine::CodecType;
+        assert_eq!(codec_rtpmap(0, CodecType::Pcmu), "a=rtpmap:0 PCMU/8000\r\n");
+        assert_eq!(codec_rtpmap(8, CodecType::Pcma), "a=rtpmap:8 PCMA/8000\r\n");
+        assert_eq!(
+            codec_rtpmap(18, CodecType::G729),
+            "a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\n"
+        );
+        assert_eq!(
+            codec_rtpmap(111, CodecType::Opus),
+            "a=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n"
+        );
+    }
+
     fn addr() -> SocketAddr {
         "192.168.1.100:5060".parse().unwrap()
     }
@@ -1429,8 +1491,8 @@ mod tests {
                      a=rtpmap:111 speex/16000\r\n\
                      a=rtpmap:9 G722/8000\r\n";
         let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000);
-        assert!(answer.contains("m=audio 30000 RTP/AVP 18 8 101\r\n"), "{answer}");
-        assert!(answer.contains("a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\n"));
+        assert!(answer.contains("m=audio 30000 RTP/AVP 8 101\r\n"), "{answer}");
+        assert!(!answer.contains("G729"), "G.729 is not carried: {answer}");
         assert!(answer.contains("a=rtpmap:8 PCMA/8000\r\n"));
         assert!(answer.contains("a=rtpmap:101 telephone-event/8000\r\n"));
         assert!(!answer.contains("speex") && !answer.contains("G722"));
