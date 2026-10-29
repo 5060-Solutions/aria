@@ -46,7 +46,7 @@ env_logger = "0.11"
 # Shared SIP protocol utilities
 
 sip-5060 = { git = "https://github.com/5060-Solutions/5060-sip.git" }
-rand = "0.8"
+rand = "0.10"
 socket2 = "0.5"
 tokio-util = "0.7.18"
 bytes = "1.11.1"
