@@ -108,5 +108,5 @@ llama-cpp-sys-2 = { git = "https://github.com/5060-Solutions/aria-vendor.git", p
 webrtc-audio-processing-sys = { git = "https://github.com/5060-Solutions/webrtc-audio-processing.git", branch = "msvc-support" }
 
 [dev-dependencies]
-md-5 = "0.10"
+md-5 = "0.11"
 hex = "0.4"
