@@ -19,10 +19,10 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Checkout rtp-engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: 5060-Solutions/rtp-engine
           path: rtp-engine
@@ -40,19 +40,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       # rtp-engine's audio-proc feature builds WebRTC's audio processing module
       # from C++ source, which uses meson and ninja. Installed via pip rather
       # than each platform's package manager so all three runners get the same
       # version on PATH.
       - name: Install Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
