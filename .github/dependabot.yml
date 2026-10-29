@@ -1,0 +1,36 @@
+# Weekly dependency PRs. Minor and patch updates are grouped so one PR per
+# ecosystem lands on Monday; majors come separately and are opt-in by review.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule: { interval: weekly, day: monday, time: "09:00", timezone: America/New_York }
+    groups:
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # tauri-plugin-deep-link 2.6.2 does not build against rust-ini 0.21.3 on
+      # Linux (struct literal missing fields); held with single-instance until
+      # upstream fixes it. See the note in PR #11.
+      - dependency-name: tauri-plugin-deep-link
+      - dependency-name: tauri-plugin-single-instance
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday, time: "09:00", timezone: America/New_York }
+    groups:
+      js-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Deferred majors: TypeScript 7 and framer-motion 14 need their own pass.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+      - dependency-name: framer-motion
+        update-types: ["version-update:semver-major"]
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday, time: "09:00", timezone: America/New_York }
+    groups:
+      actions:
+        patterns: ["*"]
