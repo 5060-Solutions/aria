@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: the check job only reads the repository.
+permissions:
+  contents: read
+
 jobs:
   check:
     strategy:
