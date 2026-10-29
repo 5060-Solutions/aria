@@ -83,7 +83,7 @@ import type {
   VoiceProcessingSettings,
   VoiceProcessingStatus,
 } from "../../types/sip";
-import { DEFAULT_CODECS, CODEC_INFO, normalizeSrtpMode } from "../../types/sip";
+import { DEFAULT_CODECS, CODEC_INFO, normalizeCodecs, normalizeSrtpMode } from "../../types/sip";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 
@@ -275,7 +275,7 @@ export function Settings() {
           outboundProxy: editingAccount.outboundProxy || "",
           autoRecord: editingAccount.autoRecord ?? false,
           srtpMode: normalizeSrtpMode(editingAccount.srtpMode),
-          codecs: editingAccount.codecs ?? [...DEFAULT_CODECS],
+          codecs: normalizeCodecs(editingAccount.codecs),
           autoCountryCode: editingAccount.autoCountryCode ?? false,
           stripPrefix: editingAccount.stripPrefix || "",
           prependPrefix: editingAccount.prependPrefix || "",

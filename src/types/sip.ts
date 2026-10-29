@@ -8,8 +8,11 @@ export function normalizeSrtpMode(mode: string | undefined): SrtpMode {
   return mode === "sdes" ? "sdes" : "disabled";
 }
 
-/** Audio codec types supported by Aria */
-export type CodecType = "pcmu" | "pcma" | "g729" | "opus";
+/**
+ * Audio codec types supported by Aria. No G.729: rtp-engine's G.729 is not
+ * ITU-T G.729 compatible, so the softphone does not offer it.
+ */
+export type CodecType = "pcmu" | "pcma" | "opus";
 
 /** Codec configuration with priority ordering */
 export interface CodecConfig {
@@ -24,18 +27,32 @@ export interface CodecConfig {
 /** Default codec configuration - ordered by common preference */
 export const DEFAULT_CODECS: CodecConfig[] = [
   { codec: "opus", enabled: true, priority: 1 },
-  { codec: "g729", enabled: true, priority: 2 },
-  { codec: "pcmu", enabled: true, priority: 3 },
-  { codec: "pcma", enabled: true, priority: 4 },
+  { codec: "pcmu", enabled: true, priority: 2 },
+  { codec: "pcma", enabled: true, priority: 3 },
 ];
 
 /** Codec display information */
 export const CODEC_INFO: Record<CodecType, { name: string; bitrate: string; description: string }> = {
   pcmu: { name: "G.711 μ-law", bitrate: "64 kbps", description: "Universal compatibility" },
   pcma: { name: "G.711 A-law", bitrate: "64 kbps", description: "Common in Europe" },
-  g729: { name: "G.729A", bitrate: "8 kbps", description: "Low bandwidth, widely supported" },
   opus: { name: "Opus", bitrate: "~32 kbps", description: "Modern, high quality" },
 };
+
+/**
+ * Saved codec preferences as the softphone can use them: codecs it no longer
+ * carries (a stored "g729") are dropped and the rest renumbered in order. The
+ * defaults stand in when nothing usable was saved.
+ */
+export function normalizeCodecs(
+  saved: ReadonlyArray<{ codec: string; enabled: boolean; priority: number }> | null | undefined,
+): CodecConfig[] {
+  const usable = (saved ?? [])
+    .filter((c): c is CodecConfig => c.codec in CODEC_INFO)
+    .slice()
+    .sort((a, b) => a.priority - b.priority)
+    .map((c, index) => ({ codec: c.codec, enabled: c.enabled, priority: index + 1 }));
+  return usable.length > 0 ? usable : DEFAULT_CODECS.map((c) => ({ ...c }));
+}
 
 export type RegistrationState =
   | "unregistered"
