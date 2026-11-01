@@ -1248,7 +1248,7 @@ mod tests {
         use rtp_engine::CodecType;
 
         let defaults = build_sdp_offer_with_codecs("10.0.0.2".to_string(), 40000, None, &default_codec_preferences());
-        assert!(defaults.contains("m=audio 40000 RTP/AVP 111 0 8 101 102\r\n"), "{defaults}");
+        assert!(defaults.contains("m=audio 40000 RTP/AVP 111 0 8 101 102\r\n"));
         assert!(!defaults.contains("G729"));
 
         let saved = build_sdp_offer_with_codecs(
@@ -1260,11 +1260,11 @@ mod tests {
                 CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
             ],
         );
-        assert!(saved.contains("m=audio 40000 RTP/AVP 0 101\r\n"), "{saved}");
+        assert!(saved.contains("m=audio 40000 RTP/AVP 0 101\r\n"));
         assert!(!saved.contains("G729"));
 
         let answer = build_sdp_answer("m=audio 20000 RTP/AVP 18 0\r\n", "10.0.0.2".to_string(), 30000);
-        assert!(answer.contains("m=audio 30000 RTP/AVP 0\r\n"), "{answer}");
+        assert!(answer.contains("m=audio 30000 RTP/AVP 0\r\n"));
     }
 
     /// Every codec's rtpmap line, pinned: what the answer and offer carry.
@@ -1491,8 +1491,8 @@ mod tests {
                      a=rtpmap:111 speex/16000\r\n\
                      a=rtpmap:9 G722/8000\r\n";
         let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000);
-        assert!(answer.contains("m=audio 30000 RTP/AVP 8 101\r\n"), "{answer}");
-        assert!(!answer.contains("G729"), "G.729 is not carried: {answer}");
+        assert!(answer.contains("m=audio 30000 RTP/AVP 8 101\r\n"));
+        assert!(!answer.contains("G729"), "G.729 is not carried");
         assert!(answer.contains("a=rtpmap:8 PCMA/8000\r\n"));
         assert!(answer.contains("a=rtpmap:101 telephone-event/8000\r\n"));
         assert!(!answer.contains("speex") && !answer.contains("G722"));
