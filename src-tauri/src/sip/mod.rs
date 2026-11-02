@@ -589,9 +589,8 @@ impl SipManager {
                 let mut s = state.write().await;
                 for account in s.accounts.values_mut() {
                     account.calls.retain(|call| {
-                        !call
-                            .ended_at
-                            .is_some_and(|at| at.elapsed() >= Self::ENDED_CALL_RETENTION)
+                        call.ended_at
+                            .is_none_or(|at| at.elapsed() < Self::ENDED_CALL_RETENTION)
                     });
                 }
             }
@@ -654,8 +653,8 @@ impl SipManager {
             self.unregister_account(Some(&account_id)).await?;
         }
 
-        let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
-        let server_addr = Self::resolve_server(registrar, account.port).await?;
+        let (target_host, target_port) = Self::target_server(&account);
+        let server_addr = Self::resolve_server(target_host, target_port).await?;
 
         let (transport, rx, local_addr) =
             self.open_transport(&account, server_addr).await?;
@@ -777,14 +776,41 @@ impl SipManager {
         Ok((transport, rx, local_addr))
     }
 
-    /// Resolve the registrar's address.
-    async fn resolve_server(registrar: &str, port: u16) -> Result<SocketAddr, String> {
+    /// Return the host and port packets for this account are sent to:
+    /// the outbound proxy if configured (RFC 3261 §10.2 / §16.12),
+    /// otherwise the registrar (or domain).
+    pub(crate) fn target_server(account: &AccountConfig) -> (&str, u16) {
+        let raw = account
+            .outbound_proxy
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                account
+                    .registrar
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or(account.domain.trim());
+
+        if let Some((host, port_str)) = raw.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                let host = host.trim_start_matches('[').trim_end_matches(']');
+                return (host, port);
+            }
+        }
+        (raw, account.port)
+    }
+
+    /// Resolve the server's address.
+    async fn resolve_server(server: &str, port: u16) -> Result<SocketAddr, String> {
         // `lookup_host` resolves addresses (A/AAAA) only; it never issues an
         // SRV query. The "SRV lookup" that used to be here asked it for
         // `_sip._udp.<domain>`, which can never resolve, so it only ever added
         // a timeout before this lookup. Real SRV support needs a DNS resolver
         // crate and is not implemented.
-        let addr_str = format!("{}:{}", registrar, port);
+        let addr_str = format!("{}:{}", server, port);
         let addrs: Vec<SocketAddr> = tokio::time::timeout(
             std::time::Duration::from_secs(3),
             tokio::net::lookup_host(&addr_str)
@@ -2940,8 +2966,8 @@ impl SipManager {
         account_id: &str,
         account: &AccountConfig,
     ) -> Result<(mpsc::Receiver<SipMessage>, u64), String> {
-        let registrar = account.registrar.as_deref().unwrap_or(&account.domain);
-        let server_addr = Self::resolve_server(registrar, account.port).await?;
+        let (target_host, target_port) = Self::target_server(account);
+        let server_addr = Self::resolve_server(target_host, target_port).await?;
 
         let (mut transport, rx) = match account.transport {
             TransportType::Udp => {
