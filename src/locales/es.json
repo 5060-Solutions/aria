@@ -16,7 +16,9 @@
   "dialer": {
     "searchCountry": "Buscar país...",
     "enterNumber": "Ingrese número",
-    "selectAccount": "Seleccionar cuenta"
+    "selectAccount": "Seleccionar cuenta",
+    "clearAll": "Limpiar",
+    "backspace": "Borrar"
   },
   "call": {
     "calling": "Llamando...",

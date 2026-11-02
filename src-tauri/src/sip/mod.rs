@@ -589,9 +589,8 @@ impl SipManager {
                 let mut s = state.write().await;
                 for account in s.accounts.values_mut() {
                     account.calls.retain(|call| {
-                        !call
-                            .ended_at
-                            .is_some_and(|at| at.elapsed() >= Self::ENDED_CALL_RETENTION)
+                        call.ended_at
+                            .is_none_or(|at| at.elapsed() < Self::ENDED_CALL_RETENTION)
                     });
                 }
             }

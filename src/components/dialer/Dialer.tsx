@@ -1,7 +1,8 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
-import { Box, IconButton, alpha, useTheme, Typography, Autocomplete, TextField, Paper, Popper } from "@mui/material";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { Box, IconButton, Tooltip, alpha, useTheme, Typography, Autocomplete, TextField, Paper, Popper } from "@mui/material";
 import CallIcon from "@mui/icons-material/Call";
 import BackspaceOutlinedIcon from "@mui/icons-material/BackspaceOutlined";
+import CancelRoundedIcon from "@mui/icons-material/CancelRounded";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
@@ -9,6 +10,7 @@ import { placeCall } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "./DialerButton";
 import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
+import { sanitizeMexicanPhoneNumber } from "../../utils/phone";
 
 const keys = [
   { digit: "1", letters: "" },
@@ -46,8 +48,9 @@ export function Dialer() {
   const theme = useTheme();
 
   const accounts = useAppStore((s) => s.accounts);
-  const activeAccountId = useAppStore((s) => s.activeAccountId);
-  const activeAccount = accounts.find((a) => a.id === activeAccountId);
+  const rawActiveAccountId = useAppStore((s) => s.activeAccountId);
+  const activeAccountId = rawActiveAccountId || accounts[0]?.id || null;
+  const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
 
   const [countryPickerOpen, setCountryPickerOpen] = useState(false);
   
@@ -138,7 +141,8 @@ export function Dialer() {
   const handleCall = useCallback(async () => {
     if (!dialInput.trim() || !activeAccountId || !activeAccount) return;
     
-    const uri = dialUri(dialInput, activeAccount, defaultCountry);
+    const sanitizedInput = sanitizeMexicanPhoneNumber(dialInput);
+    const uri = dialUri(sanitizedInput, activeAccount, defaultCountry);
 
     // placeCall removes the call again if it could not be placed.
     await placeCall({
@@ -151,6 +155,30 @@ export function Dialer() {
   const handleBackspace = useCallback(() => {
     setDialInput(dialInput.slice(0, -1));
   }, [dialInput, setDialInput]);
+
+  const backspaceHoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const startBackspaceHold = useCallback(() => {
+    if (backspaceHoldTimer.current) clearTimeout(backspaceHoldTimer.current);
+    backspaceHoldTimer.current = setTimeout(() => {
+      clearDialInput();
+    }, 450);
+  }, [clearDialInput]);
+
+  const stopBackspaceHold = useCallback(() => {
+    if (backspaceHoldTimer.current) {
+      clearTimeout(backspaceHoldTimer.current);
+      backspaceHoldTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (backspaceHoldTimer.current) {
+        clearTimeout(backspaceHoldTimer.current);
+      }
+    };
+  }, []);
 
   // Native paste covers Cmd+V on macOS and Ctrl+V on Windows/Linux.
   useEffect(() => {
@@ -170,11 +198,11 @@ export function Dialer() {
       );
       // Reject prose, lists and multiline content rather than joining unrelated numbers.
       if (!/^\+?[0-9*#() \u00a0\u202f.-]+$/.test(normalized)) return;
-      const number = normalized.replace(/[() \u00a0\u202f.-]/g, "");
-      if (!/[0-9*#]/.test(number)) return;
+      const sanitized = sanitizeMexicanPhoneNumber(normalized);
+      if (!/[0-9*#]/.test(sanitized)) return;
 
       event.preventDefault();
-      setDialInput(number);
+      setDialInput(sanitized);
     };
 
     window.addEventListener("paste", handlePaste);
@@ -234,7 +262,9 @@ export function Dialer() {
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [appendDigit, handleBackspace, clearDialInput, dialInput, handleCall]);
 
   const allCountries = useMemo(() => {
@@ -402,40 +432,91 @@ export function Dialer() {
           )
         )}
 
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={formattedNumber || "placeholder"}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.08 }}
-            style={{ textAlign: "center", width: "100%" }}
-          >
-            <Box
-              sx={{
-                fontSize:
-                  formattedNumber.length > 18
-                    ? "1.1rem"
-                    : formattedNumber.length > 14
-                      ? "1.4rem"
-                      : formattedNumber.length > 10
-                        ? "1.8rem"
-                        : "2.2rem",
-                fontWeight: 200,
-                fontFamily: '"Google Sans", sans-serif',
-                color: dialInput ? "text.primary" : "text.secondary",
-                letterSpacing: dialInput ? "0.06em" : "0",
-                transition: "font-size 0.15s ease",
-                px: 1,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                maxWidth: "100%",
-              }}
+        <Box
+          sx={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: "100%",
+            position: "relative",
+            minHeight: 48,
+            px: 3,
+          }}
+        >
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={formattedNumber || "placeholder"}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.08 }}
+              style={{ textAlign: "center", width: "100%" }}
             >
-              {formattedNumber || t("dialer.enterNumber")}
-            </Box>
-          </motion.div>
-        </AnimatePresence>
+              <Box
+                sx={{
+                  fontSize:
+                    formattedNumber.length > 18
+                      ? "1.1rem"
+                      : formattedNumber.length > 14
+                        ? "1.4rem"
+                        : formattedNumber.length > 10
+                          ? "1.8rem"
+                          : "2.2rem",
+                  fontWeight: 200,
+                  fontFamily: '"Google Sans", sans-serif',
+                  color: dialInput ? "text.primary" : "text.secondary",
+                  letterSpacing: dialInput ? "0.06em" : "0",
+                  transition: "font-size 0.15s ease",
+                  px: 1,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: "100%",
+                }}
+              >
+                {formattedNumber || t("dialer.enterNumber")}
+              </Box>
+            </motion.div>
+          </AnimatePresence>
+
+          {/* Inline clear (X) button */}
+          <AnimatePresence>
+            {Boolean(dialInput) && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.6 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.6 }}
+                transition={{ duration: 0.12 }}
+                style={{
+                  position: "absolute",
+                  right: 4,
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <Tooltip title={t("dialer.clearAll", "Clear")} placement="top">
+                  <IconButton
+                    onClick={clearDialInput}
+                    size="small"
+                    aria-label={t("dialer.clearAll", "Clear")}
+                    sx={{
+                      p: 0.5,
+                      color: "text.secondary",
+                      opacity: 0.65,
+                      transition: "all 0.15s ease",
+                      "&:hover": {
+                        opacity: 1,
+                        color: "text.primary",
+                        bgcolor: alpha(theme.palette.text.secondary, 0.12),
+                      },
+                    }}
+                  >
+                    <CancelRoundedIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </Box>
       </Box>
 
       {/* Keypad grid */}
@@ -499,26 +580,41 @@ export function Dialer() {
 
         {/* Backspace */}
         <motion.div
-          animate={{ opacity: dialInput ? 1 : 0 }}
+          animate={{
+            opacity: dialInput ? 1 : 0,
+            scale: dialInput ? 1 : 0.8,
+          }}
           transition={{ duration: 0.15 }}
+          style={{ pointerEvents: dialInput ? "auto" : "none" }}
         >
-          <IconButton
-            onClick={handleBackspace}
-            onDoubleClick={clearDialInput}
-            tabIndex={dialInput ? 0 : -1}
-            aria-label={t("dialer.backspace", "Delete last digit")}
-            sx={{
-              width: 48,
-              height: 48,
-              borderRadius: "14px",
-              color: "text.secondary",
-              "&:hover": {
-                bgcolor: alpha(theme.palette.text.secondary, 0.08),
-              },
-            }}
-          >
-            <BackspaceOutlinedIcon sx={{ fontSize: 20 }} />
-          </IconButton>
+          <Tooltip title={t("dialer.backspace", "Backspace")} placement="top">
+            <span>
+              <IconButton
+                onClick={handleBackspace}
+                onDoubleClick={clearDialInput}
+                onMouseDown={startBackspaceHold}
+                onMouseUp={stopBackspaceHold}
+                onMouseLeave={stopBackspaceHold}
+                onTouchStart={startBackspaceHold}
+                onTouchEnd={stopBackspaceHold}
+                tabIndex={dialInput ? 0 : -1}
+                disabled={!dialInput}
+                aria-label={t("dialer.backspace", "Delete last digit")}
+                sx={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: "14px",
+                  color: "text.secondary",
+                  transition: "all 0.15s ease",
+                  "&:hover": {
+                    bgcolor: alpha(theme.palette.text.secondary, 0.08),
+                  },
+                }}
+              >
+                <BackspaceOutlinedIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+            </span>
+          </Tooltip>
         </motion.div>
       </Box>
     </Box>
