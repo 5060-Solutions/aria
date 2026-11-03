@@ -8,12 +8,6 @@ updates:
     groups:
       rust-minor-and-patch:
         update-types: [minor, patch]
-    ignore:
-      # tauri-plugin-deep-link 2.6.2 does not build against rust-ini 0.21.3 on
-      # Linux (struct literal missing fields); held with single-instance until
-      # upstream fixes it. See the note in PR #11.
-      - dependency-name: tauri-plugin-deep-link
-      - dependency-name: tauri-plugin-single-instance
     open-pull-requests-limit: 5
   - package-ecosystem: npm
     directory: /
