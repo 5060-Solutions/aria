@@ -18,7 +18,10 @@
   "dialer": {
     "searchCountry": "Search country...",
     "enterNumber": "Enter number",
-    "selectAccount": "Select account"
+    "selectAccount": "Select account",
+    "clearAll": "Clear",
+    "backspace": "Delete last digit",
+    "backspaceHold": "Delete (hold to clear)"
   },
   "call": {
     "calling": "Calling...",
