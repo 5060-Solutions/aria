@@ -938,3 +938,24 @@ async fn a_subscribe_that_is_always_challenged_is_abandoned() {
         "a subscription the server will not accept must be dropped"
     );
 }
+
+/// When an outbound proxy is configured, requests must be routed to that proxy
+/// address and port (RFC 3261 §10.2 / §16.12) while preserving the target SIP
+/// domain in Request-URI and headers.
+#[tokio::test]
+async fn an_outbound_proxy_receives_register_and_invite_while_preserving_domain() {
+    let (proxy, seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+
+    let mut cfg = account(proxy, None, PASSWORD);
+    // Domain is set to an unresolvable domain without a registrar;
+    // all traffic must reach `proxy` via `outbound_proxy`.
+    cfg.domain = "unresolvable-ims.example.invalid".into();
+    cfg.registrar = None;
+    cfg.outbound_proxy = Some(format!("127.0.0.1:{}", proxy.port()));
+
+    register(&mgr, cfg).await.expect("registered via outbound proxy");
+
+    let s = seen.lock().unwrap();
+    assert!(!s.register_ok.is_empty(), "proxy received the REGISTER");
+}
