@@ -10,7 +10,6 @@ import { placeCall } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "./DialerButton";
 import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
-import { sanitizeMexicanPhoneNumber } from "../../utils/phone";
 
 const keys = [
   { digit: "1", letters: "" },
@@ -48,9 +47,8 @@ export function Dialer() {
   const theme = useTheme();
 
   const accounts = useAppStore((s) => s.accounts);
-  const rawActiveAccountId = useAppStore((s) => s.activeAccountId);
-  const activeAccountId = rawActiveAccountId || accounts[0]?.id || null;
-  const activeAccount = accounts.find((a) => a.id === activeAccountId) || accounts[0];
+  const activeAccountId = useAppStore((s) => s.activeAccountId);
+  const activeAccount = accounts.find((a) => a.id === activeAccountId);
 
   const [countryPickerOpen, setCountryPickerOpen] = useState(false);
   
@@ -141,8 +139,7 @@ export function Dialer() {
   const handleCall = useCallback(async () => {
     if (!dialInput.trim() || !activeAccountId || !activeAccount) return;
     
-    const sanitizedInput = sanitizeMexicanPhoneNumber(dialInput);
-    const uri = dialUri(sanitizedInput, activeAccount, defaultCountry);
+    const uri = dialUri(dialInput, activeAccount, defaultCountry);
 
     // placeCall removes the call again if it could not be placed.
     await placeCall({
@@ -198,11 +195,11 @@ export function Dialer() {
       );
       // Reject prose, lists and multiline content rather than joining unrelated numbers.
       if (!/^\+?[0-9*#() \u00a0\u202f.-]+$/.test(normalized)) return;
-      const sanitized = sanitizeMexicanPhoneNumber(normalized);
-      if (!/[0-9*#]/.test(sanitized)) return;
+      const number = normalized.replace(/[() \u00a0\u202f.-]/g, "");
+      if (!/[0-9*#]/.test(number)) return;
 
       event.preventDefault();
-      setDialInput(sanitized);
+      setDialInput(number);
     };
 
     window.addEventListener("paste", handlePaste);
