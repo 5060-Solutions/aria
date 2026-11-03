@@ -959,3 +959,24 @@ async fn an_outbound_proxy_receives_register_and_invite_while_preserving_domain(
     let s = seen.lock().unwrap();
     assert!(!s.register_ok.is_empty(), "proxy received the REGISTER");
 }
+
+/// The outbound proxy (or registrar) may carry its own port, but a bare IPv6
+/// literal must not lose its last group to that parsing.
+#[test]
+fn target_server_splits_only_an_unambiguous_port() {
+    let pbx: SocketAddr = "127.0.0.1:5060".parse().unwrap();
+    let mut cfg = account(pbx, None, PASSWORD);
+    cfg.port = 5080;
+    let cases = [
+        ("proxy.example.com", ("proxy.example.com", 5080)),
+        ("proxy.example.com:5061", ("proxy.example.com", 5061)),
+        ("192.0.2.10:5061", ("192.0.2.10", 5061)),
+        ("[2001:db8::1]:5061", ("2001:db8::1", 5061)),
+        ("[2001:db8::1]", ("2001:db8::1", 5080)),
+        ("2001:db8::1", ("2001:db8::1", 5080)),
+    ];
+    for (proxy, want) in cases {
+        cfg.outbound_proxy = Some(proxy.into());
+        assert_eq!(SipManager::target_server(&cfg), want, "{proxy}");
+    }
+}

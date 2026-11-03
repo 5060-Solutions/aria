@@ -794,13 +794,21 @@ impl SipManager {
             })
             .unwrap_or(account.domain.trim());
 
-        if let Some((host, port_str)) = raw.rsplit_once(':') {
+        // Only split off a port when the host cannot itself contain a colon:
+        // a bracketed IPv6 literal (`[2001:db8::1]:5061`) or a name with a
+        // single colon. A bare IPv6 literal (`2001:db8::1`) keeps the
+        // account's port instead of losing its last group to the port.
+        let host_port = match raw.strip_prefix('[') {
+            Some(rest) => rest.split_once("]:"),
+            None if raw.matches(':').count() == 1 => raw.split_once(':'),
+            None => None,
+        };
+        if let Some((host, port_str)) = host_port {
             if let Ok(port) = port_str.parse::<u16>() {
-                let host = host.trim_start_matches('[').trim_end_matches(']');
                 return (host, port);
             }
         }
-        (raw, account.port)
+        (raw.trim_start_matches('[').trim_end_matches(']'), account.port)
     }
 
     /// Resolve the server's address.
