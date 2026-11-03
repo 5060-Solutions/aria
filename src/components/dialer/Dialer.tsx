@@ -1,7 +1,8 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
-import { Box, IconButton, alpha, useTheme, Typography, Autocomplete, TextField, Paper, Popper } from "@mui/material";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { Box, IconButton, alpha, useTheme, Typography, Autocomplete, TextField, Paper, Popper, Tooltip } from "@mui/material";
 import CallIcon from "@mui/icons-material/Call";
 import BackspaceOutlinedIcon from "@mui/icons-material/BackspaceOutlined";
+import CancelRoundedIcon from "@mui/icons-material/CancelRounded";
 import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
@@ -151,6 +152,29 @@ export function Dialer() {
   const handleBackspace = useCallback(() => {
     setDialInput(dialInput.slice(0, -1));
   }, [dialInput, setDialInput]);
+
+  const backspaceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const startHoldToClear = useCallback(() => {
+    if (backspaceTimerRef.current) clearTimeout(backspaceTimerRef.current);
+    backspaceTimerRef.current = setTimeout(() => {
+      clearDialInput();
+      backspaceTimerRef.current = null;
+    }, 450);
+  }, [clearDialInput]);
+
+  const stopHoldToClear = useCallback(() => {
+    if (backspaceTimerRef.current) {
+      clearTimeout(backspaceTimerRef.current);
+      backspaceTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (backspaceTimerRef.current) clearTimeout(backspaceTimerRef.current);
+    };
+  }, []);
 
   // Native paste covers Cmd+V on macOS and Ctrl+V on Windows/Linux.
   useEffect(() => {
@@ -402,40 +426,90 @@ export function Dialer() {
           )
         )}
 
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={formattedNumber || "placeholder"}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.08 }}
-            style={{ textAlign: "center", width: "100%" }}
-          >
-            <Box
-              sx={{
-                fontSize:
-                  formattedNumber.length > 18
-                    ? "1.1rem"
-                    : formattedNumber.length > 14
-                      ? "1.4rem"
-                      : formattedNumber.length > 10
-                        ? "1.8rem"
-                        : "2.2rem",
-                fontWeight: 200,
-                fontFamily: '"Google Sans", sans-serif',
-                color: dialInput ? "text.primary" : "text.secondary",
-                letterSpacing: dialInput ? "0.06em" : "0",
-                transition: "font-size 0.15s ease",
-                px: 1,
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                maxWidth: "100%",
+        <Box
+          sx={{
+            position: "relative",
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={formattedNumber || "placeholder"}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.08 }}
+              style={{
+                textAlign: "center",
+                width: "100%",
+                paddingLeft: dialInput ? 36 : 0,
+                paddingRight: dialInput ? 36 : 0,
               }}
             >
-              {formattedNumber || t("dialer.enterNumber")}
-            </Box>
-          </motion.div>
-        </AnimatePresence>
+              <Box
+                sx={{
+                  fontSize:
+                    formattedNumber.length > 18
+                      ? "1.1rem"
+                      : formattedNumber.length > 14
+                        ? "1.4rem"
+                        : formattedNumber.length > 10
+                          ? "1.8rem"
+                          : "2.2rem",
+                  fontWeight: 200,
+                  fontFamily: '"Google Sans", sans-serif',
+                  color: dialInput ? "text.primary" : "text.secondary",
+                  letterSpacing: dialInput ? "0.06em" : "0",
+                  transition: "font-size 0.15s ease",
+                  px: 1,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: "100%",
+                }}
+              >
+                {formattedNumber || t("dialer.enterNumber")}
+              </Box>
+            </motion.div>
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {dialInput && (
+              <motion.div
+                initial={{ opacity: 0, scale: 0.7 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.7 }}
+                transition={{ duration: 0.15 }}
+                style={{
+                  position: "absolute",
+                  right: 4,
+                  top: "50%",
+                  transform: "translateY(-50%)",
+                }}
+              >
+                <Tooltip title={t("dialer.clearAll", "Clear")}>
+                  <IconButton
+                    onClick={clearDialInput}
+                    size="small"
+                    aria-label={t("dialer.clearAll", "Clear")}
+                    sx={{
+                      color: "text.secondary",
+                      p: 0.5,
+                      "&:hover": {
+                        color: "text.primary",
+                        bgcolor: alpha(theme.palette.text.secondary, 0.08),
+                      },
+                    }}
+                  >
+                    <CancelRoundedIcon sx={{ fontSize: 20 }} />
+                  </IconButton>
+                </Tooltip>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </Box>
       </Box>
 
       {/* Keypad grid */}
@@ -502,23 +576,34 @@ export function Dialer() {
           animate={{ opacity: dialInput ? 1 : 0 }}
           transition={{ duration: 0.15 }}
         >
-          <IconButton
-            onClick={handleBackspace}
-            onDoubleClick={clearDialInput}
-            tabIndex={dialInput ? 0 : -1}
-            aria-label={t("dialer.backspace", "Delete last digit")}
-            sx={{
-              width: 48,
-              height: 48,
-              borderRadius: "14px",
-              color: "text.secondary",
-              "&:hover": {
-                bgcolor: alpha(theme.palette.text.secondary, 0.08),
-              },
-            }}
-          >
-            <BackspaceOutlinedIcon sx={{ fontSize: 20 }} />
-          </IconButton>
+          <Tooltip title={t("dialer.backspaceHold", "Delete (hold to clear)")}>
+            <span>
+              <IconButton
+                onClick={handleBackspace}
+                onDoubleClick={clearDialInput}
+                onMouseDown={startHoldToClear}
+                onMouseUp={stopHoldToClear}
+                onMouseLeave={stopHoldToClear}
+                onTouchStart={startHoldToClear}
+                onTouchEnd={stopHoldToClear}
+                onTouchCancel={stopHoldToClear}
+                disabled={!dialInput}
+                tabIndex={dialInput ? 0 : -1}
+                aria-label={t("dialer.backspaceHold", "Delete (hold to clear)")}
+                sx={{
+                  width: 48,
+                  height: 48,
+                  borderRadius: "14px",
+                  color: "text.secondary",
+                  "&:hover": {
+                    bgcolor: alpha(theme.palette.text.secondary, 0.08),
+                  },
+                }}
+              >
+                <BackspaceOutlinedIcon sx={{ fontSize: 20 }} />
+              </IconButton>
+            </span>
+          </Tooltip>
         </motion.div>
       </Box>
     </Box>
