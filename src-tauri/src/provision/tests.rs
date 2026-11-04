@@ -308,7 +308,7 @@ async fn redeem_ok_uses_post_and_maps_the_proxy() {
     assert_eq!(line.password, "s3cret-pw");
     assert_eq!(line.domain, "regular-test.ariaroute.com");
     assert_eq!(line.outbound_proxy.as_deref(), Some("sip.ariaroute.com:5061"));
-    assert_eq!(line.registrar.as_deref(), Some("sip.ariaroute.com"));
+    assert_eq!(line.tls_server_name.as_deref(), Some("sip.ariaroute.com"));
     assert_eq!(line.port, 5061);
     assert_eq!(line.transport, "tls");
     assert_eq!(line.voicemail.as_deref(), Some("*97"));
@@ -327,7 +327,7 @@ fn redeem_defaults_and_optional_fields() {
     let line = parse_redeem(&obj(body)).unwrap();
     assert_eq!(line.auth_username, None);
     assert_eq!(line.outbound_proxy, None);
-    assert_eq!(line.registrar, None);
+    assert_eq!(line.tls_server_name, None);
     assert_eq!(line.port, 5061);
     assert_eq!(line.transport, "tls");
     assert_eq!(line.display_name, "1001");
@@ -371,13 +371,78 @@ fn redeem_rejects_unusable_fields() {
     }
 }
 
+fn known(id: &str, username: &str, domain: &str, from: Option<&str>) -> KnownAccount {
+    KnownAccount {
+        id: id.into(),
+        username: username.into(),
+        domain: domain.into(),
+        provisioned_from: from.map(String::from),
+    }
+}
+
+fn expected(extension: &str, domain: &str) -> ExpectedLine {
+    ExpectedLine { extension: extension.into(), domain: domain.into() }
+}
+
 #[test]
-fn a_link_for_an_existing_line_updates_it() {
+fn only_an_account_from_the_same_host_is_updated() {
     let line = parse_redeem(&obj(redeem_body())).unwrap();
-    let known = vec![
-        KnownAccount { id: "a".into(), username: "1002".into(), domain: "regular-test.ariaroute.com".into() },
-        KnownAccount { id: "b".into(), username: "1001".into(), domain: "Regular-Test.AriaRoute.com".into() },
-    ];
-    assert_eq!(pick_account_id(&line, &known, "new"), ("b".to_string(), true));
-    assert_eq!(pick_account_id(&line, &known[..1], "new"), ("new".to_string(), false));
+    let host = "api.ariaroute.com";
+    let other_line = known("a", "1002", "regular-test.ariaroute.com", Some(host));
+    let by_hand = known("h", "1001", "Regular-Test.AriaRoute.com", None);
+    let other_host = known("o", "1001", "regular-test.ariaroute.com", Some("evil.example"));
+    let own = known("b", "1001", "Regular-Test.AriaRoute.com", Some("API.ariaroute.com"));
+
+    assert_eq!(pick_account(&line, &[], host, "new"), ("new".into(), LineMode::Added));
+    assert_eq!(pick_account(&line, &[known("a", "1002", "regular-test.ariaroute.com", Some(host))], host, "new"), ("new".into(), LineMode::Added));
+    assert_eq!(pick_account(&line, std::slice::from_ref(&by_hand), host, "new"), ("new".into(), LineMode::Separate));
+    assert_eq!(pick_account(&line, std::slice::from_ref(&other_host), host, "new"), ("new".into(), LineMode::Separate));
+    assert_eq!(pick_account(&line, &[other_line, by_hand, other_host, own], host, "new"), ("b".into(), LineMode::Updated));
+}
+
+#[tokio::test]
+async fn a_redeem_for_a_different_line_than_previewed_is_refused() {
+    // Previewed 1001@regular-test; the POST tries to return someone else's line.
+    let stub = Stub::json("200 OK", &redeem_body()).await;
+    let accounts = [known("real", "1001", "regular-test.ariaroute.com", None)];
+    for exp in [expected("1002", "regular-test.ariaroute.com"), expected("1001", "other.ariaroute.com")] {
+        let r = redeem_checked(&stub.url(), &exp, &accounts, "new", SHORT).await;
+        // Err means the command never reaches the credential store.
+        assert_eq!(r.map(|(l, _)| l), Err(ProvisionError::Mismatch));
+    }
+}
+
+#[tokio::test]
+async fn a_redeem_matching_a_hand_made_account_adds_a_separate_one() {
+    let stub = Stub::json("200 OK", &redeem_body()).await;
+    let accounts = [known("real", "1001", "regular-test.ariaroute.com", None)];
+    let (line, password) =
+        redeem_checked(&stub.url(), &expected("1001", "Regular-Test.ariaroute.com"), &accounts, "new-id", SHORT)
+            .await
+            .unwrap();
+    assert_eq!(line.account_id, "new-id");
+    assert_eq!(line.mode, LineMode::Separate);
+    assert_eq!(line.provisioned_from, format!("127.0.0.1:{}", stub.port));
+    assert_eq!(password.0, "s3cret-pw");
+    assert_eq!(format!("{password:?}"), "Password(..)");
+}
+
+#[tokio::test]
+async fn a_redeem_from_the_same_host_updates_its_own_account() {
+    let stub = Stub::json("200 OK", &redeem_body()).await;
+    let host = format!("127.0.0.1:{}", stub.port);
+    let accounts = [known("mine", "1001", "regular-test.ariaroute.com", Some(&host))];
+    let (line, _) =
+        redeem_checked(&stub.url(), &expected("1001", "regular-test.ariaroute.com"), &accounts, "new-id", SHORT)
+            .await
+            .unwrap();
+    assert_eq!((line.account_id.as_str(), line.mode), ("mine", LineMode::Updated));
+}
+
+#[test]
+fn display_text_cannot_break_a_quoted_string() {
+    assert_eq!(clean_text("Front \"Desk\" <x>\\\r\n", 100), "Front Desk x");
+    let mut body = redeem_body();
+    body["display_name"] = json!("A\"B\\C<D>");
+    assert_eq!(parse_redeem(&obj(body)).unwrap().display_name, "ABCD");
 }

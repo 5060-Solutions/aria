@@ -1,5 +1,6 @@
 import { createStore } from "zustand/vanilla";
 import type { ProvisionLink } from "../utils/provisionLink";
+import type { SipAccount, TransportType } from "../types/sip";
 
 /** What a setup link's preview shows (from `provision_link_preview`). Nothing secret. */
 export interface ProvisionPreview {
@@ -17,25 +18,89 @@ export interface ProvisionPreview {
  */
 export interface ProvisionedLine {
   accountId: string;
-  /** An existing account with the same username@domain was updated. */
-  updated: boolean;
+  mode: LineMode;
+  /** The setup link's `host[:port]`, recorded on the account. */
+  provisionedFrom: string;
   tenantName: string;
   displayName: string;
   username: string;
   authUsername: string | null;
   domain: string;
   outboundProxy: string | null;
-  registrar: string | null;
+  tlsServerName: string | null;
   port: number;
   transport: string;
   voicemail: string | null;
 }
 
+/**
+ * What a setup link does to the app's accounts:
+ * - `added`: a new account.
+ * - `updated`: the account this same host set up earlier, updated in place.
+ * - `separate`: a new account, though one with the same username@domain
+ *   exists — set up by hand or by another host, and left alone.
+ */
+export type LineMode = "added" | "updated" | "separate";
+
+type AccountIdentity = Pick<SipAccount, "username" | "domain" | "provisionedFrom">;
+
+/**
+ * What confirming this preview will do, worked out the same way the backend
+ * decides it, so the dialog can say so before the click.
+ */
+export function previewMode(preview: ProvisionPreview, accounts: readonly AccountIdentity[]): LineMode {
+  const same = accounts.filter(
+    (a) => a.username === preview.extension && a.domain.trim().toLowerCase() === preview.domain.toLowerCase(),
+  );
+  if (same.some((a) => a.provisionedFrom?.toLowerCase() === preview.serverHost.toLowerCase())) return "updated";
+  return same.length > 0 ? "separate" : "added";
+}
+
+/**
+ * The account to save for a redeemed line. An update replaces only the
+ * credentials and server settings, keeping what the user chose (name,
+ * enabled, codecs, SRTP, recording, dialing rules, realm override).
+ */
+export function provisionedAccount(line: ProvisionedLine, existing: SipAccount | undefined): SipAccount {
+  const server = {
+    username: line.username,
+    domain: line.domain,
+    // Already in the credential store; never kept in app state.
+    password: "",
+    transport: line.transport as TransportType,
+    port: line.port,
+    // REGISTER goes to the domain; the proxy carries the traffic and its host
+    // is the TLS name.
+    registrar: undefined,
+    outboundProxy: line.outboundProxy ?? undefined,
+    tlsServerName: line.tlsServerName ?? undefined,
+    authUsername: line.authUsername ?? undefined,
+    provisionedFrom: line.provisionedFrom,
+  };
+  if (existing) {
+    return {
+      ...existing,
+      ...server,
+      voicemailNumber: line.voicemail ?? existing.voicemailNumber,
+    };
+  }
+  return {
+    id: line.accountId,
+    displayName: line.displayName || line.username,
+    enabled: true,
+    voicemailNumber: line.voicemail ?? undefined,
+    ...server,
+  };
+}
+
 export interface ProvisionApi {
   /** GET: uses nothing up. */
   preview(redeemUrl: string): Promise<ProvisionPreview>;
-  /** POST: uses the link up. Only ever called from `confirm`. */
-  redeem(redeemUrl: string): Promise<ProvisionedLine>;
+  /**
+   * POST: uses the link up. Only ever called from `confirm`. The backend
+   * refuses a reply for any line but the previewed one.
+   */
+  redeem(redeemUrl: string, preview: ProvisionPreview): Promise<ProvisionedLine>;
   /** Save and register the line. Resolves with the registration error, or null once registered. */
   activate(line: ProvisionedLine): Promise<string | null>;
 }
@@ -51,13 +116,19 @@ export type ProvisionState =
 
 export interface ProvisionFlow {
   state: ProvisionState;
-  /** Start on a link: fetch its preview. Ignored (returns false) while another link is open. */
+  /**
+   * Start on a link: fetch its preview. Ignored (returns false) while another
+   * link is open, and for a few seconds after one closes.
+   */
   open(link: ProvisionLink): boolean;
   /** The user clicked Add. The only path to `redeem`. */
   confirm(): Promise<void>;
   /** Close the dialog. Ignored mid-redeem, once the link may already be used up. */
   cancel(): void;
 }
+
+/** How long further setup links are ignored after the dialog closes. */
+export const COOLDOWN_MS = 3000;
 
 function message(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
@@ -71,16 +142,22 @@ function message(e: unknown): string {
  * reachable from `confirm` alone, and only from the preview. A second link
  * while one is open is ignored rather than swapped in under the user's cursor.
  */
-export function createProvisionFlow(api: ProvisionApi) {
+export function createProvisionFlow(
+  api: ProvisionApi,
+  { now = Date.now, cooldownMs = COOLDOWN_MS }: { now?: () => number; cooldownMs?: number } = {},
+) {
   // Bumped whenever the dialog closes or a new link opens, so a late reply
   // for a cancelled link cannot reopen it.
   let generation = 0;
+  // Links are ignored until then: a page firing links in a loop cannot keep
+  // reopening the dialog (and pulling the window forward) as it is closed.
+  let quietUntil = 0;
 
   return createStore<ProvisionFlow>()((set, get) => ({
     state: { phase: "idle" },
 
     open(link) {
-      if (get().state.phase !== "idle") return false;
+      if (get().state.phase !== "idle" || now() < quietUntil) return false;
       const gen = ++generation;
       set({ state: { phase: "loading", link } });
       api.preview(link.redeemUrl).then(
@@ -105,7 +182,7 @@ export function createProvisionFlow(api: ProvisionApi) {
 
       let line: ProvisionedLine;
       try {
-        line = await api.redeem(link.redeemUrl);
+        line = await api.redeem(link.redeemUrl, preview);
       } catch (e) {
         if (gen === generation) set({ state: { phase: "failed", message: message(e) } });
         return;
@@ -126,6 +203,7 @@ export function createProvisionFlow(api: ProvisionApi) {
       const { phase } = get().state;
       if (phase === "redeeming" || phase === "registering") return;
       generation++;
+      if (phase !== "idle") quietUntil = now() + cooldownMs;
       set({ state: { phase: "idle" } });
     },
   }));

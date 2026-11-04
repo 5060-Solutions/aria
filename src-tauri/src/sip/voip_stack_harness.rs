@@ -383,6 +383,7 @@ fn account(pbx: SocketAddr, auth_realm: Option<&str>, password: &str) -> Account
         outbound_proxy: None,
         auth_username: None,
         auth_realm: auth_realm.map(str::to_owned),
+        tls_server_name: None,
         enabled: true,
         auto_record: false,
         tls_insecure: false,

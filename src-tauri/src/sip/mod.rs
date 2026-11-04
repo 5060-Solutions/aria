@@ -742,7 +742,7 @@ impl SipManager {
                 (SipTransport::Tcp(t), rx)
             }
             TransportType::Tls => {
-                let tls_name = account.registrar.as_deref().unwrap_or(&account.domain);
+                let tls_name = account.tls_name();
                 let (t, rx) =
                     transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
                         .await
@@ -2987,7 +2987,7 @@ impl SipManager {
                 (SipTransport::Tcp(t), rx)
             }
             TransportType::Tls => {
-                let tls_name = account.registrar.as_deref().unwrap_or(&account.domain);
+                let tls_name = account.tls_name();
                 let (t, rx) =
                     transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
                         .await?;
@@ -3197,6 +3197,7 @@ fn connection_changed(current: &AccountConfig, next: &AccountConfig) -> bool {
             c.password.clone(),
             c.auth_username.clone(),
             c.auth_realm.clone(),
+            c.tls_server_name.clone(),
             c.tls_insecure,
         )
     };

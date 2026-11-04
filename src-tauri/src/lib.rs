@@ -215,6 +215,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::provision_from_qr,
+            commands::take_launch_links,
             provision::provision_link_preview,
             provision::provision_link_redeem,
             commands::sip_register,

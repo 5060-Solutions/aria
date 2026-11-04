@@ -383,6 +383,13 @@ export function Settings() {
       autoCountryCode: form.autoCountryCode,
       stripPrefix: form.stripPrefix.trim() || undefined,
       prependPrefix: form.prependPrefix.trim() || undefined,
+      // Not on the form. The TLS name goes with the proxy a setup link set,
+      // so it is kept only while that proxy is.
+      tlsServerName:
+        editingAccount && (editingAccount.outboundProxy ?? "") === form.outboundProxy.trim()
+          ? editingAccount.tlsServerName
+          : undefined,
+      provisionedFrom: editingAccount?.provisionedFrom,
     };
 
     // try/finally so a keychain error cannot leave the Save button spinning

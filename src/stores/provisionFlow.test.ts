@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { createProvisionFlow } from "./provisionFlow";
+import { createProvisionFlow, previewMode, provisionedAccount } from "./provisionFlow";
 import type { ProvisionApi, ProvisionedLine, ProvisionPreview } from "./provisionFlow";
+import type { SipAccount } from "../types/sip";
 
 const link = {
   redeemUrl: "https://api.ariaroute.com/provision/softphone/tok",
@@ -18,14 +19,15 @@ const preview: ProvisionPreview = {
 
 const line: ProvisionedLine = {
   accountId: "acc-1",
-  updated: false,
+  mode: "added",
+  provisionedFrom: "api.ariaroute.com",
   tenantName: "Regular Test",
   displayName: "Front Desk",
   username: "1001",
   authUsername: null,
   domain: "regular-test.ariaroute.com",
   outboundProxy: "sip.ariaroute.com:5061",
-  registrar: "sip.ariaroute.com",
+  tlsServerName: "sip.ariaroute.com",
   port: 5061,
   transport: "tls",
   voicemail: "*97",
@@ -65,6 +67,8 @@ describe("provision flow", () => {
 
     await flow.getState().confirm();
     expect(api.redeem).toHaveBeenCalledTimes(1);
+    // The previewed line goes with the redeem, so the backend can refuse a different one.
+    expect(api.redeem).toHaveBeenCalledWith(link.redeemUrl, preview);
     expect(api.activate).toHaveBeenCalledWith(line);
     expect(flow.getState().state).toEqual({ phase: "done", line, error: null });
   });
@@ -144,7 +148,8 @@ describe("provision flow", () => {
         throw "This setup link has expired or was already used. Ask for a new one.";
       }),
     });
-    const flow = createProvisionFlow(api);
+    const clock = { t: 0 };
+    const flow = createProvisionFlow(api, { now: () => clock.t });
     flow.getState().open(link);
     await flush();
     expect(flow.getState().state).toEqual({
@@ -152,6 +157,7 @@ describe("provision flow", () => {
       message: "This setup link has expired or was already used. Ask for a new one.",
     });
     flow.getState().cancel();
+    clock.t += 3000;
     expect(flow.getState().open(link)).toBe(true);
   });
 
@@ -172,5 +178,116 @@ describe("provision flow", () => {
     await flush();
     await flow.getState().confirm();
     expect(flow.getState().state).toEqual({ phase: "done", line, error: "403 Forbidden" });
+  });
+
+  it("ignores links for a few seconds after the dialog closes", async () => {
+    const clock = { t: 1000 };
+    const api = mockApi();
+    const flow = createProvisionFlow(api, { now: () => clock.t, cooldownMs: 3000 });
+    flow.getState().open(link);
+    await flush();
+    flow.getState().cancel();
+    clock.t += 2999;
+    expect(flow.getState().open(link)).toBe(false);
+    expect(flow.getState().state.phase).toBe("idle");
+    clock.t += 1;
+    expect(flow.getState().open(link)).toBe(true);
+    expect(api.preview).toHaveBeenCalledTimes(2);
+  });
+
+  it("only one preview is in flight", () => {
+    const pending = deferred<ProvisionPreview>();
+    const api = mockApi({ preview: vi.fn(() => pending.promise) });
+    const flow = createProvisionFlow(api);
+    expect(flow.getState().open(link)).toBe(true);
+    expect(flow.getState().open(link)).toBe(false);
+    expect(api.preview).toHaveBeenCalledTimes(1);
+  });
+});
+
+const account = (over: Partial<SipAccount>): SipAccount => ({
+  id: "x",
+  displayName: "My desk phone",
+  username: "1001",
+  domain: "regular-test.ariaroute.com",
+  password: "",
+  transport: "udp",
+  port: 5060,
+  enabled: true,
+  ...over,
+});
+
+describe("previewMode", () => {
+  it("adds when no account has the identity", () => {
+    expect(previewMode(preview, [account({ username: "1002" })])).toBe("added");
+  });
+
+  it("updates only an account the same host set up", () => {
+    expect(
+      previewMode(preview, [account({ domain: "Regular-Test.AriaRoute.com", provisionedFrom: "API.ariaroute.com" })]),
+    ).toBe("updated");
+  });
+
+  it("adds a separate line beside a hand-made or other-host account", () => {
+    expect(previewMode(preview, [account({})])).toBe("separate");
+    expect(previewMode(preview, [account({ provisionedFrom: "evil.example" })])).toBe("separate");
+  });
+});
+
+describe("provisionedAccount", () => {
+  it("builds a new account from the line", () => {
+    const a = provisionedAccount(line, undefined);
+    expect(a).toMatchObject({
+      id: "acc-1",
+      displayName: "Front Desk",
+      username: "1001",
+      domain: "regular-test.ariaroute.com",
+      password: "",
+      transport: "tls",
+      port: 5061,
+      outboundProxy: "sip.ariaroute.com:5061",
+      tlsServerName: "sip.ariaroute.com",
+      provisionedFrom: "api.ariaroute.com",
+      voicemailNumber: "*97",
+      enabled: true,
+    });
+    expect(a.registrar).toBeUndefined();
+  });
+
+  it("an update replaces server settings and keeps the user's own", () => {
+    const existing = account({
+      id: "acc-1",
+      displayName: "My desk phone",
+      enabled: false,
+      registrar: "old.example",
+      outboundProxy: "old.example:5061",
+      authRealm: "realm.example",
+      srtpMode: "sdes",
+      codecs: [{ codec: "pcmu", enabled: true, priority: 1 }],
+      autoRecord: true,
+      autoCountryCode: true,
+      stripPrefix: "9",
+      prependPrefix: "1",
+      provisionedFrom: "api.ariaroute.com",
+    });
+    const a = provisionedAccount({ ...line, mode: "updated", displayName: "Server Name" }, existing);
+    expect(a).toMatchObject({
+      id: "acc-1",
+      displayName: "My desk phone",
+      enabled: false,
+      authRealm: "realm.example",
+      srtpMode: "sdes",
+      codecs: [{ codec: "pcmu", enabled: true, priority: 1 }],
+      autoRecord: true,
+      autoCountryCode: true,
+      stripPrefix: "9",
+      prependPrefix: "1",
+      transport: "tls",
+      port: 5061,
+      outboundProxy: "sip.ariaroute.com:5061",
+      tlsServerName: "sip.ariaroute.com",
+      password: "",
+    });
+    expect(a.registrar).toBeUndefined();
   });
 });

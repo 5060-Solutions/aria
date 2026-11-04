@@ -2,7 +2,7 @@ import { useMemo, useEffect } from "react";
 import { ThemeProvider, CssBaseline } from "@mui/material";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { useAppStore } from "./stores/appStore";
 import { lightTheme, darkTheme } from "./theme";
 import { AppShell } from "./components/layout/AppShell";
@@ -18,6 +18,18 @@ import { provisionFlow } from "./components/provision/provisionApi";
 import "./i18n";
 
 const isDebugWindow = getCurrentWebviewWindow().label === "debug";
+
+/**
+ * The links Aria was launched with. Read once at load, not per effect run:
+ * the backend hands them out only once per run, and a StrictMode re-run must
+ * not lose them.
+ */
+const launchLinks: Promise<string[]> = isDebugWindow
+  ? Promise.resolve([])
+  : invoke<string[]>("take_launch_links").catch((e) => {
+      log.warn("[DeepLink] Could not read the launch link:", e);
+      return [];
+    });
 
 /** Main app — only rendered in the primary window. Holds all SIP hooks. */
 function MainApp() {
@@ -70,22 +82,26 @@ function MainApp() {
       }
     };
 
-    // Links that arrive while running. Remembered so the launch link below is
-    // not handled twice when it comes both ways.
-    const delivered = new Set<string>();
+    // The launch link can arrive both ways, in either order: from the
+    // backend (asked once per run, so a webview reload does not replay it)
+    // and as a runtime event. Each copy is handled once.
+    const launchHandled = new Set<string>();
+    const seenBeforeLaunch = new Set<string>();
+    let launchRead = false;
     const unlisten = onOpenUrl((urls) => {
-      urls.forEach((u) => delivered.add(u));
-      handle(urls);
+      const fresh = urls.filter((u) => !launchHandled.delete(u));
+      if (!launchRead) fresh.forEach((u) => seenBeforeLaunch.add(u));
+      handle(fresh);
     });
 
-    // The link Aria was launched with (cold start): it can arrive before this
-    // listener exists, so ask for it once.
     let cancelled = false;
-    getCurrent()
-      .then((urls) => {
-        if (!cancelled && urls) handle(urls.filter((u) => !delivered.has(u)));
-      })
-      .catch((e) => log.warn("[DeepLink] Could not read the launch link:", e));
+    void launchLinks.then((urls) => {
+      launchRead = true;
+      if (cancelled) return;
+      const fresh = urls.filter((u) => !seenBeforeLaunch.has(u));
+      fresh.forEach((u) => launchHandled.add(u));
+      handle(fresh);
+    });
 
     return () => {
       cancelled = true;

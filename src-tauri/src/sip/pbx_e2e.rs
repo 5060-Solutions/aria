@@ -112,6 +112,7 @@ impl Env {
             outbound_proxy: None,
             auth_username: None,
             auth_realm: None,
+            tls_server_name: None,
             enabled: true,
             auto_record: false,
             tls_insecure: false,

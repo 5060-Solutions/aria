@@ -101,6 +101,16 @@ export interface SipAccount {
   codecs?: CodecConfig[];
   /** What to dial to reach voicemail (e.g. *97). From provisioning or Settings. */
   voicemailNumber?: string;
+  /**
+   * Name the TLS certificate is checked against when it is neither the
+   * registrar nor the domain (a setup link's outbound proxy host).
+   */
+  tlsServerName?: string;
+  /**
+   * `host[:port]` of the setup link that created this account; unset for
+   * accounts set up by hand. Only that host's links may update it.
+   */
+  provisionedFrom?: string;
   /** Whether to automatically add country code to dialed numbers */
   autoCountryCode?: boolean;
   /** Prefix to remove from dialed numbers before calling (e.g. "0" or "98") */
@@ -129,6 +139,8 @@ export interface StoredAccount {
   autoCountryCode?: boolean;
   stripPrefix?: string;
   prependPrefix?: string;
+  tlsServerName?: string;
+  provisionedFrom?: string;
 }
 
 /** Message-waiting state for one account, from the PBX's NOTIFY. */

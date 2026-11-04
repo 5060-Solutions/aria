@@ -12,7 +12,9 @@ import {
 import { useStore } from "zustand";
 import { useTranslation } from "react-i18next";
 import { provisionFlow } from "./provisionApi";
-import type { ProvisionPreview } from "../../stores/provisionFlow";
+import { useAppStore } from "../../stores/appStore";
+import { previewMode } from "../../stores/provisionFlow";
+import type { LineMode, ProvisionPreview } from "../../stores/provisionFlow";
 
 /**
  * How long Add stays disabled after the preview appears. The dialog can pop
@@ -35,7 +37,7 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PreviewDetails({ preview }: { preview: ProvisionPreview }) {
+function PreviewDetails({ preview, mode }: { preview: ProvisionPreview; mode: LineMode }) {
   const { t } = useTranslation();
   const line = preview.displayName ? `${preview.extension} · ${preview.displayName}` : preview.extension;
   return (
@@ -51,6 +53,11 @@ function PreviewDetails({ preview }: { preview: ProvisionPreview }) {
       <Row label={t("provision.organization")} value={preview.tenantName} />
       <Row label={t("provision.line")} value={line} />
       <Row label={t("provision.domain")} value={preview.domain} />
+      {mode === "separate" && (
+        <Typography variant="body2" sx={{ mt: 1.5 }}>
+          {t("provision.separateNote", { ext: preview.extension })}
+        </Typography>
+      )}
       <Typography variant="caption" sx={{ color: "text.secondary", display: "block", mt: 1.5 }}>
         {t("provision.trustNote")}
       </Typography>
@@ -59,8 +66,7 @@ function PreviewDetails({ preview }: { preview: ProvisionPreview }) {
 }
 
 /** Add stays disabled briefly after mounting; see ARM_DELAY_MS. */
-function AddButton({ onClick }: { onClick: () => void }) {
-  const { t } = useTranslation();
+function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setArmed(true), ARM_DELAY_MS);
@@ -68,7 +74,7 @@ function AddButton({ onClick }: { onClick: () => void }) {
   }, []);
   return (
     <Button onClick={onClick} variant="contained" disabled={!armed} sx={{ borderRadius: "10px" }}>
-      {t("provision.addLine")}
+      {label}
     </Button>
   );
 }
@@ -91,7 +97,14 @@ function Progress({ text }: { text: string }) {
 export function ProvisionLinkDialog() {
   const { t } = useTranslation();
   const state = useStore(provisionFlow, (s) => s.state);
+  const accounts = useAppStore((s) => s.accounts);
   const { confirm, cancel } = provisionFlow.getState();
+
+  // What Add will do, shown before the click. The backend makes the same
+  // decision and is the one that enforces it.
+  const mode: LineMode =
+    "preview" in state ? previewMode(state.preview, accounts) : state.phase === "done" ? state.line.mode : "added";
+  const addLabel = mode === "updated" ? t("provision.updateLine") : t("provision.addLine");
 
   const busy = state.phase === "redeeming" || state.phase === "registering";
   let body: React.ReactNode = null;
@@ -105,13 +118,13 @@ export function ProvisionLinkDialog() {
       actions = <Button onClick={cancel}>{t("common.cancel")}</Button>;
       break;
     case "preview":
-      body = <PreviewDetails preview={state.preview} />;
+      body = <PreviewDetails preview={state.preview} mode={mode} />;
       actions = (
         <>
           <Button onClick={cancel} sx={{ borderRadius: "10px" }}>
             {t("common.cancel")}
           </Button>
-          <AddButton key={state.link.redeemUrl} onClick={() => void confirm()} />
+          <AddButton key={state.link.redeemUrl} label={addLabel} onClick={() => void confirm()} />
         </>
       );
       break;
@@ -119,26 +132,38 @@ export function ProvisionLinkDialog() {
     case "registering":
       body = (
         <>
-          <PreviewDetails preview={state.preview} />
+          <PreviewDetails preview={state.preview} mode={mode} />
           <Progress text={state.phase === "redeeming" ? t("provision.adding") : t("provision.connecting")} />
         </>
       );
       actions = (
         <Button variant="contained" disabled sx={{ borderRadius: "10px" }}>
-          {t("provision.addLine")}
+          {addLabel}
         </Button>
       );
       break;
     case "done":
       body = state.error ? (
         <>
+          {mode === "separate" && (
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              {t("provision.separateDone", { ext: state.line.username })}
+            </Typography>
+          )}
           <Typography variant="body2">{t("provision.notConnected")}</Typography>
           <Typography variant="body2" sx={{ color: "error.main", mt: 1, wordBreak: "break-word" }}>
             {state.error}
           </Typography>
         </>
       ) : (
-        <Typography variant="body2">{t("provision.ready")}</Typography>
+        <>
+          {mode === "separate" && (
+            <Typography variant="body2" sx={{ mb: 1 }}>
+              {t("provision.separateDone", { ext: state.line.username })}
+            </Typography>
+          )}
+          <Typography variant="body2">{t("provision.ready")}</Typography>
+        </>
       );
       actions = (
         <Button onClick={cancel} variant="contained" sx={{ borderRadius: "10px" }}>
@@ -158,10 +183,12 @@ export function ProvisionLinkDialog() {
 
   const title =
     state.phase === "done"
-      ? t(state.line.updated ? "provision.updated" : "provision.added", { ext: state.line.username })
+      ? t(state.line.mode === "updated" ? "provision.updated" : "provision.added", { ext: state.line.username })
       : state.phase === "failed"
         ? t("provision.failedTitle")
-        : t("provision.title");
+        : "preview" in state && mode === "updated"
+          ? t("provision.updateTitle", { ext: state.preview.extension, domain: state.preview.domain })
+          : t("provision.title");
 
   return (
     <Dialog

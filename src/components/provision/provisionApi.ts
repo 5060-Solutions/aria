@@ -1,9 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 import { registerAccounts } from "../../hooks/useSip";
-import { createProvisionFlow } from "../../stores/provisionFlow";
+import { createProvisionFlow, provisionedAccount } from "../../stores/provisionFlow";
 import type { ProvisionApi, ProvisionedLine, ProvisionPreview } from "../../stores/provisionFlow";
-import type { SipAccount, TransportType } from "../../types/sip";
 import { log } from "../../utils/log";
 
 /** A little longer than the backend's own registration timeout. */
@@ -45,41 +44,30 @@ function waitForRegistration(accountId: string): Promise<string | null> {
 }
 
 /**
- * Save a redeemed line as an account — updating the existing account for the
- * same username@domain in place — and register it.
+ * Save a redeemed line as an account and register it. Which account was
+ * decided by the backend: an update only ever targets one this same host set
+ * up, and keeps the user's own settings (see `provisionedAccount`).
  */
 async function activate(line: ProvisionedLine): Promise<string | null> {
   const store = useAppStore.getState();
-  const existing = store.accounts.find((a) => a.id === line.accountId);
-  const account: SipAccount = {
-    // An update keeps the user's own per-account settings (codecs, SRTP,
-    // dialing rules); the connection settings come from the link.
-    ...existing,
-    id: line.accountId,
-    displayName: line.displayName || line.username,
-    username: line.username,
-    domain: line.domain,
-    // Already in the credential store; never kept in app state.
-    password: "",
-    transport: line.transport as TransportType,
-    port: line.port,
-    registrar: line.registrar ?? undefined,
-    outboundProxy: line.outboundProxy ?? undefined,
-    authUsername: line.authUsername ?? undefined,
-    authRealm: undefined,
-    enabled: true,
-    voicemailNumber: line.voicemail ?? existing?.voicemailNumber,
-  };
+  const existing =
+    line.mode === "updated" ? store.accounts.find((a) => a.id === line.accountId) : undefined;
+  const account = provisionedAccount(line, existing);
   if (existing) {
     store.updateAccount(account);
   } else {
     store.addAccount(account);
   }
-  log.info("[Provision] Saved line", { id: account.id, username: account.username, updated: !!existing });
+  log.info("[Provision] Saved line", { id: account.id, username: account.username, mode: line.mode });
 
-  const result = waitForRegistration(account.id);
-  await registerAccounts([account]);
-  const error = await result;
+  let error: string | null;
+  if (account.enabled) {
+    const result = waitForRegistration(account.id);
+    await registerAccounts([account]);
+    error = await result;
+  } else {
+    error = "The line is turned off in Settings.";
+  }
 
   // First run: the line is saved whether or not it registered (the link is
   // used up), so leave the setup wizard either way.
@@ -91,12 +79,18 @@ async function activate(line: ProvisionedLine): Promise<string | null> {
 
 const tauriProvisionApi: ProvisionApi = {
   preview: (url) => invoke<ProvisionPreview>("provision_link_preview", { url }),
-  redeem: (url) =>
+  redeem: (url, preview) =>
     invoke<ProvisionedLine>("provision_link_redeem", {
       url,
+      expected: { extension: preview.extension, domain: preview.domain },
       accounts: useAppStore
         .getState()
-        .accounts.map(({ id, username, domain }) => ({ id, username, domain })),
+        .accounts.map(({ id, username, domain, provisionedFrom }) => ({
+          id,
+          username,
+          domain,
+          provisionedFrom: provisionedFrom ?? null,
+        })),
       newAccountId: crypto.randomUUID(),
     }),
   activate,

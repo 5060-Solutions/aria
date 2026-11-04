@@ -77,6 +77,10 @@ pub struct AccountConfig {
     /// Required for some FreeSwitch deployments where the challenge realm
     /// doesn't match the realm used for credential verification.
     pub auth_realm: Option<String>,
+    /// The name the TLS certificate is checked against, when it is neither the
+    /// registrar nor the domain — typically an outbound proxy's host. Set by
+    /// setup links; `None` for accounts set up by hand.
+    pub tls_server_name: Option<String>,
     #[allow(dead_code)]
     pub enabled: bool,
     /// Whether to automatically record calls for this account
@@ -100,10 +104,63 @@ impl AccountConfig {
         format!("sip:{}@{}", self.username, self.domain)
     }
 
+    /// The TLS server name: `tls_server_name`, else the registrar, else the
+    /// domain.
+    pub fn tls_name(&self) -> &str {
+        [self.tls_server_name.as_deref(), self.registrar.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|s| !s.is_empty())
+            .unwrap_or(&self.domain)
+    }
+
     pub fn effective_auth_username(&self) -> &str {
         self.auth_username
             .as_deref()
             .filter(|s| !s.is_empty())
             .unwrap_or(&self.username)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> AccountConfig {
+        AccountConfig {
+            id: "a".into(),
+            display_name: String::new(),
+            username: "1001".into(),
+            domain: "tenant.example.com".into(),
+            password: String::new(),
+            transport: TransportType::Tls,
+            port: 5061,
+            registrar: None,
+            outbound_proxy: None,
+            auth_username: None,
+            auth_realm: None,
+            tls_server_name: None,
+            enabled: true,
+            auto_record: false,
+            tls_insecure: false,
+            srtp_mode: SrtpMode::Disabled,
+            codecs: default_codec_preferences(),
+        }
+    }
+
+    #[test]
+    fn tls_name_prefers_the_explicit_name_then_registrar_then_domain() {
+        let mut c = config();
+        assert_eq!(c.tls_name(), "tenant.example.com");
+        c.registrar = Some("pbx.example.com".into());
+        assert_eq!(c.tls_name(), "pbx.example.com");
+        c.tls_server_name = Some("sip.example.com".into());
+        assert_eq!(c.tls_name(), "sip.example.com");
+        // Blank values are skipped, as an unset registrar always has been.
+        c.tls_server_name = Some("  ".into());
+        assert_eq!(c.tls_name(), "pbx.example.com");
+        c.registrar = None;
+        assert_eq!(c.tls_name(), "tenant.example.com");
     }
 }

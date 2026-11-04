@@ -1,8 +1,10 @@
 //! One-click setup links: `aria://provision?v=1&url=<redeem URL>`.
 //!
 //! The webview parses the `aria://` link and hands the redeem URL here; the
-//! HTTP calls happen in Rust so the SIP password never passes through the
-//! webview's network stack, and is written straight to the credential store.
+//! HTTP calls happen in Rust so the reply never passes through the webview's
+//! network stack, and the password is written straight to the credential
+//! store rather than returned. (Registering the line afterwards loads it into
+//! the webview and back over IPC, as it does for every account at startup.)
 //!
 //! The flow is two calls against the same URL:
 //! - `GET` returns a preview (tenant, extension, domain) and does not use the
@@ -12,7 +14,9 @@
 //!
 //! Any web page can fire an `aria://` link, so nothing here runs without the
 //! user's click on the confirm dialog, and the URL is re-checked here: the
-//! webview is not trusted to have validated it.
+//! webview is not trusted to have validated it. A redeem must return the line
+//! the preview showed, and may only overwrite an account that the same host
+//! set up earlier: a server cannot use a link to take over another line.
 //!
 //! Never log the URL (its last path segment is the one-time token), the
 //! response body or the password.
@@ -44,6 +48,8 @@ pub enum ProvisionError {
     TooLarge,
     Timeout,
     Unreachable,
+    /// The redeem returned a different line than the preview showed.
+    Mismatch,
     /// The password could not be saved.
     Storage(String),
 }
@@ -63,6 +69,9 @@ impl ProvisionError {
             Self::Timeout => "The setup server took too long to answer. Try again.".into(),
             Self::Unreachable => {
                 "Couldn't reach the setup server. Check your connection and try again.".into()
+            }
+            Self::Mismatch => {
+                "The setup server sent a different line than it showed. Nothing was changed.".into()
             }
             Self::Storage(e) => format!("Couldn't save the line's password: {e}"),
         }
@@ -171,9 +180,15 @@ fn get_str<'a>(map: &'a serde_json::Map<String, serde_json::Value>, key: &str) -
     map.get(key).and_then(serde_json::Value::as_str).map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// Display text: control characters dropped, length capped.
-fn clean_text(s: &str, max_chars: usize) -> String {
-    s.chars().filter(|c| !c.is_control()).take(max_chars).collect::<String>().trim().to_string()
+/// Display text: control characters, quotes, backslashes and angle brackets
+/// dropped (a display name goes into a SIP quoted-string), length capped.
+pub(crate) fn clean_text(s: &str, max_chars: usize) -> String {
+    s.chars()
+        .filter(|c| !c.is_control() && !matches!(c, '"' | '\\' | '<' | '>'))
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// A DNS name or IPv4 address (no port).
@@ -260,9 +275,10 @@ pub struct RedeemedLine {
     pub domain: String,
     /// `host:port`, the form `AccountConfig::outbound_proxy` takes.
     pub outbound_proxy: Option<String>,
-    /// The proxy's host, used as the registrar so the TLS certificate is
-    /// checked against the host actually connected to.
-    pub registrar: Option<String>,
+    /// The proxy's host, so the TLS certificate is checked against the host
+    /// actually connected to. The registrar stays unset: REGISTER goes to the
+    /// domain.
+    pub tls_server_name: Option<String>,
     pub port: u16,
     pub transport: String,
     pub voicemail: Option<String>,
@@ -324,7 +340,7 @@ pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<
             .filter(|p| *p != 0)
             .ok_or(ProvisionError::BadReply("port"))?,
     };
-    let (outbound_proxy, registrar) = match get_str(map, "outbound_proxy") {
+    let (outbound_proxy, tls_server_name) = match get_str(map, "outbound_proxy") {
         None => (None, None),
         Some(raw) => {
             let (host, own_port) = parse_proxy(raw).ok_or(ProvisionError::BadReply("outbound_proxy"))?;
@@ -345,7 +361,7 @@ pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<
         password,
         domain,
         outbound_proxy,
-        registrar,
+        tls_server_name,
         port,
         transport,
         voicemail,
@@ -362,13 +378,38 @@ pub async fn redeem(url: &reqwest::Url, timeout: Duration) -> Result<RedeemedLin
 
 // ── Commands ────────────────────────────────────────────────────────────────
 
-/// An account the app already has, so a link for the same line updates it.
+/// An account the app already has, so a link for the same line can update it.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KnownAccount {
     pub id: String,
     pub username: String,
     pub domain: String,
+    /// The setup-link host that created the account; `None` if set up by hand.
+    #[serde(default)]
+    pub provisioned_from: Option<String>,
+}
+
+/// The line the user agreed to in the preview. A redeem for any other line is
+/// refused.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectedLine {
+    pub extension: String,
+    pub domain: String,
+}
+
+/// What a redeem does to the app's accounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LineMode {
+    /// A new account.
+    Added,
+    /// The account this same host set up earlier, updated in place.
+    Updated,
+    /// A new account, although one with the same username@domain exists: that
+    /// one was set up by hand or by another host, and is left alone.
+    Separate,
 }
 
 /// What the UI gets back after a redeem: everything but the password, which
@@ -377,36 +418,96 @@ pub struct KnownAccount {
 #[serde(rename_all = "camelCase")]
 pub struct ProvisionedLine {
     pub account_id: String,
-    /// An existing account was updated rather than a new one added.
-    pub updated: bool,
+    pub mode: LineMode,
+    /// The setup link's `host[:port]`, recorded on the account.
+    pub provisioned_from: String,
     pub tenant_name: String,
     pub display_name: String,
     pub username: String,
     pub auth_username: Option<String>,
     pub domain: String,
     pub outbound_proxy: Option<String>,
-    pub registrar: Option<String>,
+    pub tls_server_name: Option<String>,
     pub port: u16,
     pub transport: String,
     pub voicemail: Option<String>,
 }
 
-/// The account a redeemed line belongs to: the existing one with the same
-/// `username@domain`, or a new one.
-pub fn pick_account_id(line: &RedeemedLine, known: &[KnownAccount], new_id: &str) -> (String, bool) {
-    known
+/// The account a redeemed line goes to. Only an account the same host set up
+/// may be overwritten; one with the same identity from anywhere else gets a
+/// separate new account beside it.
+pub fn pick_account(line: &RedeemedLine, known: &[KnownAccount], host: &str, new_id: &str) -> (String, LineMode) {
+    let same_identity: Vec<&KnownAccount> = known
         .iter()
-        .find(|a| a.username == line.username && a.domain.trim().eq_ignore_ascii_case(&line.domain))
-        .map(|a| (a.id.clone(), true))
-        .unwrap_or_else(|| (new_id.to_string(), false))
+        .filter(|a| a.username == line.username && a.domain.trim().eq_ignore_ascii_case(&line.domain))
+        .collect();
+    if let Some(own) = same_identity
+        .iter()
+        .find(|a| a.provisioned_from.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(host)))
+    {
+        return (own.id.clone(), LineMode::Updated);
+    }
+    let mode = if same_identity.is_empty() { LineMode::Added } else { LineMode::Separate };
+    (new_id.to_string(), mode)
 }
 
 fn is_account_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// A password on its way to the credential store. Never printed.
+pub struct Password(pub String);
+
+impl std::fmt::Debug for Password {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(..)")
+    }
+}
+
+/// Redeem and check the reply against the preview, choosing the account it
+/// goes to. Writes nothing: the caller stores the password only on `Ok`, so a
+/// refused redeem leaves every account and keychain entry as it was.
+pub async fn redeem_checked(
+    url: &reqwest::Url,
+    expected: &ExpectedLine,
+    known: &[KnownAccount],
+    new_account_id: &str,
+    timeout: Duration,
+) -> Result<(ProvisionedLine, Password), ProvisionError> {
+    let line = redeem(url, timeout).await?;
+    if line.username != expected.extension || !line.domain.eq_ignore_ascii_case(expected.domain.trim()) {
+        log::warn!(
+            "[provision] redeem returned {}@{}, preview showed {}@{}; refused",
+            line.username, line.domain, expected.extension, expected.domain
+        );
+        return Err(ProvisionError::Mismatch);
+    }
+    let host = server_host(url);
+    let (account_id, mode) = pick_account(&line, known, &host, new_account_id);
+    let password = Password(line.password);
+    Ok((
+        ProvisionedLine {
+            account_id,
+            mode,
+            provisioned_from: host,
+            tenant_name: line.tenant_name,
+            display_name: line.display_name,
+            username: line.username,
+            auth_username: line.auth_username,
+            domain: line.domain,
+            outbound_proxy: line.outbound_proxy,
+            tls_server_name: line.tls_server_name,
+            port: line.port,
+            transport: line.transport,
+            voicemail: line.voicemail,
+        },
+        password,
+    ))
+}
+
 /// Bring the main window forward so the confirm dialog is seen. The OS
-/// usually does this for a deep link already; not on every platform.
+/// usually does this for a deep link already; not on every platform. Only
+/// called for a link that passed validation.
 fn focus_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -415,13 +516,17 @@ fn focus_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn checked_url(url: &str) -> Result<reqwest::Url, String> {
+    validate_redeem_url(url, cfg!(debug_assertions)).map_err(|e| {
+        log::warn!("[provision] refused a setup link: {e:?}");
+        e.user_message()
+    })
+}
+
 /// Fetch a setup link's preview. Uses nothing up.
 #[tauri::command]
 pub async fn provision_link_preview(app: tauri::AppHandle, url: String) -> Result<ProvisionPreview, String> {
-    let url = validate_redeem_url(&url, cfg!(debug_assertions)).map_err(|e| {
-        log::warn!("[provision] refused a setup link: {e:?}");
-        e.user_message()
-    })?;
+    let url = checked_url(&url)?;
     focus_main_window(&app);
     fetch_preview(&url, TIMEOUT).await.map_err(|e| e.user_message())
 }
@@ -431,40 +536,24 @@ pub async fn provision_link_preview(app: tauri::AppHandle, url: String) -> Resul
 #[tauri::command]
 pub async fn provision_link_redeem(
     url: String,
+    expected: ExpectedLine,
     accounts: Vec<KnownAccount>,
     new_account_id: String,
 ) -> Result<ProvisionedLine, String> {
-    let url = validate_redeem_url(&url, cfg!(debug_assertions)).map_err(|e| {
-        log::warn!("[provision] refused a setup link: {e:?}");
-        e.user_message()
-    })?;
+    let url = checked_url(&url)?;
     if !is_account_id(&new_account_id) {
         return Err("Invalid account id".into());
     }
-    let line = redeem(&url, TIMEOUT).await.map_err(|e| e.user_message())?;
-    let (account_id, updated) = pick_account_id(&line, &accounts, &new_account_id);
-
-    let password = line.password.clone();
-    let store_id = account_id.clone();
-    tokio::task::spawn_blocking(move || crate::commands::store_credential_blocking(&store_id, &password))
+    let (line, password) = redeem_checked(&url, &expected, &accounts, &new_account_id, TIMEOUT)
+        .await
+        .map_err(|e| e.user_message())?;
+    // The keychain can block on an unlock prompt; keep it off the runtime.
+    let id = line.account_id.clone();
+    tokio::task::spawn_blocking(move || crate::commands::store_credential_blocking(&id, &password.0))
         .await
         .map_err(|e| ProvisionError::Storage(e.to_string()).user_message())?
         .map_err(|e| ProvisionError::Storage(e).user_message())?;
-
-    Ok(ProvisionedLine {
-        account_id,
-        updated,
-        tenant_name: line.tenant_name,
-        display_name: line.display_name,
-        username: line.username,
-        auth_username: line.auth_username,
-        domain: line.domain,
-        outbound_proxy: line.outbound_proxy,
-        registrar: line.registrar,
-        port: line.port,
-        transport: line.transport,
-        voicemail: line.voicemail,
-    })
+    Ok(line)
 }
 
 #[cfg(test)]
