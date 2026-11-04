@@ -2,6 +2,7 @@ mod ai;
 mod audio_test;
 mod commands;
 mod mcp;
+mod provision;
 mod sip;
 mod system_contacts;
 
@@ -214,6 +215,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::provision_from_qr,
+            provision::provision_link_preview,
+            provision::provision_link_redeem,
             commands::sip_register,
             commands::sip_unregister,
             commands::sip_unregister_account,

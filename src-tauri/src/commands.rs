@@ -1040,7 +1040,7 @@ pub async fn store_credential(account_id: String, password: String) -> Result<()
         .map_err(|e| format!("keychain task failed: {e}"))?
 }
 
-fn store_credential_blocking(account_id: &str, password: &str) -> Result<(), String> {
+pub(crate) fn store_credential_blocking(account_id: &str, password: &str) -> Result<(), String> {
     log::info!("store_credential: account_id={}, password_len={}", account_id, password.len());
     
     #[cfg(feature = "dev-insecure")]
