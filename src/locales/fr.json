@@ -199,6 +199,7 @@
     "connect": "Connecter",
     "connecting": "Connexion...",
     "tagline": "Votre voix, magnifiquement connectée.",
+    "scanQr": "Scanner un code QR",
     "developerDiagnostics": "Diagnostics développeur"
   },
   "diagnostics": {

@@ -199,6 +199,7 @@
     "connect": "Verbinden",
     "connecting": "Verbinde...",
     "tagline": "Deine Stimme, wunderschön verbunden.",
+    "scanQr": "QR-Code scannen",
     "developerDiagnostics": "Entwickler-Diagnose"
   },
   "diagnostics": {

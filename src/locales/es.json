@@ -202,6 +202,7 @@
     "connect": "Conectar",
     "connecting": "Conectando...",
     "tagline": "Tu voz, bellamente conectada.",
+    "scanQr": "Escanear código QR",
     "developerDiagnostics": "Diagnósticos de desarrollador"
   },
   "diagnostics": {

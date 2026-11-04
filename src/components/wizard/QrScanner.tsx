@@ -19,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import { log } from "../../utils/log";
 import { allowLocalSetupLinks, parseProvisionLink } from "../../utils/provisionLink";
 import type { ProvisionLink } from "../../utils/provisionLink";
+import { isHost, isSipUser, normalizeProxy } from "../../utils/sipFields";
 
 export interface QrProvisionData {
   server: string;
@@ -65,6 +66,20 @@ function parseAriaUri(uri: string): QrProvisionData | null {
     if (uri.startsWith("{")) {
       const json = JSON.parse(uri);
       if (json.type === "aria-sip") {
+        // The optional fields are newer than the format; check them like a
+        // setup link's, and refuse the code rather than guess.
+        const domain = optionalString(json.domain);
+        const proxyRaw = optionalString(json.outbound_proxy);
+        const outboundProxy = proxyRaw === undefined ? undefined : normalizeProxy(proxyRaw);
+        const authUsername = optionalString(json.auth_username);
+        if (
+          (domain !== undefined && !isHost(domain)) ||
+          outboundProxy === null ||
+          (authUsername !== undefined && !isSipUser(authUsername))
+        ) {
+          log.warn("[QrScanner] Refused a code with an unusable domain, proxy or auth username");
+          return null;
+        }
         return {
           server: json.server ?? "",
           port: json.port ?? 5060,
@@ -73,9 +88,9 @@ function parseAriaUri(uri: string): QrProvisionData | null {
           displayName: json.display_name ?? json.username ?? "",
           transport: json.transport ?? "udp",
           voicemail: json.voicemail ?? "*97",
-          domain: optionalString(json.domain),
-          outboundProxy: optionalString(json.outbound_proxy),
-          authUsername: optionalString(json.auth_username),
+          domain: domain?.toLowerCase(),
+          outboundProxy,
+          authUsername,
         };
       }
       return null;

@@ -18,6 +18,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import BugReportOutlinedIcon from "@mui/icons-material/BugReportOutlined";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -571,6 +572,17 @@ export function SetupWizard() {
             }}
           >
             {connecting ? t("wizard.connecting") : t("wizard.connect")}
+          </Button>
+
+          {/* The other way in: a QR code or a pasted setup link. */}
+          <Button
+            variant="text"
+            startIcon={<QrCodeScannerIcon />}
+            disabled={connecting}
+            onClick={() => setShowQrScanner(true)}
+            sx={{ borderRadius: "20px", color: "text.secondary", textTransform: "none" }}
+          >
+            {t("wizard.scanQr")}
           </Button>
         </Box>
       </motion.div>
