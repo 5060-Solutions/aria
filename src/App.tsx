@@ -19,6 +19,9 @@ import "./i18n";
 
 const isDebugWindow = getCurrentWebviewWindow().label === "debug";
 
+/** How long a runtime copy of the launch link is treated as a duplicate. */
+const LAUNCH_DUPLICATE_MS = 5000;
+
 /**
  * The links Aria was launched with. Read once at load, not per effect run:
  * the backend hands them out only once per run, and a StrictMode re-run must
@@ -86,6 +89,7 @@ function MainApp() {
     // backend (asked once per run, so a webview reload does not replay it)
     // and as a runtime event. Each copy is handled once.
     const launchHandled = new Set<string>();
+    const timers: ReturnType<typeof setTimeout>[] = [];
     const seenBeforeLaunch = new Set<string>();
     let launchRead = false;
     const unlisten = onOpenUrl((urls) => {
@@ -99,12 +103,18 @@ function MainApp() {
       launchRead = true;
       if (cancelled) return;
       const fresh = urls.filter((u) => !seenBeforeLaunch.has(u));
-      fresh.forEach((u) => launchHandled.add(u));
+      fresh.forEach((u) => {
+        launchHandled.add(u);
+        // The runtime copy, if any, comes at once. After that an identical
+        // link is the user clicking again and must go through.
+        timers.push(setTimeout(() => launchHandled.delete(u), LAUNCH_DUPLICATE_MS));
+      });
       handle(fresh);
     });
 
     return () => {
       cancelled = true;
+      timers.forEach(clearTimeout);
       unlisten.then((fn) => fn());
     };
   }, [setDialInput, setCurrentView]);

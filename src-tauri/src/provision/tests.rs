@@ -446,3 +446,12 @@ fn display_text_cannot_break_a_quoted_string() {
     body["display_name"] = json!("A\"B\\C<D>");
     assert_eq!(parse_redeem(&obj(body)).unwrap().display_name, "ABCD");
 }
+
+#[tokio::test]
+async fn a_new_account_id_that_is_already_taken_is_refused_before_redeeming() {
+    let stub = Stub::json("200 OK", &redeem_body()).await;
+    let accounts = [known("taken", "2002", "elsewhere.example.com", None)];
+    let r = redeem_checked(&stub.url(), &expected("1001", "regular-test.ariaroute.com"), &accounts, "taken", SHORT).await;
+    assert_eq!(r.map(|(l, _)| l), Err(ProvisionError::AccountIdInUse));
+    assert!(stub.methods().is_empty(), "the link must not be used up");
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createProvisionFlow, previewMode, provisionedAccount } from "./provisionFlow";
+import { createProvisionFlow, dialogMode, previewMode, provisionedAccount } from "./provisionFlow";
 import type { ProvisionApi, ProvisionedLine, ProvisionPreview } from "./provisionFlow";
 import type { SipAccount } from "../types/sip";
 
@@ -289,5 +289,23 @@ describe("provisionedAccount", () => {
       password: "",
     });
     expect(a.registrar).toBeUndefined();
+  });
+});
+
+describe("dialogMode", () => {
+  it("keeps the redeemed line's mode once the new line is among the accounts", async () => {
+    const separate = { ...line, mode: "separate" as const };
+    const flow = createProvisionFlow(mockApi({ redeem: vi.fn(async () => separate) }));
+    flow.getState().open(link);
+    await flush();
+    // A hand-made 1001 exists: a separate line.
+    const handMade = account({ id: "hand" });
+    expect(dialogMode(flow.getState().state, [handMade])).toBe("separate");
+    await flow.getState().confirm();
+    // Now the new line (from this host) is saved too, which previewMode would
+    // read as an update of itself.
+    const added = account({ id: "acc-1", provisionedFrom: "api.ariaroute.com" });
+    expect(previewMode(preview, [handMade, added])).toBe("updated");
+    expect(dialogMode(flow.getState().state, [handMade, added])).toBe("separate");
   });
 });

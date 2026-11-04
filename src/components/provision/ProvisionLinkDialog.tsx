@@ -13,7 +13,7 @@ import { useStore } from "zustand";
 import { useTranslation } from "react-i18next";
 import { provisionFlow } from "./provisionApi";
 import { useAppStore } from "../../stores/appStore";
-import { previewMode } from "../../stores/provisionFlow";
+import { dialogMode } from "../../stores/provisionFlow";
 import type { LineMode, ProvisionPreview } from "../../stores/provisionFlow";
 
 /**
@@ -102,8 +102,7 @@ export function ProvisionLinkDialog() {
 
   // What Add will do, shown before the click. The backend makes the same
   // decision and is the one that enforces it.
-  const mode: LineMode =
-    "preview" in state ? previewMode(state.preview, accounts) : state.phase === "done" ? state.line.mode : "added";
+  const mode: LineMode = dialogMode(state, accounts);
   const addLabel = mode === "updated" ? t("provision.updateLine") : t("provision.addLine");
 
   const busy = state.phase === "redeeming" || state.phase === "registering";

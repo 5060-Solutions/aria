@@ -50,6 +50,8 @@ pub enum ProvisionError {
     Unreachable,
     /// The redeem returned a different line than the preview showed.
     Mismatch,
+    /// The id offered for a new account is already an existing account's.
+    AccountIdInUse,
     /// The password could not be saved.
     Storage(String),
 }
@@ -73,6 +75,7 @@ impl ProvisionError {
             Self::Mismatch => {
                 "The setup server sent a different line than it showed. Nothing was changed.".into()
             }
+            Self::AccountIdInUse => "Couldn't add the line. Try the link again.".into(),
             Self::Storage(e) => format!("Couldn't save the line's password: {e}"),
         }
     }
@@ -474,6 +477,11 @@ pub async fn redeem_checked(
     new_account_id: &str,
     timeout: Duration,
 ) -> Result<(ProvisionedLine, Password), ProvisionError> {
+    // A "new" id that is already an account's would overwrite that account's
+    // password. Checked before the link is used up.
+    if known.iter().any(|a| a.id == new_account_id) {
+        return Err(ProvisionError::AccountIdInUse);
+    }
     let line = redeem(url, timeout).await?;
     if line.username != expected.extension || !line.domain.eq_ignore_ascii_case(expected.domain.trim()) {
         log::warn!(

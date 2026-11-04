@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import i18n from "i18next";
 import { useAppStore } from "../../stores/appStore";
 import { registerAccounts } from "../../hooks/useSip";
 import { createProvisionFlow, provisionedAccount } from "../../stores/provisionFlow";
@@ -66,7 +67,7 @@ async function activate(line: ProvisionedLine): Promise<string | null> {
     await registerAccounts([account]);
     error = await result;
   } else {
-    error = "The line is turned off in Settings.";
+    error = i18n.t("provision.lineOff");
   }
 
   // First run: the line is saved whether or not it registered (the link is

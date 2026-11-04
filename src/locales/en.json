@@ -357,6 +357,7 @@
     "failedTitle": "Couldn't add the line",
     "done": "Done",
     "close": "Close",
-    "invalidLink": "This setup link isn't valid."
+    "invalidLink": "This setup link isn't valid.",
+    "lineOff": "The line is turned off in Settings."
   }
 }

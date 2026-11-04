@@ -76,6 +76,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore, saveAccountPassword, loadAccountPassword, deleteAccountPassword, getAccountWithPassword } from "../../stores/appStore";
 import { useUpdateStore } from "../../stores/updateStore";
 import { sipRegister, sipUnregisterAccount, sipSetActiveAccount } from "../../hooks/useSip";
+import { keptProvisioning } from "../../utils/accountEdit";
 import type {
   SipAccount,
   TransportType,
@@ -383,13 +384,11 @@ export function Settings() {
       autoCountryCode: form.autoCountryCode,
       stripPrefix: form.stripPrefix.trim() || undefined,
       prependPrefix: form.prependPrefix.trim() || undefined,
-      // Not on the form. The TLS name goes with the proxy a setup link set,
-      // so it is kept only while that proxy is.
-      tlsServerName:
-        editingAccount && (editingAccount.outboundProxy ?? "") === form.outboundProxy.trim()
-          ? editingAccount.tlsServerName
-          : undefined,
-      provisionedFrom: editingAccount?.provisionedFrom,
+      ...keptProvisioning(editingAccount, {
+        username: form.username.trim(),
+        domain: form.server.trim(),
+        outboundProxy: form.outboundProxy.trim() || undefined,
+      }),
     };
 
     // try/finally so a keychain error cannot leave the Save button spinning

@@ -57,6 +57,17 @@ export function previewMode(preview: ProvisionPreview, accounts: readonly Accoun
 }
 
 /**
+ * What the dialog says Add will do. Once the line is redeemed it is the
+ * backend's answer, not recomputed: by then the new line is itself among the
+ * accounts and would read as an update of itself.
+ */
+export function dialogMode(state: ProvisionState, accounts: readonly AccountIdentity[]): LineMode {
+  if ("line" in state) return state.line.mode;
+  if ("preview" in state) return previewMode(state.preview, accounts);
+  return "added";
+}
+
+/**
  * The account to save for a redeemed line. An update replaces only the
  * credentials and server settings, keeping what the user chose (name,
  * enabled, codecs, SRTP, recording, dialing rules, realm override).
