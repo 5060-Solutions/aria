@@ -2,7 +2,7 @@ import { useMemo, useEffect } from "react";
 import { ThemeProvider, CssBaseline } from "@mui/material";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { useAppStore } from "./stores/appStore";
 import { lightTheme, darkTheme } from "./theme";
 import { AppShell } from "./components/layout/AppShell";
@@ -12,6 +12,9 @@ import { useSipEvents, useAutoRegister } from "./hooks/useSip";
 import { useNetworkMonitor } from "./hooks/useNetworkMonitor";
 import { log } from "./utils/log";
 import { deepLinkTarget } from "./utils/deepLink";
+import { allowLocalSetupLinks, isProvisionLink, parseProvisionLink } from "./utils/provisionLink";
+import { ProvisionLinkDialog } from "./components/provision/ProvisionLinkDialog";
+import { provisionFlow } from "./components/provision/provisionApi";
 import "./i18n";
 
 const isDebugWindow = getCurrentWebviewWindow().label === "debug";
@@ -39,10 +42,24 @@ function MainApp() {
     });
   }, []);
 
-  // Handle tel: and sip: deep links
+  // Handle tel:, sip: and aria://provision deep links
   useEffect(() => {
-    const unlisten = onOpenUrl((urls) => {
+    const handle = (urls: string[]) => {
       for (const url of urls) {
+        // aria://provision?v=1&url=… — a one-click setup link. It only opens
+        // a confirm dialog; nothing is added until the user says so. Neither
+        // the link nor its URL is logged: the URL carries a one-time token.
+        if (isProvisionLink(url)) {
+          const parsed = parseProvisionLink(url, { allowLocalHttp: allowLocalSetupLinks });
+          if (!parsed.ok) {
+            log.warn("[DeepLink] Ignored a setup link:", parsed.reason);
+          } else if (provisionFlow.getState().open(parsed.link)) {
+            log.info("[DeepLink] Setup link from", parsed.link.serverHost);
+          } else {
+            log.info("[DeepLink] Ignored a setup link: another one is open");
+          }
+          continue;
+        }
         // tel:+1234567890 or sip:user@domain.com. The link comes from any web
         // page, so it is only ever put in the dialer, never dialled.
         const target = deepLinkTarget(url);
@@ -51,14 +68,38 @@ function MainApp() {
         setCurrentView("dialer");
         log.info("[DeepLink] Received link, setting dialer to:", target);
       }
+    };
+
+    // Links that arrive while running. Remembered so the launch link below is
+    // not handled twice when it comes both ways.
+    const delivered = new Set<string>();
+    const unlisten = onOpenUrl((urls) => {
+      urls.forEach((u) => delivered.add(u));
+      handle(urls);
     });
 
+    // The link Aria was launched with (cold start): it can arrive before this
+    // listener exists, so ask for it once.
+    let cancelled = false;
+    getCurrent()
+      .then((urls) => {
+        if (!cancelled && urls) handle(urls.filter((u) => !delivered.has(u)));
+      })
+      .catch((e) => log.warn("[DeepLink] Could not read the launch link:", e));
+
     return () => {
+      cancelled = true;
       unlisten.then((fn) => fn());
     };
   }, [setDialInput, setCurrentView]);
 
-  return setupComplete ? <AppShell /> : <SetupWizard />;
+  return (
+    <>
+      {setupComplete ? <AppShell /> : <SetupWizard />}
+      {/* Outside both, so a setup link works on first run too. */}
+      <ProvisionLinkDialog />
+    </>
+  );
 }
 
 export function App() {

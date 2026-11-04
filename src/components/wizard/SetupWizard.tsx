@@ -25,6 +25,7 @@ import { useAppStore, saveAccountPassword } from "../../stores/appStore";
 import { sipRegister } from "../../hooks/useSip";
 import { QrScanner } from "./QrScanner";
 import type { QrProvisionData } from "./QrScanner";
+import { provisionFlow } from "../provision/provisionApi";
 import type { SipAccount, TransportType } from "../../types/sip";
 import { log } from "../../utils/log";
 
@@ -233,11 +234,13 @@ export function SetupWizard() {
       id: accountId,
       displayName: data.displayName || data.username,
       username: data.username,
-      domain: data.server,
+      domain: data.domain || data.server,
       password: data.password,
       transport: (data.transport as TransportType) || "udp",
       port: data.port,
       registrar: data.server,
+      outboundProxy: data.outboundProxy,
+      authUsername: data.authUsername,
       enabled: true,
       // The QR payload carries the voicemail number; it was parsed and then
       // dropped. Keep it so the voicemail button knows what to dial.
@@ -267,6 +270,10 @@ export function SetupWizard() {
     return (
       <QrScanner
         onProvisioned={handleQrProvisioned}
+        onProvisionLink={(link) => {
+          setShowQrScanner(false);
+          provisionFlow.getState().open(link);
+        }}
         onCancel={() => setShowQrScanner(false)}
       />
     );

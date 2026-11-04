@@ -333,5 +333,25 @@
     "allow": "Allow",
     "deny": "Deny",
     "noAccount": "No account is available to place this call."
+  },
+  "provision": {
+    "title": "Add this phone line?",
+    "checking": "Checking the setup link…",
+    "setUpBy": "Set up by",
+    "organization": "Organization",
+    "line": "Line",
+    "domain": "Domain",
+    "trustNote": "Only add lines from people you trust.",
+    "addLine": "Add line",
+    "adding": "Adding line…",
+    "connecting": "Connecting…",
+    "added": "Added line {{ext}}",
+    "updated": "Updated line {{ext}}",
+    "ready": "It's ready to use.",
+    "notConnected": "It's saved, but it couldn't connect:",
+    "failedTitle": "Couldn't add the line",
+    "done": "Done",
+    "close": "Close",
+    "invalidLink": "This setup link isn't valid."
   }
 }
