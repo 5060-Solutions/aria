@@ -1,6 +1,6 @@
 import { createStore } from "zustand/vanilla";
 import type { ProvisionLink } from "../utils/provisionLink";
-import type { SipAccount, TransportType } from "../types/sip";
+import type { SipAccount, SrtpMode, TransportType } from "../types/sip";
 
 /** What a setup link's preview shows (from `provision_link_preview`). Nothing secret. */
 export interface ProvisionPreview {
@@ -31,7 +31,14 @@ export interface ProvisionedLine {
   port: number;
   transport: string;
   voicemail: string | null;
+  /**
+   * The media encryption the server asks for. `null` when it sent none or a
+   * value the backend didn't recognise. See `provisionedSrtpMode`.
+   */
+  srtp: ProvisionSrtp | null;
 }
+
+export type ProvisionSrtp = "sdes" | "disabled";
 
 /**
  * What a setup link does to the app's accounts:
@@ -68,9 +75,41 @@ export function dialogMode(state: ProvisionState, accounts: readonly AccountIden
 }
 
 /**
+ * The SRTP mode a redeemed line ends up with:
+ * - `sdes` over TLS: `sdes`.
+ * - `sdes` over UDP/TCP: not enabled (SDES keys would travel in clear), so
+ *   treated as absent. The backend logs a warning.
+ * - `disabled`: `disabled`.
+ * - absent: the existing line's mode, untouched, or `disabled` for a new line.
+ */
+export function provisionedSrtpMode(
+  line: ProvisionedLine,
+  existing: SipAccount | undefined,
+): SrtpMode | undefined {
+  const keep = existing ? existing.srtpMode : "disabled";
+  switch (line.srtp) {
+    case "sdes":
+      return line.transport === "tls" ? "sdes" : keep;
+    case "disabled":
+      return "disabled";
+    default:
+      return keep;
+  }
+}
+
+/** How well a line's calls are protected, for the setup dialog. */
+export type CallProtection = "srtp" | "tlsOnly" | "none";
+
+export function callProtection(account: Pick<SipAccount, "transport" | "srtpMode">): CallProtection {
+  if (account.transport !== "tls") return "none";
+  return account.srtpMode === "sdes" ? "srtp" : "tlsOnly";
+}
+
+/**
  * The account to save for a redeemed line. An update replaces only the
- * credentials and server settings, keeping what the user chose (name,
- * enabled, codecs, SRTP, recording, dialing rules, realm override).
+ * credentials, server settings and (when the server says) SRTP, keeping what
+ * the user chose (name, enabled, codecs, recording, dialing rules, realm
+ * override).
  */
 export function provisionedAccount(line: ProvisionedLine, existing: SipAccount | undefined): SipAccount {
   const server = {
@@ -87,6 +126,7 @@ export function provisionedAccount(line: ProvisionedLine, existing: SipAccount |
     tlsServerName: line.tlsServerName ?? undefined,
     authUsername: line.authUsername ?? undefined,
     provisionedFrom: line.provisionedFrom,
+    srtpMode: provisionedSrtpMode(line, existing),
   };
   if (existing) {
     return {
