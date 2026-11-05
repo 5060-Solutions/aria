@@ -122,7 +122,45 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" $KEYCHAIN_PATH
           security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
 
+      # The DMG window styling (background, icon positions) is an AppleScript
+      # that drives Finder. Tauri skips it whenever CI=true, which GitHub
+      # sets, so released DMGs were plain; TAURI_BUNDLER_DMG_IGNORE_CI turns
+      # it back on. Finder automation on a hosted runner can still time out,
+      # and a failed script fails the bundle, so this attempt may fail and
+      # the next step then builds the plain DMG exactly as before. A styling
+      # failure can cost a rebuild but never the release.
       - name: Build Tauri app
+        id: tauri_build
+        continue-on-error: ${{ runner.os == 'macOS' }}
+        uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || 'false' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Signs the updater artifacts and lets tauri-action emit latest.json.
+          # Without these the release ships no update manifest and clients
+          # silently never see the update.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Aria ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install Aria.'
+          # Draft: every matrix job publishes to the same release, and
+          # tauri-action writes the latest.json the auto-updater reads. A
+          # job failing after others succeeded would otherwise point every
+          # installed client at a release missing its platform's artifact.
+          # The publish job below releases it once every build succeeds.
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+      - name: Build Tauri app (plain DMG)
+        if: steps.tauri_build.outcome == 'failure' && runner.os == 'macOS'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -262,7 +300,45 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" $KEYCHAIN_PATH
           security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
 
+      # The DMG window styling (background, icon positions) is an AppleScript
+      # that drives Finder. Tauri skips it whenever CI=true, which GitHub
+      # sets, so released DMGs were plain; TAURI_BUNDLER_DMG_IGNORE_CI turns
+      # it back on. Finder automation on a hosted runner can still time out,
+      # and a failed script fails the bundle, so this attempt may fail and
+      # the next step then builds the plain DMG exactly as before. A styling
+      # failure can cost a rebuild but never the release.
       - name: Build Tauri app (universal binary)
+        id: tauri_build
+        continue-on-error: true
+        uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Signs the updater artifacts and lets tauri-action emit latest.json.
+          # Without these the release ships no update manifest and clients
+          # silently never see the update.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Aria ${{ github.ref_name }}'
+          releaseBody: 'See the assets below to download and install Aria.'
+          # Draft: every matrix job publishes to the same release, and
+          # tauri-action writes the latest.json the auto-updater reads. A
+          # job failing after others succeeded would otherwise point every
+          # installed client at a release missing its platform's artifact.
+          # The publish job below releases it once every build succeeds.
+          releaseDraft: true
+          prerelease: false
+          args: --target universal-apple-darwin
+
+      - name: Build Tauri app (universal binary, plain DMG)
+        if: steps.tauri_build.outcome == 'failure'
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

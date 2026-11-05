@@ -75,6 +75,8 @@ interface AudioDevices {
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore, saveAccountPassword, loadAccountPassword, deleteAccountPassword, getAccountWithPassword } from "../../stores/appStore";
 import { useUpdateStore } from "../../stores/updateStore";
+import { useAboutStore } from "../../stores/aboutStore";
+import { getVersion } from "@tauri-apps/api/app";
 import { sipRegister, sipUnregisterAccount, sipSetActiveAccount } from "../../hooks/useSip";
 import { keptProvisioning } from "../../utils/accountEdit";
 import type {
@@ -211,6 +213,8 @@ export function Settings() {
   const updateErrorMessage = useUpdateStore((s) => s.errorMessage);
   const checkForUpdate = useUpdateStore((s) => s.checkForUpdate);
   const clearUpdateResult = useUpdateStore((s) => s.clearManualResult);
+  const openAbout = useAboutStore((s) => s.openAbout);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const inCall = useAppStore((s) =>
     s.activeCalls.some((c) => c.state !== "idle" && c.state !== "ended")
   );
@@ -609,6 +613,18 @@ export function Settings() {
   // Drop a stale "up to date" / error result when leaving Settings, so the row
   // reads as a fresh check next time it is opened.
   useEffect(() => clearUpdateResult, [clearUpdateResult]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getVersion()
+      .then((v) => {
+        if (!cancelled) setAppVersion(v);
+      })
+      .catch((e) => log.warn("Could not read the app version:", e));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateChecking = updateCheckStatus === "checking";
   const updateStatusText = (() => {
@@ -1445,30 +1461,24 @@ export function Settings() {
         <Divider sx={{ my: 1.5, opacity: 0.15 }} />
 
         {/* About */}
-        <Box
-          sx={{
-            mx: 0.5,
-            p: 2,
-            borderRadius: "16px",
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 1.5,
-          }}
-        >
-          <InfoOutlinedIcon
-            sx={{ fontSize: 18, color: "text.secondary", mt: 0.2 }}
-          />
-          <Box>
-            <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.3 }}>
-              {t("settings.about")}
-            </Typography>
-            <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              {t("settings.aboutDescription")}
-              <br />
-              {t("settings.aboutLicense")}
-            </Typography>
-          </Box>
-        </Box>
+        <List disablePadding>
+          <ListItemButton
+            onClick={openAbout}
+            sx={{ borderRadius: "16px", mb: 0.5 }}
+          >
+            <ListItemIcon sx={{ minWidth: 40 }}>
+              <InfoOutlinedIcon sx={{ fontSize: 20 }} />
+            </ListItemIcon>
+            <ListItemText
+              primary={t("about.title")}
+              secondary={appVersion ? t("about.version", { version: appVersion }) : t("settings.aboutLicense")}
+              slotProps={{
+                primary: { sx: { fontSize: "0.9rem" } },
+                secondary: { sx: { fontSize: "0.7rem" } },
+              }}
+            />
+          </ListItemButton>
+        </List>
       </Box>
 
       {/* Add/Edit Account Dialog */}

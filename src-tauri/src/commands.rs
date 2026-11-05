@@ -747,6 +747,37 @@ pub async fn get_voice_processing(
     })
 }
 
+/// What the About screen shows under the version.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    /// Short commit hash the binary was built from (see build.rs), or `None`
+    /// for a build made outside a git checkout.
+    pub commit: Option<&'static str>,
+    /// `macos`, `windows` or `linux`.
+    pub os: &'static str,
+    /// `aarch64`, `x86_64`, ... — the binary's, which for an Intel build
+    /// running under Rosetta is not the machine's.
+    pub arch: &'static str,
+    /// False for `tauri dev` and other debug builds.
+    pub release: bool,
+}
+
+fn build_info() -> BuildInfo {
+    let commit = env!("ARIA_GIT_COMMIT");
+    BuildInfo {
+        commit: (!commit.is_empty()).then_some(commit),
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        release: !cfg!(debug_assertions),
+    }
+}
+
+#[tauri::command]
+pub fn app_build_info() -> BuildInfo {
+    build_info()
+}
+
 #[tauri::command]
 pub async fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
     // Check if window already exists
@@ -1363,6 +1394,16 @@ pub fn play_test_tone(
 mod tests {
     use super::*;
     use crate::sip::diagnostics::{DiagnosticLog, MessageDirection};
+
+    #[test]
+    fn build_info_serializes_for_the_about_screen() {
+        let json = serde_json::to_value(build_info()).unwrap();
+        assert_eq!(json["os"], std::env::consts::OS);
+        assert_eq!(json["arch"], std::env::consts::ARCH);
+        assert!(json["release"].is_boolean());
+        // No commit is `null`, never an empty string the UI would print.
+        assert!(json["commit"].is_null() || json["commit"].as_str().is_some_and(|c| !c.is_empty()));
+    }
 
     fn make_log(call_id: Option<&str>, direction: MessageDirection, remote: &str) -> DiagnosticLog {
         DiagnosticLog {
