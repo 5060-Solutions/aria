@@ -14,6 +14,8 @@ import { log } from "./utils/log";
 import { deepLinkTarget } from "./utils/deepLink";
 import { allowLocalSetupLinks, isProvisionLink, parseProvisionLink } from "./utils/provisionLink";
 import { ProvisionLinkDialog } from "./components/provision/ProvisionLinkDialog";
+import { AboutDialog } from "./components/about/AboutDialog";
+import { useAppMenu } from "./hooks/useAppMenu";
 import { provisionFlow } from "./components/provision/provisionApi";
 import "./i18n";
 
@@ -42,6 +44,7 @@ function MainApp() {
   useSipEvents();
   useAutoRegister();
   useNetworkMonitor();
+  useAppMenu();
 
   // The engine's audio processing setting lives in memory and resets with the
   // process, so the saved preference has to be pushed down on every launch.
@@ -124,6 +127,8 @@ function MainApp() {
       {setupComplete ? <AppShell /> : <SetupWizard />}
       {/* Outside both, so a setup link works on first run too. */}
       <ProvisionLinkDialog />
+      {/* Likewise: the app menu's About works before setup is done. */}
+      <AboutDialog />
     </>
   );
 }

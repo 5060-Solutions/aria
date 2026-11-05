@@ -2,6 +2,8 @@ mod ai;
 mod audio_test;
 mod commands;
 mod mcp;
+#[cfg(target_os = "macos")]
+mod menu;
 mod provision;
 mod sip;
 mod system_contacts;
@@ -44,7 +46,15 @@ pub fn run() {
     let (manager, event_rx) = sip::SipManager::new_with_receiver();
     let audio_test_manager = audio_test::AudioTestManager::new();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // macOS only: the app menu gets About, Check for Updates… and Settings…,
+    // handled in the webview. Windows and Linux have no menu bar to add them
+    // to; see menu.rs.
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(menu::build).on_menu_event(menu::handle_event);
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
@@ -242,6 +252,7 @@ pub fn run() {
             commands::get_voice_processing,
             commands::set_voice_processing,
             commands::open_debug_window,
+            commands::app_build_info,
             commands::get_sip_diagnostics,
             commands::clear_sip_diagnostics,
             commands::get_rtp_stats,
