@@ -35,7 +35,18 @@
     "recording": "ENR",
     "recordingInProgress": "Enregistrement en cours",
     "answer": "Répondre",
-    "decline": "Refuser"
+    "decline": "Refuser",
+    "audio": "Audio",
+    "addCall": "Ajouter",
+    "transfer": "Transférer",
+    "merge": "Fusionner",
+    "swap": "Basculer",
+    "hangUp": "Raccrocher",
+    "encrypted": "Chiffré",
+    "notEncrypted": "Non chiffré",
+    "encryptedTooltip": "Votre voix est chiffrée (SRTP) entre Aria et le serveur.",
+    "notEncryptedRefused": "Aria a proposé le chiffrement, mais le serveur a répondu sans. Votre voix est transmise en clair.",
+    "notEncryptedOff": "Le chiffrement des médias est désactivé pour ce compte. Votre voix est transmise en clair."
   },
   "history": {
     "title": "Récents",

@@ -55,6 +55,7 @@ function ControlButton({ icon, label, active, onClick }: ControlButtonProps) {
         flexDirection: "column",
         alignItems: "center",
         gap: 0.5,
+        minWidth: 0,
       }}
     >
       <motion.div whileTap={{ scale: 0.88 }}>
@@ -63,8 +64,9 @@ function ControlButton({ icon, label, active, onClick }: ControlButtonProps) {
           aria-label={label}
           aria-pressed={active}
           sx={{
-            width: 56,
-            height: 56,
+            // Set by CallScreen, smaller in a short window.
+            width: "var(--call-control, 52px)",
+            height: "var(--call-control, 52px)",
             borderRadius: "50%",
             bgcolor: active
               ? "primary.main"
@@ -83,7 +85,14 @@ function ControlButton({ icon, label, active, onClick }: ControlButtonProps) {
       </motion.div>
       <Typography
         variant="caption"
-        sx={{ fontSize: "0.65rem", color: "text.secondary" }}
+        noWrap
+        title={label}
+        sx={{
+          fontSize: "0.65rem",
+          lineHeight: 1.3,
+          color: "text.secondary",
+          maxWidth: "100%",
+        }}
       >
         {label}
       </Typography>
@@ -146,15 +155,15 @@ export function CallControls() {
 
   if (isIncoming) {
     return (
-      <Box sx={{ display: "flex", justifyContent: "center", gap: 6, mb: 1 }}>
+      <Box sx={{ display: "flex", justifyContent: "center", gap: 6 }}>
         <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 0.5 }}>
           <motion.div whileTap={{ scale: 0.88 }}>
             <IconButton
               onClick={handleDecline}
               aria-label={t("call.decline")}
               sx={{
-                width: 68,
-                height: 68,
+                width: "var(--call-hangup, 64px)",
+                height: "var(--call-hangup, 64px)",
                 borderRadius: "50%",
                 bgcolor: "error.main",
                 color: "#fff",
@@ -163,7 +172,7 @@ export function CallControls() {
                 "&:hover": { bgcolor: "error.dark" },
               }}
             >
-              <CallEndIcon sx={{ fontSize: 30 }} />
+              <CallEndIcon sx={{ fontSize: 28 }} />
             </IconButton>
           </motion.div>
           <Typography variant="caption" sx={{ fontSize: "0.7rem", color: "text.secondary" }}>
@@ -176,8 +185,8 @@ export function CallControls() {
               onClick={handleAnswer}
               aria-label={t("call.answer")}
               sx={{
-                width: 68,
-                height: 68,
+                width: "var(--call-hangup, 64px)",
+                height: "var(--call-hangup, 64px)",
                 borderRadius: "50%",
                 bgcolor: "success.main",
                 color: "#fff",
@@ -186,7 +195,7 @@ export function CallControls() {
                 "&:hover": { bgcolor: "success.dark" },
               }}
             >
-              <CallIcon sx={{ fontSize: 30 }} />
+              <CallIcon sx={{ fontSize: 28 }} />
             </IconButton>
           </motion.div>
           <Typography variant="caption" sx={{ fontSize: "0.7rem", color: "text.secondary" }}>
@@ -338,88 +347,104 @@ export function CallControls() {
     audioDevices.inputDevices.length > 1 || audioDevices.outputDevices.length > 1
   );
 
+  const controls: (ControlButtonProps & { key: string })[] = [
+    {
+      key: "mute",
+      icon: activeCall.muted ? <MicOffIcon /> : <MicIcon />,
+      label: activeCall.muted ? t("call.unmute") : t("call.mute"),
+      active: activeCall.muted,
+      onClick: handleMute,
+    },
+    {
+      key: "keypad",
+      icon: <DialpadIcon />,
+      label: t("call.keypad"),
+      active: Boolean(dtmfAnchor),
+      onClick: (e) => setDtmfAnchor(dtmfAnchor ? null : e.currentTarget),
+    },
+    {
+      key: "audio",
+      icon: <HeadsetMicIcon />,
+      label: t("call.audio"),
+      onClick: (e) => setAudioAnchor(e.currentTarget),
+    },
+    {
+      key: "hold",
+      icon: activeCall.held ? <PlayArrowIcon /> : <PauseIcon />,
+      label: activeCall.held ? t("call.resume") : t("call.hold"),
+      active: activeCall.held,
+      onClick: handleHold,
+    },
+    {
+      key: "record",
+      icon: activeCall.recording ? <StopIcon /> : <FiberManualRecordIcon />,
+      label: activeCall.recording ? t("call.stopRec") : t("call.record"),
+      active: activeCall.recording,
+      onClick: handleRecord,
+    },
+  ];
+  if (canAddCall) {
+    controls.push(
+      {
+        key: "add",
+        icon: <AddIcCallIcon />,
+        label: t("call.addCall"),
+        onClick: () => setAddCallDialogOpen(true),
+      },
+      {
+        key: "transfer",
+        icon: <PhoneForwardedIcon />,
+        label: t("call.transfer"),
+        onClick: () => setTransferDialogOpen(true),
+      },
+    );
+  }
+  if (canMerge) {
+    controls.push({
+      key: "merge",
+      icon: <CallMergeIcon />,
+      label: t("call.merge"),
+      onClick: handleMerge,
+    });
+  }
+  if (hasMultipleCalls && heldCalls.length > 0) {
+    controls.push({
+      key: "swap",
+      icon: <SwapCallsIcon />,
+      label: t("call.swap"),
+      onClick: handleSwap,
+    });
+  }
+  // As few rows as fit, each as full as possible: four across for seven or
+  // eight buttons, three for five or six. A short last row is centred rather
+  // than left hanging under the first column.
+  const columns = controls.length <= 4 ? controls.length : controls.length <= 6 ? 3 : 4;
+
   return (
     <>
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 3, mb: 1 }}>
-        {/* Main controls row */}
+      <Box
+        sx={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 2.5,
+          "@media (max-height: 680px)": { gap: 1.5 },
+        }}
+      >
         <Box
           sx={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 2.5,
-            justifyItems: "center",
+            display: "flex",
+            flexWrap: "wrap",
+            justifyContent: "center",
+            rowGap: 1.5,
+            "@media (max-height: 680px)": { rowGap: 1 },
           }}
         >
-          <ControlButton
-            icon={activeCall.muted ? <MicOffIcon /> : <MicIcon />}
-            label={activeCall.muted ? t("call.unmute") : t("call.mute")}
-            active={activeCall.muted}
-            onClick={handleMute}
-          />
-          <ControlButton
-            icon={<DialpadIcon />}
-            label={t("call.keypad")}
-            active={Boolean(dtmfAnchor)}
-            onClick={(e) => setDtmfAnchor(dtmfAnchor ? null : e.currentTarget)}
-          />
-          <ControlButton
-            icon={<HeadsetMicIcon />}
-            label={t("call.audio")}
-            onClick={(e) => setAudioAnchor(e.currentTarget)}
-          />
-          <ControlButton
-            icon={activeCall.held ? <PlayArrowIcon /> : <PauseIcon />}
-            label={activeCall.held ? t("call.resume") : t("call.hold")}
-            active={activeCall.held}
-            onClick={handleHold}
-          />
-          <ControlButton
-            icon={activeCall.recording ? <StopIcon /> : <FiberManualRecordIcon />}
-            label={activeCall.recording ? t("call.stopRec") : t("call.record")}
-            active={activeCall.recording}
-            onClick={handleRecord}
-          />
-          {canAddCall && (
-            <ControlButton
-              icon={<AddIcCallIcon />}
-              label={t("call.addCall", "Add Call")}
-              onClick={() => setAddCallDialogOpen(true)}
-            />
-          )}
-          {canAddCall && (
-            <ControlButton
-              icon={<PhoneForwardedIcon />}
-              label={t("call.transfer", "Transfer")}
-              onClick={() => setTransferDialogOpen(true)}
-            />
-          )}
+          {controls.map(({ key, ...button }) => (
+            <Box key={key} sx={{ width: `${100 / columns}%`, minWidth: 0, px: 0.25 }}>
+              <ControlButton {...button} />
+            </Box>
+          ))}
         </Box>
-
-        {/* Conference controls row */}
-        {hasMultipleCalls && (
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "center",
-              gap: 2.5,
-            }}
-          >
-            {canMerge && (
-              <ControlButton
-                icon={<CallMergeIcon />}
-                label={t("call.merge", "Merge")}
-                onClick={handleMerge}
-              />
-            )}
-            {heldCalls.length > 0 && (
-              <ControlButton
-                icon={<SwapCallsIcon />}
-                label={t("call.swap", "Swap")}
-                onClick={handleSwap}
-              />
-            )}
-          </Box>
-        )}
 
         {/* Conference indicator */}
         {isInConference && (
@@ -434,10 +459,10 @@ export function CallControls() {
           <motion.div whileTap={{ scale: 0.88 }}>
             <IconButton
               onClick={handleHangup}
-              aria-label={t("call.hangUp", "Hang up")}
+              aria-label={t("call.hangUp")}
               sx={{
-                width: 68,
-                height: 68,
+                width: "var(--call-hangup, 64px)",
+                height: "var(--call-hangup, 64px)",
                 borderRadius: "50%",
                 bgcolor: "error.main",
                 color: "#fff",
@@ -446,7 +471,7 @@ export function CallControls() {
                 "&:hover": { bgcolor: "error.dark" },
               }}
             >
-              <CallEndIcon sx={{ fontSize: 30 }} />
+              <CallEndIcon sx={{ fontSize: 28 }} />
             </IconButton>
           </motion.div>
         </Box>

@@ -35,7 +35,18 @@
     "recording": "AUFN",
     "recordingInProgress": "Aufnahme läuft",
     "answer": "Annehmen",
-    "decline": "Ablehnen"
+    "decline": "Ablehnen",
+    "audio": "Audio",
+    "addCall": "Hinzufügen",
+    "transfer": "Weiterleiten",
+    "merge": "Verbinden",
+    "swap": "Wechseln",
+    "hangUp": "Auflegen",
+    "encrypted": "Verschlüsselt",
+    "notEncrypted": "Unverschlüsselt",
+    "encryptedTooltip": "Ihre Sprache wird zwischen Aria und dem Server verschlüsselt (SRTP).",
+    "notEncryptedRefused": "Aria hat Verschlüsselung angeboten, aber der Server hat ohne geantwortet. Ihre Sprache wird unverschlüsselt übertragen.",
+    "notEncryptedOff": "Die Medienverschlüsselung ist für dieses Konto ausgeschaltet. Ihre Sprache wird unverschlüsselt übertragen."
   },
   "history": {
     "title": "Letzte",
