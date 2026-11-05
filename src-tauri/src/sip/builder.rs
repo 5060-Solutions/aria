@@ -1514,7 +1514,7 @@ mod tests {
                 .lines()
                 .filter(|l| l.starts_with("m=") || l.starts_with("a="))
                 .all(|l| !l.contains("111")),
-            "{answer}"
+            "a media line carries payload type 111"
         );
     }
 
