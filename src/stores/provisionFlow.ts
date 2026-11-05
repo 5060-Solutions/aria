@@ -81,12 +81,16 @@ export function dialogMode(state: ProvisionState, accounts: readonly AccountIden
  *   treated as absent. The backend logs a warning.
  * - `disabled`: `disabled`.
  * - absent: the existing line's mode, untouched, or `disabled` for a new line.
+ * Whatever the server says, a line that ends up off TLS never keeps `sdes`:
+ * an update that moves an SDES line to UDP/TCP turns SRTP off rather than
+ * send its keys in clear.
  */
 export function provisionedSrtpMode(
   line: ProvisionedLine,
   existing: SipAccount | undefined,
 ): SrtpMode | undefined {
-  const keep = existing ? existing.srtpMode : "disabled";
+  const kept = existing ? existing.srtpMode : "disabled";
+  const keep = line.transport !== "tls" && kept === "sdes" ? "disabled" : kept;
   switch (line.srtp) {
     case "sdes":
       return line.transport === "tls" ? "sdes" : keep;

@@ -319,6 +319,18 @@ describe("provisioned SRTP", () => {
     }
   });
 
+  it("an update that moves an SDES line off TLS turns SRTP off", () => {
+    for (const transport of ["udp", "tcp"]) {
+      for (const srtp of [null, "sdes" as const]) {
+        const l = { ...line, ...udp, transport, srtp, mode: "updated" as const };
+        const existing = account({ id: "acc-1", srtpMode: "sdes", provisionedFrom: "api.ariaroute.com" });
+        const saved = provisionedAccount(l, existing);
+        expect(saved.srtpMode).toBe("disabled");
+        expect(callProtection(saved)).toBe("none");
+      }
+    }
+  });
+
   it("disabled turns SRTP off, on a new line and on an update", () => {
     const l = { ...line, srtp: "disabled" as const };
     expect(provisionedAccount(l, undefined).srtpMode).toBe("disabled");
