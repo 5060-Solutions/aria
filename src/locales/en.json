@@ -41,10 +41,17 @@
     "recording": "REC",
     "recordingInProgress": "Recording in progress",
     "encrypted": "Encrypted",
-    "encryptionSdes": "SDES-SRTP",
     "notEncrypted": "Not encrypted",
     "answer": "Answer",
-    "decline": "Decline"
+    "decline": "Decline",
+    "addCall": "Add Call",
+    "transfer": "Transfer",
+    "merge": "Merge",
+    "swap": "Swap",
+    "hangUp": "Hang up",
+    "encryptedTooltip": "Your voice is encrypted (SRTP) between Aria and the server.",
+    "notEncryptedRefused": "Aria offered encryption, but the server answered without it. Your voice is sent unencrypted.",
+    "notEncryptedOff": "Media encryption is turned off for this account. Your voice is sent unencrypted."
   },
   "history": {
     "title": "Recent",

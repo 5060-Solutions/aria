@@ -38,7 +38,18 @@
     "recording": "GRAB",
     "recordingInProgress": "Grabación en curso",
     "answer": "Contestar",
-    "decline": "Rechazar"
+    "decline": "Rechazar",
+    "audio": "Audio",
+    "addCall": "Añadir",
+    "transfer": "Transferir",
+    "merge": "Unir",
+    "swap": "Alternar",
+    "hangUp": "Colgar",
+    "encrypted": "Cifrada",
+    "notEncrypted": "Sin cifrar",
+    "encryptedTooltip": "Tu voz viaja cifrada (SRTP) entre Aria y el servidor.",
+    "notEncryptedRefused": "Aria ofreció cifrado, pero el servidor respondió sin él. Tu voz se envía sin cifrar.",
+    "notEncryptedOff": "El cifrado de medios está desactivado para esta cuenta. Tu voz se envía sin cifrar."
   },
   "history": {
     "title": "Recientes",
