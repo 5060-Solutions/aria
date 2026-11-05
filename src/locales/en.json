@@ -140,6 +140,7 @@
     "delete": "Delete",
     "autoRecord": "Auto-record calls",
     "autoRecordNote": "Automatically record all calls for this account",
+    "srtpTlsHint": "This line uses TLS. Turn on SDES to encrypt call audio too.",
     "srtpMode": "Media Encryption",
     "srtpModeNote": "Encrypts voice traffic between Aria and your server. SDES exchanges the keys in the SDP; the server must support it.",
     "srtp": {
@@ -380,6 +381,11 @@
     "done": "Done",
     "close": "Close",
     "invalidLink": "This setup link isn't valid.",
-    "lineOff": "The line is turned off in Settings."
+    "lineOff": "The line is turned off in Settings.",
+    "protection": {
+      "srtp": "Calls are encrypted (TLS + SRTP).",
+      "tlsOnly": "Calls connect over TLS, but call audio isn't encrypted (SRTP is off).",
+      "none": "Calls aren't encrypted."
+    }
   }
 }

@@ -334,6 +334,46 @@ fn redeem_defaults_and_optional_fields() {
 }
 
 #[test]
+fn srtp_is_read_when_present() {
+    for (raw, want) in [("sdes", "sdes"), ("disabled", "disabled"), (" SDES ", "sdes")] {
+        let mut body = redeem_body();
+        body["srtp"] = json!(raw);
+        assert_eq!(parse_redeem(&obj(body)).unwrap().srtp.as_deref(), Some(want), "{raw:?}");
+    }
+}
+
+#[test]
+fn srtp_absent_is_none() {
+    let line = parse_redeem(&obj(redeem_body())).unwrap();
+    assert_eq!(line.srtp, None);
+}
+
+#[test]
+fn unknown_srtp_counts_as_absent() {
+    for raw in [json!("dtls"), json!("zrtp"), json!(""), json!(true), json!(1), serde_json::Value::Null] {
+        let mut body = redeem_body();
+        body["srtp"] = raw.clone();
+        // The rest of the line is still usable.
+        let line = parse_redeem(&obj(body)).unwrap();
+        assert_eq!(line.srtp, None, "{raw}");
+        assert_eq!(line.username, "1001");
+    }
+}
+
+#[tokio::test]
+async fn redeem_passes_srtp_through_to_the_ui() {
+    let mut body = redeem_body();
+    body["srtp"] = json!("sdes");
+    let stub = Stub::json("200 OK", &body).await;
+    let (line, _) =
+        redeem_checked(&stub.url(), &expected("1001", "regular-test.ariaroute.com"), &[], "new-id", SHORT)
+            .await
+            .unwrap();
+    assert_eq!(line.srtp.as_deref(), Some("sdes"));
+    assert_eq!(line.transport, "tls");
+}
+
+#[test]
 fn proxy_forms() {
     for (raw, want) in [
         ("sip.ariaroute.com", "sip.ariaroute.com:5061"),

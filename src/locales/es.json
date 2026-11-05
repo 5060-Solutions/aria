@@ -137,6 +137,7 @@
     "delete": "Eliminar",
     "autoRecord": "Grabar automáticamente",
     "autoRecordNote": "Graba automáticamente todas las llamadas de esta cuenta",
+    "srtpTlsHint": "Esta línea usa TLS. Activa SDES para cifrar también el audio de las llamadas.",
     "codecPriority": "Prioridad de códecs",
     "codecPriorityNote": "Usa las flechas para reordenar o el interruptor para habilitar/deshabilitar",
     "dialingRules": "Reglas de marcación",
@@ -370,6 +371,11 @@
     "done": "Hecho",
     "close": "Cerrar",
     "invalidLink": "Este enlace de configuración no es válido.",
-    "lineOff": "La línea está desactivada en Ajustes."
+    "lineOff": "La línea está desactivada en Ajustes.",
+    "protection": {
+      "srtp": "Las llamadas están cifradas (TLS + SRTP).",
+      "tlsOnly": "Las llamadas van por TLS, pero el audio no está cifrado (SRTP desactivado).",
+      "none": "Las llamadas no están cifradas."
+    }
   }
 }

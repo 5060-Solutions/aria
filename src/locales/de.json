@@ -134,6 +134,7 @@
     "delete": "Löschen",
     "autoRecord": "Automatisch aufnehmen",
     "autoRecordNote": "Alle Anrufe dieses Kontos automatisch aufnehmen",
+    "srtpTlsHint": "Diese Leitung nutzt TLS. Schalten Sie SDES ein, um auch den Anruf-Ton zu verschlüsseln.",
     "codecPriority": "Codec-Priorität",
     "codecPriorityNote": "Pfeile verwenden um Reihenfolge zu ändern oder aktivieren/deaktivieren",
     "dialingRules": "Wahlregeln",
@@ -367,6 +368,11 @@
     "done": "Fertig",
     "close": "Schließen",
     "invalidLink": "Dieser Einrichtungslink ist ungültig.",
-    "lineOff": "Die Leitung ist in den Einstellungen ausgeschaltet."
+    "lineOff": "Die Leitung ist in den Einstellungen ausgeschaltet.",
+    "protection": {
+      "srtp": "Anrufe sind verschlüsselt (TLS + SRTP).",
+      "tlsOnly": "Anrufe laufen über TLS, aber der Ton ist nicht verschlüsselt (SRTP ist aus).",
+      "none": "Anrufe sind nicht verschlüsselt."
+    }
   }
 }

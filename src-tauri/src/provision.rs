@@ -285,6 +285,10 @@ pub struct RedeemedLine {
     pub port: u16,
     pub transport: String,
     pub voicemail: Option<String>,
+    /// The media encryption the server asks for: `"sdes"` or `"disabled"`;
+    /// `None` when absent or unrecognised. The UI decides what to apply (SDES
+    /// only over TLS).
+    pub srtp: Option<String>,
 }
 
 // Hand-written so the password can never reach a log line through `{:?}`.
@@ -296,6 +300,7 @@ impl std::fmt::Debug for RedeemedLine {
             .field("outbound_proxy", &self.outbound_proxy)
             .field("port", &self.port)
             .field("transport", &self.transport)
+            .field("srtp", &self.srtp)
             .finish_non_exhaustive()
     }
 }
@@ -350,6 +355,11 @@ pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<
             (Some(format!("{host}:{}", own_port.unwrap_or(port))), Some(host))
         }
     };
+    // Optional; anything but the two known values (a newer mode, a typo, a
+    // non-string) counts as absent, which leaves SRTP as it is.
+    let srtp = get_str(map, "srtp")
+        .map(str::to_ascii_lowercase)
+        .filter(|s| matches!(s.as_str(), "sdes" | "disabled"));
     let voicemail = get_str(map, "voicemail")
         .filter(|v| v.len() <= 32 && v.chars().all(|c| c.is_ascii_digit() || "*#+".contains(c)))
         .map(str::to_string);
@@ -368,6 +378,7 @@ pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<
         port,
         transport,
         voicemail,
+        srtp,
     })
 }
 
@@ -376,6 +387,10 @@ pub async fn redeem(url: &reqwest::Url, timeout: Duration) -> Result<RedeemedLin
     let map = fetch_json(client(timeout)?.post(url.clone()), &host).await?;
     let line = parse_redeem(&map)?;
     log::info!("[provision] redeemed at {host}: {:?}", line);
+    if line.srtp.as_deref() == Some("sdes") && line.transport != "tls" {
+        // SDES puts the media keys in the SDP, which would travel in clear.
+        log::warn!("[provision] setup server asked for SDES-SRTP over {}; not enabling it without TLS", line.transport);
+    }
     Ok(line)
 }
 
@@ -434,6 +449,8 @@ pub struct ProvisionedLine {
     pub port: u16,
     pub transport: String,
     pub voicemail: Option<String>,
+    /// `"sdes"`, `"disabled"`, or `None` (absent or unrecognised).
+    pub srtp: Option<String>,
 }
 
 /// The account a redeemed line goes to. Only an account the same host set up
@@ -507,6 +524,7 @@ pub async fn redeem_checked(
             port: line.port,
             transport: line.transport,
             voicemail: line.voicemail,
+            srtp: line.srtp,
         },
         password,
     ))

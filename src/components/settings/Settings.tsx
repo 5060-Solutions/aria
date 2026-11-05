@@ -1707,6 +1707,12 @@ export function Settings() {
                   <Typography variant="caption" sx={{ color: "text.disabled", mt: 0.5, display: "block" }}>
                     {t("settings.srtpModeNote")}
                   </Typography>
+                  {/* A hint only: switching to TLS never changes SRTP by itself. */}
+                  {form.transport === "tls" && form.srtpMode === "disabled" && (
+                    <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
+                      {t("settings.srtpTlsHint")}
+                    </Typography>
+                  )}
                 </Box>
 
                 {/* Codec Priority Section */}

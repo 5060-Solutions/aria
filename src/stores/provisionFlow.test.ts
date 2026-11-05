@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { createProvisionFlow, dialogMode, previewMode, provisionedAccount } from "./provisionFlow";
+import {
+  callProtection,
+  createProvisionFlow,
+  dialogMode,
+  previewMode,
+  provisionedAccount,
+  provisionedSrtpMode,
+} from "./provisionFlow";
 import type { ProvisionApi, ProvisionedLine, ProvisionPreview } from "./provisionFlow";
 import type { SipAccount } from "../types/sip";
 
@@ -31,6 +38,7 @@ const line: ProvisionedLine = {
   port: 5061,
   transport: "tls",
   voicemail: "*97",
+  srtp: null,
 };
 
 function deferred<T>() {
@@ -289,6 +297,72 @@ describe("provisionedAccount", () => {
       password: "",
     });
     expect(a.registrar).toBeUndefined();
+  });
+});
+
+describe("provisioned SRTP", () => {
+  const udp = { transport: "udp", port: 5060, outboundProxy: null, tlsServerName: null };
+
+  it("sdes over TLS turns SRTP on for a new line", () => {
+    const l = { ...line, srtp: "sdes" as const };
+    expect(provisionedSrtpMode(l, undefined)).toBe("sdes");
+    expect(provisionedAccount(l, undefined).srtpMode).toBe("sdes");
+  });
+
+  it("sdes over UDP or TCP is not enabled: keys would travel in clear", () => {
+    for (const transport of ["udp", "tcp"]) {
+      const l = { ...line, ...udp, transport, srtp: "sdes" as const };
+      expect(provisionedAccount(l, undefined).srtpMode).toBe("disabled");
+      // An existing line with SRTP off is not switched on either.
+      const existing = account({ id: "acc-1", srtpMode: "disabled", provisionedFrom: "api.ariaroute.com" });
+      expect(provisionedAccount({ ...l, mode: "updated" }, existing).srtpMode).toBe("disabled");
+    }
+  });
+
+  it("an update that moves an SDES line off TLS turns SRTP off", () => {
+    for (const transport of ["udp", "tcp"]) {
+      for (const srtp of [null, "sdes" as const]) {
+        const l = { ...line, ...udp, transport, srtp, mode: "updated" as const };
+        const existing = account({ id: "acc-1", srtpMode: "sdes", provisionedFrom: "api.ariaroute.com" });
+        const saved = provisionedAccount(l, existing);
+        expect(saved.srtpMode).toBe("disabled");
+        expect(callProtection(saved)).toBe("none");
+      }
+    }
+  });
+
+  it("disabled turns SRTP off, on a new line and on an update", () => {
+    const l = { ...line, srtp: "disabled" as const };
+    expect(provisionedAccount(l, undefined).srtpMode).toBe("disabled");
+    const existing = account({ id: "acc-1", srtpMode: "sdes", provisionedFrom: "api.ariaroute.com" });
+    expect(provisionedAccount({ ...l, mode: "updated" }, existing).srtpMode).toBe("disabled");
+  });
+
+  it("absent keeps today's behaviour: off for a new line, untouched on an update", () => {
+    expect(provisionedAccount(line, undefined).srtpMode).toBe("disabled");
+    for (const srtpMode of ["sdes", "disabled", undefined] as const) {
+      const existing = account({ id: "acc-1", srtpMode, provisionedFrom: "api.ariaroute.com" });
+      expect(provisionedAccount({ ...line, mode: "updated" }, existing).srtpMode).toBe(srtpMode);
+    }
+  });
+
+  it("a same-host update applies sdes over TLS", () => {
+    const existing = account({
+      id: "acc-1",
+      srtpMode: "disabled",
+      provisionedFrom: "api.ariaroute.com",
+      displayName: "My desk phone",
+      autoRecord: true,
+    });
+    const a = provisionedAccount({ ...line, mode: "updated", srtp: "sdes" }, existing);
+    expect(a).toMatchObject({ srtpMode: "sdes", transport: "tls", displayName: "My desk phone", autoRecord: true });
+  });
+
+  it("describes how calls are protected", () => {
+    expect(callProtection({ transport: "tls", srtpMode: "sdes" })).toBe("srtp");
+    expect(callProtection({ transport: "tls", srtpMode: "disabled" })).toBe("tlsOnly");
+    expect(callProtection({ transport: "tls", srtpMode: undefined })).toBe("tlsOnly");
+    expect(callProtection({ transport: "udp", srtpMode: "sdes" })).toBe("none");
   });
 });
 

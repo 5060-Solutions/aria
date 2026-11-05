@@ -13,8 +13,9 @@ import { useStore } from "zustand";
 import { useTranslation } from "react-i18next";
 import { provisionFlow } from "./provisionApi";
 import { useAppStore } from "../../stores/appStore";
-import { dialogMode } from "../../stores/provisionFlow";
+import { callProtection, dialogMode } from "../../stores/provisionFlow";
 import type { LineMode, ProvisionPreview } from "../../stores/provisionFlow";
+import type { SipAccount } from "../../types/sip";
 
 /**
  * How long Add stays disabled after the preview appears. The dialog can pop
@@ -65,6 +66,20 @@ function PreviewDetails({ preview, mode }: { preview: ProvisionPreview; mode: Li
   );
 }
 
+/**
+ * Whether calls on the saved line are encrypted. Read from the saved account,
+ * since an update without an SRTP field keeps the line's own setting.
+ */
+function Protection({ account }: { account: SipAccount | undefined }) {
+  const { t } = useTranslation();
+  if (!account) return null;
+  return (
+    <Typography variant="body2" sx={{ color: "text.secondary", mt: 1 }}>
+      {t(`provision.protection.${callProtection(account)}`)}
+    </Typography>
+  );
+}
+
 /** Add stays disabled briefly after mounting; see ARM_DELAY_MS. */
 function AddButton({ label, onClick }: { label: string; onClick: () => void }) {
   const [armed, setArmed] = useState(false);
@@ -104,6 +119,8 @@ export function ProvisionLinkDialog() {
   // decision and is the one that enforces it.
   const mode: LineMode = dialogMode(state, accounts);
   const addLabel = mode === "updated" ? t("provision.updateLine") : t("provision.addLine");
+
+  const savedAccount = state.phase === "done" ? accounts.find((a) => a.id === state.line.accountId) : undefined;
 
   const busy = state.phase === "redeeming" || state.phase === "registering";
   let body: React.ReactNode = null;
@@ -153,6 +170,7 @@ export function ProvisionLinkDialog() {
           <Typography variant="body2" sx={{ color: "error.main", mt: 1, wordBreak: "break-word" }}>
             {state.error}
           </Typography>
+          <Protection account={savedAccount} />
         </>
       ) : (
         <>
@@ -162,6 +180,7 @@ export function ProvisionLinkDialog() {
             </Typography>
           )}
           <Typography variant="body2">{t("provision.ready")}</Typography>
+          <Protection account={savedAccount} />
         </>
       );
       actions = (
