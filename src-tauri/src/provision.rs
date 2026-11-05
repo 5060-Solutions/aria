@@ -261,7 +261,7 @@ pub async fn fetch_preview(url: &reqwest::Url, timeout: Duration) -> Result<Prov
         expires_at: get_str(&map, "expires_at").map(|s| clean_text(s, 40)),
         server_host: host.clone(),
     };
-    log::info!("[provision] preview from {host}: extension {}@{}", preview.extension, preview.domain);
+    log::info!("[provision] preview from {host}");
     Ok(preview)
 }
 
@@ -484,10 +484,9 @@ pub async fn redeem_checked(
     }
     let line = redeem(url, timeout).await?;
     if line.username != expected.extension || !line.domain.eq_ignore_ascii_case(expected.domain.trim()) {
-        log::warn!(
-            "[provision] redeem returned {}@{}, preview showed {}@{}; refused",
-            line.username, line.domain, expected.extension, expected.domain
-        );
+        // The line's identity stays out of the log, like everything else the
+        // server sent.
+        log::warn!("[provision] redeem returned a different line than the preview; refused");
         return Err(ProvisionError::Mismatch);
     }
     let host = server_host(url);
