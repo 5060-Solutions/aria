@@ -125,8 +125,6 @@
     "signOutAll": "Sign out all accounts",
     "developerDiagnostics": "Developer diagnostics",
     "sipTraceRtp": "SIP trace, RTP stats",
-    "about": "Aria v0.3.2",
-    "aboutDescription": "A modern softphone by 5060 Solutions.",
     "aboutLicense": "Free for non-commercial use.",
     "language": "Language",
     "edit": "Edit",
@@ -179,6 +177,23 @@
     "deferredInCall": "An update is ready - you'll be asked when your call ends",
     "checkFailed": "Couldn't check for updates ({{error}}). Check your connection and try again.",
     "restartNow": "Restart now"
+  },
+  "about": {
+    "title": "About Aria",
+    "tagline": "A fast, native SIP softphone.",
+    "version": "Version {{version}}",
+    "copyDetails": "Copy version details",
+    "copied": "Copied",
+    "debugBuild": "Development build",
+    "checkNow": "Check now",
+    "checkFailedTitle": "Couldn't check for updates",
+    "checkFailedDetail": "Check your connection and try again. ({{error}})",
+    "whatsNew": "What's new in {{version}}",
+    "restartAfterCall": "Restart once your call has ended to finish updating.",
+    "website": "Website",
+    "releaseNotes": "Release notes",
+    "license": "License",
+    "acknowledgements": "Credits"
   },
   "wizard": {
     "branding": "Aria",

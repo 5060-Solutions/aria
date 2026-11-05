@@ -118,8 +118,6 @@
     "signOutAll": "Cerrar todas las sesiones",
     "developerDiagnostics": "Diagnósticos de desarrollador",
     "sipTraceRtp": "Traza SIP, estadísticas RTP",
-    "about": "Aria v0.3.2",
-    "aboutDescription": "Un softphone moderno de 5060 Solutions.",
     "aboutLicense": "Gratis para uso no comercial.",
     "language": "Idioma",
     "edit": "Editar",
@@ -166,6 +164,23 @@
     "deferredInCall": "Hay una actualización lista: te avisaremos cuando termine la llamada",
     "checkFailed": "No se pudo buscar actualizaciones ({{error}}). Revisa tu conexión e inténtalo de nuevo.",
     "restartNow": "Reiniciar ahora"
+  },
+  "about": {
+    "title": "Acerca de Aria",
+    "tagline": "Un softphone SIP nativo y rápido.",
+    "version": "Versión {{version}}",
+    "copyDetails": "Copiar los detalles de la versión",
+    "copied": "Copiado",
+    "debugBuild": "Versión de desarrollo",
+    "checkNow": "Comprobar",
+    "checkFailedTitle": "No se pudo buscar actualizaciones",
+    "checkFailedDetail": "Comprueba tu conexión e inténtalo de nuevo. ({{error}})",
+    "whatsNew": "Novedades de la versión {{version}}",
+    "restartAfterCall": "Reinicia cuando termine la llamada para completar la actualización.",
+    "website": "Sitio web",
+    "releaseNotes": "Notas de la versión",
+    "license": "Licencia",
+    "acknowledgements": "Créditos"
   },
   "wizard": {
     "branding": "Aria",

@@ -15,6 +15,7 @@ import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
+import { useAboutStore } from "../../stores/aboutStore";
 import { canSelfUpdate, useUpdateStore } from "../../stores/updateStore";
 
 /**
@@ -45,6 +46,10 @@ export function UpdateDialog() {
     s.activeCalls.some((c) => c.state !== "idle" && c.state !== "ended")
   );
 
+  // About shows the same update inline, Install button and all; a second
+  // dialog stacked on top of it would only say it twice.
+  const aboutOpen = useAboutStore((s) => s.open);
+
   const busy = installStatus === "downloading" || installStatus === "installing";
   const finished = installStatus === "installed";
   // Once an install is under way we stay open even if a call starts, so the
@@ -52,6 +57,7 @@ export function UpdateDialog() {
   const open =
     checkStatus === "available" &&
     !dismissed &&
+    !aboutOpen &&
     (!inCall || busy || finished || installStatus === "error");
 
   const percent =
