@@ -1507,7 +1507,15 @@ mod tests {
         assert!(answer.contains("a=rtpmap:0 PCMU/8000\r\n"));
         assert!(answer.contains("a=rtpmap:97 telephone-event/48000\r\na=fmtp:97 0-16\r\n"));
         assert!(answer.contains("a=rtpmap:98 telephone-event/8000\r\na=fmtp:98 0-16\r\n"));
-        assert!(!answer.contains("111"), "{answer}");
+        // Only the media lines: the o= line's random session id can contain
+        // "111" by chance.
+        assert!(
+            answer
+                .lines()
+                .filter(|l| l.starts_with("m=") || l.starts_with("a="))
+                .all(|l| !l.contains("111")),
+            "{answer}"
+        );
     }
 
     /// An rtpmap is authoritative: 111 mapped to something else is not Opus,
