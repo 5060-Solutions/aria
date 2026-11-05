@@ -248,6 +248,7 @@ pub async fn provision_from_qr(
         outbound_proxy: None,
         auth_username: None,
         auth_realm: None,
+        tls_server_name: None,
         enabled: true,
         // QR provisioning carries no consent to record, so it must not enable
         // recording. The user can turn it on per-account in Settings.
@@ -263,6 +264,29 @@ pub async fn provision_from_qr(
 
     manager.register(account).await?;
     Ok(account_id)
+}
+
+/// The deep links Aria was launched with — once per run.
+///
+/// The deep-link plugin's own `getCurrent` keeps answering with the most
+/// recent link (on macOS), so a webview reload replayed it: the last setup
+/// link was previewed again and the last tel: link refilled the dialer.
+#[tauri::command]
+pub fn take_launch_links(app: tauri::AppHandle) -> Vec<String> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tauri_plugin_deep_link::DeepLinkExt;
+    static TAKEN: AtomicBool = AtomicBool::new(false);
+    if TAKEN.swap(true, Ordering::SeqCst) {
+        return Vec::new();
+    }
+    app.deep_link()
+        .get_current()
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|u| u.to_string())
+        .collect()
 }
 
 /// Codec configuration from frontend
@@ -288,6 +312,10 @@ pub struct SipAccountConfig {
     pub outbound_proxy: Option<String>,
     pub auth_username: Option<String>,
     pub auth_realm: Option<String>,
+    /// TLS certificate name when it is neither registrar nor domain. Absent
+    /// for every account set up by hand, so they behave as before.
+    #[serde(default)]
+    pub tls_server_name: Option<String>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     #[serde(default = "default_auto_record")]
@@ -377,6 +405,7 @@ pub async fn sip_register(
         outbound_proxy: config.outbound_proxy,
         auth_username: config.auth_username,
         auth_realm: config.auth_realm,
+        tls_server_name: config.tls_server_name.filter(|s| !s.trim().is_empty()),
         enabled: config.enabled,
         auto_record: config.auto_record,
         // Secure by default. There is deliberately no path from the frontend
@@ -1040,7 +1069,7 @@ pub async fn store_credential(account_id: String, password: String) -> Result<()
         .map_err(|e| format!("keychain task failed: {e}"))?
 }
 
-fn store_credential_blocking(account_id: &str, password: &str) -> Result<(), String> {
+pub(crate) fn store_credential_blocking(account_id: &str, password: &str) -> Result<(), String> {
     log::info!("store_credential: account_id={}, password_len={}", account_id, password.len());
     
     #[cfg(feature = "dev-insecure")]
@@ -1401,6 +1430,18 @@ mod tests {
         // dropping the field from the payload failed silently instead of loudly.
         let absent: SipAccountConfig = serde_json::from_value(minimal_config_json()).unwrap();
         assert_eq!(absent.auth_realm, None);
+    }
+
+    /// Accounts saved before `tlsServerName` existed send no such field and
+    /// must keep their old TLS name selection.
+    #[test]
+    fn tls_server_name_is_optional() {
+        let absent: SipAccountConfig = serde_json::from_value(minimal_config_json()).unwrap();
+        assert_eq!(absent.tls_server_name, None);
+        let mut json = minimal_config_json();
+        json["tlsServerName"] = serde_json::Value::String("sip.ariaroute.com".into());
+        let config: SipAccountConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.tls_server_name.as_deref(), Some("sip.ariaroute.com"));
     }
 
     #[test]

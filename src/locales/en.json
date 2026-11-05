@@ -215,6 +215,7 @@
     "connect": "Connect",
     "connecting": "Connecting...",
     "tagline": "Your voice, beautifully connected.",
+    "scanQr": "Scan QR code",
     "developerDiagnostics": "Developer diagnostics"
   },
   "diagnostics": {
@@ -333,5 +334,30 @@
     "allow": "Allow",
     "deny": "Deny",
     "noAccount": "No account is available to place this call."
+  },
+  "provision": {
+    "title": "Add this phone line?",
+    "checking": "Checking the setup link…",
+    "setUpBy": "Set up by",
+    "organization": "Organization",
+    "line": "Line",
+    "domain": "Domain",
+    "trustNote": "Only add lines from people you trust.",
+    "addLine": "Add line",
+    "updateLine": "Update line",
+    "updateTitle": "Update your line {{ext}}@{{domain}}?",
+    "separateNote": "You already have line {{ext}} set up another way. This adds it as a separate line and leaves the existing one alone.",
+    "separateDone": "Your existing line {{ext}} was left as it is.",
+    "adding": "Adding line…",
+    "connecting": "Connecting…",
+    "added": "Added line {{ext}}",
+    "updated": "Updated line {{ext}}",
+    "ready": "It's ready to use.",
+    "notConnected": "It's saved, but it couldn't connect:",
+    "failedTitle": "Couldn't add the line",
+    "done": "Done",
+    "close": "Close",
+    "invalidLink": "This setup link isn't valid.",
+    "lineOff": "The line is turned off in Settings."
   }
 }

@@ -67,6 +67,23 @@ fn response_to_string(
     resp.to_string()
 }
 
+/// A display name as a SIP quoted-string (RFC 3261 §25.1): `"` and `\` are
+/// escaped and control characters dropped, so a name from anywhere — typed in
+/// Settings, a QR code, a setup link — cannot end the quote early or start a
+/// new header.
+pub(crate) fn quoted_display_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    out.push('"');
+    for c in name.chars().filter(|c| !c.is_control()) {
+        if c == '"' || c == '\\' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('"');
+    out
+}
+
 /// Parse a SIP URI string like `sip:user@host:port` into an `rsip::Uri`.
 /// Falls back to treating the whole string as a domain if parsing fails.
 fn parse_uri(s: &str) -> rsip::Uri {
@@ -242,7 +259,7 @@ pub fn build_invite_with_public_ip(
     let from_hdr = if account.display_name.trim().is_empty() {
         format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag)
     } else {
-        format!("\"{}\" <sip:{}@{}>;tag={}", account.display_name, account.username, account.domain, from_tag)
+        format!("{} <sip:{}@{}>;tag={}", quoted_display_name(&account.display_name), account.username, account.domain, from_tag)
     };
     let to_hdr = format!("<{}>", target_uri);
     let cseq_hdr = format!("{} INVITE", cseq);
@@ -1015,8 +1032,8 @@ pub fn build_invite_with_replaces(
 
     let via = via_value(transport_param, local_addr, &branch);
     let from_hdr = format!(
-        "\"{}\" <sip:{}@{}>;tag={}",
-        account.display_name, account.username, account.domain, from_tag,
+        "{} <sip:{}@{}>;tag={}",
+        quoted_display_name(&account.display_name), account.username, account.domain, from_tag,
     );
     let to_hdr = format!("<{}>", target_uri);
     let cseq_hdr = format!("{} INVITE", cseq);
@@ -1228,6 +1245,16 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_names_are_escaped_in_the_quoted_string() {
+        use super::quoted_display_name as q;
+        assert_eq!(q("Front Desk"), "\"Front Desk\"");
+        assert_eq!(q("a\"b"), "\"a\\\"b\"");
+        assert_eq!(q("a\\b"), "\"a\\\\b\"");
+        assert_eq!(q("x\"\r\nVia: evil"), "\"x\\\"Via: evil\"");
+        assert_eq!(q(""), "\"\"");
+    }
+
 
     #[test]
     fn contact_uri_takes_the_bracketed_uri_and_drops_header_params() {

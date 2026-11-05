@@ -579,6 +579,7 @@ mod tests {
             display_name: "Test User".to_string(),
             auth_username: None,
             auth_realm: None,
+            tls_server_name: None,
             transport: TransportType::Udp,
             port: 5060,
             registrar: None,

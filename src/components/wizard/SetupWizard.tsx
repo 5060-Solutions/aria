@@ -18,6 +18,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import BugReportOutlinedIcon from "@mui/icons-material/BugReportOutlined";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
+import QrCodeScannerIcon from "@mui/icons-material/QrCodeScanner";
 import { motion } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
@@ -25,6 +26,7 @@ import { useAppStore, saveAccountPassword } from "../../stores/appStore";
 import { sipRegister } from "../../hooks/useSip";
 import { QrScanner } from "./QrScanner";
 import type { QrProvisionData } from "./QrScanner";
+import { provisionFlow } from "../provision/provisionApi";
 import type { SipAccount, TransportType } from "../../types/sip";
 import { log } from "../../utils/log";
 
@@ -233,11 +235,13 @@ export function SetupWizard() {
       id: accountId,
       displayName: data.displayName || data.username,
       username: data.username,
-      domain: data.server,
+      domain: data.domain || data.server,
       password: data.password,
       transport: (data.transport as TransportType) || "udp",
       port: data.port,
       registrar: data.server,
+      outboundProxy: data.outboundProxy,
+      authUsername: data.authUsername,
       enabled: true,
       // The QR payload carries the voicemail number; it was parsed and then
       // dropped. Keep it so the voicemail button knows what to dial.
@@ -267,6 +271,10 @@ export function SetupWizard() {
     return (
       <QrScanner
         onProvisioned={handleQrProvisioned}
+        onProvisionLink={(link) => {
+          setShowQrScanner(false);
+          provisionFlow.getState().open(link);
+        }}
         onCancel={() => setShowQrScanner(false)}
       />
     );
@@ -564,6 +572,17 @@ export function SetupWizard() {
             }}
           >
             {connecting ? t("wizard.connecting") : t("wizard.connect")}
+          </Button>
+
+          {/* The other way in: a QR code or a pasted setup link. */}
+          <Button
+            variant="text"
+            startIcon={<QrCodeScannerIcon />}
+            disabled={connecting}
+            onClick={() => setShowQrScanner(true)}
+            sx={{ borderRadius: "20px", color: "text.secondary", textTransform: "none" }}
+          >
+            {t("wizard.scanQr")}
           </Button>
         </Box>
       </motion.div>

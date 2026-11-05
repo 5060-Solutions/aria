@@ -17,6 +17,9 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutlineOutlin
 import { Html5Qrcode } from "html5-qrcode";
 import { useTranslation } from "react-i18next";
 import { log } from "../../utils/log";
+import { allowLocalSetupLinks, parseProvisionLink } from "../../utils/provisionLink";
+import type { ProvisionLink } from "../../utils/provisionLink";
+import { isHost, isSipUser, normalizeProxy } from "../../utils/sipFields";
 
 export interface QrProvisionData {
   server: string;
@@ -26,7 +29,33 @@ export interface QrProvisionData {
   displayName: string;
   transport: string;
   voicemail: string;
+  /** SIP domain, when it differs from `server`. JSON payload only. */
+  domain?: string;
+  /** Outbound proxy, `host[:port]`. JSON payload only. */
+  outboundProxy?: string;
+  /** Digest username, when it differs from `username`. JSON payload only. */
+  authUsername?: string;
 }
+
+/** What a scanned or pasted code asks for. */
+type ScanResult =
+  | { kind: "credentials"; data: QrProvisionData }
+  | { kind: "link"; link: ProvisionLink };
+
+/**
+ * A one-click setup link (`aria://provision?v=1&url=…`, which goes through
+ * the same preview and confirm as a deep link), or one of the older formats
+ * that carry the credentials themselves.
+ */
+function parseScan(text: string): ScanResult | null {
+  const link = parseProvisionLink(text, { allowLocalHttp: allowLocalSetupLinks });
+  if (link.ok) return { kind: "link", link: link.link };
+  const data = parseAriaUri(text);
+  return data ? { kind: "credentials", data } : null;
+}
+
+const optionalString = (v: unknown): string | undefined =>
+  typeof v === "string" && v.trim() ? v.trim() : undefined;
 
 /**
  * Parse an aria://provision?... URI into structured provisioning data.
@@ -37,6 +66,20 @@ function parseAriaUri(uri: string): QrProvisionData | null {
     if (uri.startsWith("{")) {
       const json = JSON.parse(uri);
       if (json.type === "aria-sip") {
+        // The optional fields are newer than the format; check them like a
+        // setup link's, and refuse the code rather than guess.
+        const domain = optionalString(json.domain);
+        const proxyRaw = optionalString(json.outbound_proxy);
+        const outboundProxy = proxyRaw === undefined ? undefined : normalizeProxy(proxyRaw);
+        const authUsername = optionalString(json.auth_username);
+        if (
+          (domain !== undefined && !isHost(domain)) ||
+          outboundProxy === null ||
+          (authUsername !== undefined && !isSipUser(authUsername))
+        ) {
+          log.warn("[QrScanner] Refused a code with an unusable domain, proxy or auth username");
+          return null;
+        }
         return {
           server: json.server ?? "",
           port: json.port ?? 5060,
@@ -45,6 +88,9 @@ function parseAriaUri(uri: string): QrProvisionData | null {
           displayName: json.display_name ?? json.username ?? "",
           transport: json.transport ?? "udp",
           voicemail: json.voicemail ?? "*97",
+          domain: domain?.toLowerCase(),
+          outboundProxy,
+          authUsername,
         };
       }
       return null;
@@ -88,10 +134,12 @@ function parseAriaUri(uri: string): QrProvisionData | null {
 
 interface QrScannerProps {
   onProvisioned: (data: QrProvisionData) => void;
+  /** A setup link was scanned: hand it to the confirm flow. */
+  onProvisionLink: (link: ProvisionLink) => void;
   onCancel: () => void;
 }
 
-export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
+export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScannerProps) {
   const { t } = useTranslation();
   const theme = useTheme();
   const [mode, setMode] = useState<"choose" | "camera" | "paste">("choose");
@@ -133,11 +181,22 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
     };
   }, [releaseScanner]);
 
+  const deliver = useCallback(
+    (result: ScanResult) => {
+      if (result.kind === "link") {
+        onProvisionLink(result.link);
+      } else {
+        onProvisioned(result.data);
+      }
+    },
+    [onProvisioned, onProvisionLink]
+  );
+
   const handleScanSuccess = useCallback(
     (decodedText: string) => {
       if (hasProcessedRef.current) return;
-      const data = parseAriaUri(decodedText);
-      if (data) {
+      const result = parseScan(decodedText);
+      if (result) {
         hasProcessedRef.current = true;
         // Stop the camera before the callback (which unmounts us).
         const scanner = scannerRef.current;
@@ -145,10 +204,10 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
         if (scanner) {
           void releaseScanner(scanner);
         }
-        onProvisioned(data);
+        deliver(result);
       }
     },
-    [onProvisioned, releaseScanner]
+    [deliver, releaseScanner]
   );
 
   const startCamera = useCallback(async () => {
@@ -209,30 +268,30 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
       return;
     }
 
-    const data = parseAriaUri(trimmed);
-    if (!data) {
+    const result = parseScan(trimmed);
+    if (!result) {
       setError(
         "Invalid provisioning link. Expected an aria://provision?... URL or JSON payload."
       );
       return;
     }
 
-    onProvisioned(data);
-  }, [pasteValue, onProvisioned]);
+    deliver(result);
+  }, [pasteValue, deliver]);
 
   const handlePasteFromClipboard = useCallback(async () => {
     try {
       const text = await navigator.clipboard.readText();
       setPasteValue(text);
       // Auto-detect and provision if valid
-      const data = parseAriaUri(text.trim());
-      if (data) {
-        onProvisioned(data);
+      const result = parseScan(text.trim());
+      if (result) {
+        deliver(result);
       }
     } catch {
       setError("Could not read clipboard. Please paste manually.");
     }
-  }, [onProvisioned]);
+  }, [deliver]);
 
   return (
     <Box
@@ -408,7 +467,7 @@ export function QrScanner({ onProvisioned, onCancel }: QrScannerProps) {
                 setPasteValue(e.target.value);
                 setError(null);
               }}
-              placeholder="aria://provision?server=...&user=..."
+              placeholder="aria://provision?v=1&url=..."
               sx={{
                 "& .MuiOutlinedInput-root": {
                   borderRadius: "14px",

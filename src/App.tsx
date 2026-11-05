@@ -12,9 +12,27 @@ import { useSipEvents, useAutoRegister } from "./hooks/useSip";
 import { useNetworkMonitor } from "./hooks/useNetworkMonitor";
 import { log } from "./utils/log";
 import { deepLinkTarget } from "./utils/deepLink";
+import { allowLocalSetupLinks, isProvisionLink, parseProvisionLink } from "./utils/provisionLink";
+import { ProvisionLinkDialog } from "./components/provision/ProvisionLinkDialog";
+import { provisionFlow } from "./components/provision/provisionApi";
 import "./i18n";
 
 const isDebugWindow = getCurrentWebviewWindow().label === "debug";
+
+/** How long a runtime copy of the launch link is treated as a duplicate. */
+const LAUNCH_DUPLICATE_MS = 5000;
+
+/**
+ * The links Aria was launched with. Read once at load, not per effect run:
+ * the backend hands them out only once per run, and a StrictMode re-run must
+ * not lose them.
+ */
+const launchLinks: Promise<string[]> = isDebugWindow
+  ? Promise.resolve([])
+  : invoke<string[]>("take_launch_links").catch((e) => {
+      log.warn("[DeepLink] Could not read the launch link:", e);
+      return [];
+    });
 
 /** Main app — only rendered in the primary window. Holds all SIP hooks. */
 function MainApp() {
@@ -39,10 +57,24 @@ function MainApp() {
     });
   }, []);
 
-  // Handle tel: and sip: deep links
+  // Handle tel:, sip: and aria://provision deep links
   useEffect(() => {
-    const unlisten = onOpenUrl((urls) => {
+    const handle = (urls: string[]) => {
       for (const url of urls) {
+        // aria://provision?v=1&url=… — a one-click setup link. It only opens
+        // a confirm dialog; nothing is added until the user says so. Neither
+        // the link nor its URL is logged: the URL carries a one-time token.
+        if (isProvisionLink(url)) {
+          const parsed = parseProvisionLink(url, { allowLocalHttp: allowLocalSetupLinks });
+          if (!parsed.ok) {
+            log.warn("[DeepLink] Ignored a setup link:", parsed.reason);
+          } else if (provisionFlow.getState().open(parsed.link)) {
+            log.info("[DeepLink] Setup link from", parsed.link.serverHost);
+          } else {
+            log.info("[DeepLink] Ignored a setup link: another one is open");
+          }
+          continue;
+        }
         // tel:+1234567890 or sip:user@domain.com. The link comes from any web
         // page, so it is only ever put in the dialer, never dialled.
         const target = deepLinkTarget(url);
@@ -51,14 +83,49 @@ function MainApp() {
         setCurrentView("dialer");
         log.info("[DeepLink] Received link, setting dialer to:", target);
       }
+    };
+
+    // The launch link can arrive both ways, in either order: from the
+    // backend (asked once per run, so a webview reload does not replay it)
+    // and as a runtime event. Each copy is handled once.
+    const launchHandled = new Set<string>();
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const seenBeforeLaunch = new Set<string>();
+    let launchRead = false;
+    const unlisten = onOpenUrl((urls) => {
+      const fresh = urls.filter((u) => !launchHandled.delete(u));
+      if (!launchRead) fresh.forEach((u) => seenBeforeLaunch.add(u));
+      handle(fresh);
+    });
+
+    let cancelled = false;
+    void launchLinks.then((urls) => {
+      launchRead = true;
+      if (cancelled) return;
+      const fresh = urls.filter((u) => !seenBeforeLaunch.has(u));
+      fresh.forEach((u) => {
+        launchHandled.add(u);
+        // The runtime copy, if any, comes at once. After that an identical
+        // link is the user clicking again and must go through.
+        timers.push(setTimeout(() => launchHandled.delete(u), LAUNCH_DUPLICATE_MS));
+      });
+      handle(fresh);
     });
 
     return () => {
+      cancelled = true;
+      timers.forEach(clearTimeout);
       unlisten.then((fn) => fn());
     };
   }, [setDialInput, setCurrentView]);
 
-  return setupComplete ? <AppShell /> : <SetupWizard />;
+  return (
+    <>
+      {setupComplete ? <AppShell /> : <SetupWizard />}
+      {/* Outside both, so a setup link works on first run too. */}
+      <ProvisionLinkDialog />
+    </>
+  );
 }
 
 export function App() {

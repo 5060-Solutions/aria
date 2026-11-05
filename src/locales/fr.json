@@ -199,6 +199,7 @@
     "connect": "Connecter",
     "connecting": "Connexion...",
     "tagline": "Votre voix, magnifiquement connectée.",
+    "scanQr": "Scanner un code QR",
     "developerDiagnostics": "Diagnostics développeur"
   },
   "diagnostics": {
@@ -316,5 +317,30 @@
     "allow": "Autoriser",
     "deny": "Refuser",
     "noAccount": "Aucun compte disponible pour passer cet appel."
+  },
+  "provision": {
+    "title": "Ajouter cette ligne téléphonique ?",
+    "checking": "Vérification du lien de configuration…",
+    "setUpBy": "Configuré par",
+    "organization": "Organisation",
+    "line": "Ligne",
+    "domain": "Domaine",
+    "trustNote": "N'ajoutez que des lignes de personnes de confiance.",
+    "addLine": "Ajouter la ligne",
+    "updateLine": "Mettre à jour la ligne",
+    "updateTitle": "Mettre à jour votre ligne {{ext}}@{{domain}} ?",
+    "separateNote": "Vous avez déjà la ligne {{ext}} configurée autrement. Elle sera ajoutée comme ligne distincte, sans modifier l'existante.",
+    "separateDone": "Votre ligne {{ext}} existante n'a pas été modifiée.",
+    "adding": "Ajout de la ligne…",
+    "connecting": "Connexion…",
+    "added": "Ligne {{ext}} ajoutée",
+    "updated": "Ligne {{ext}} mise à jour",
+    "ready": "Elle est prête à l'emploi.",
+    "notConnected": "Elle est enregistrée, mais n'a pas pu se connecter :",
+    "failedTitle": "Impossible d'ajouter la ligne",
+    "done": "Terminé",
+    "close": "Fermer",
+    "invalidLink": "Ce lien de configuration n'est pas valide.",
+    "lineOff": "La ligne est désactivée dans les réglages."
   }
 }

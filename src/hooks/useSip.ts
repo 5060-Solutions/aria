@@ -479,6 +479,7 @@ export async function sipRegister(account: SipAccount): Promise<string> {
       outboundProxy: account.outboundProxy ?? null,
       authUsername: account.authUsername ?? null,
       authRealm: account.authRealm ?? null,
+      tlsServerName: account.tlsServerName ?? null,
       enabled: account.enabled,
       // Every field the backend reads must be listed here. Omitting one does
       // not fall back to the stored account — it falls back to whatever serde

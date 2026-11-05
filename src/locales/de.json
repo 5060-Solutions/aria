@@ -199,6 +199,7 @@
     "connect": "Verbinden",
     "connecting": "Verbinde...",
     "tagline": "Deine Stimme, wunderschön verbunden.",
+    "scanQr": "QR-Code scannen",
     "developerDiagnostics": "Entwickler-Diagnose"
   },
   "diagnostics": {
@@ -316,5 +317,30 @@
     "allow": "Erlauben",
     "deny": "Ablehnen",
     "noAccount": "Kein Konto verfügbar, um diesen Anruf zu tätigen."
+  },
+  "provision": {
+    "title": "Diese Telefonleitung hinzufügen?",
+    "checking": "Einrichtungslink wird geprüft…",
+    "setUpBy": "Eingerichtet von",
+    "organization": "Organisation",
+    "line": "Leitung",
+    "domain": "Domain",
+    "trustNote": "Füge nur Leitungen von Personen hinzu, denen du vertraust.",
+    "addLine": "Leitung hinzufügen",
+    "updateLine": "Leitung aktualisieren",
+    "updateTitle": "Deine Leitung {{ext}}@{{domain}} aktualisieren?",
+    "separateNote": "Du hast die Leitung {{ext}} bereits auf andere Weise eingerichtet. Sie wird als separate Leitung hinzugefügt, die bestehende bleibt unverändert.",
+    "separateDone": "Deine bestehende Leitung {{ext}} wurde nicht verändert.",
+    "adding": "Leitung wird hinzugefügt…",
+    "connecting": "Verbinde…",
+    "added": "Leitung {{ext}} hinzugefügt",
+    "updated": "Leitung {{ext}} aktualisiert",
+    "ready": "Sie ist einsatzbereit.",
+    "notConnected": "Sie ist gespeichert, konnte aber keine Verbindung herstellen:",
+    "failedTitle": "Leitung konnte nicht hinzugefügt werden",
+    "done": "Fertig",
+    "close": "Schließen",
+    "invalidLink": "Dieser Einrichtungslink ist ungültig.",
+    "lineOff": "Die Leitung ist in den Einstellungen ausgeschaltet."
   }
 }
