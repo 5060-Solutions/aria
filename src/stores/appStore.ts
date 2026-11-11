@@ -16,6 +16,7 @@ import type {
   VoicemailStatus,
   TransferStatus,
 } from "../types/sip";
+import type { ConnectionReport, RetryPlan } from "../types/connection";
 import { storeCredential, getCredential, deleteCredential } from "../utils/credentials";
 import { log } from "../utils/log";
 
@@ -58,6 +59,12 @@ interface AppState {
   accounts: SipAccount[];
   activeAccountId: string | null;
   accountStates: Record<string, AccountState>;
+  /** The backend's step-by-step registration picture, per account. */
+  connectionReports: Record<string, ConnectionReport>;
+  setConnectionReport: (report: ConnectionReport) => void;
+  /** What the frontend will do next about a failed account. */
+  retryPlans: Record<string, RetryPlan>;
+  setRetryPlan: (accountId: string, plan: RetryPlan) => void;
 
   // Account management
   addAccount: (account: SipAccount) => void;
@@ -236,12 +243,18 @@ export const useAppStore = create<AppState>((set, get) => {
         const accountStates = Object.fromEntries(
           Object.entries(s.accountStates).filter(([id]) => id !== accountId)
         ) as Record<string, AccountState>;
+        const connectionReports = Object.fromEntries(
+          Object.entries(s.connectionReports).filter(([id]) => id !== accountId)
+        ) as Record<string, ConnectionReport>;
+        const retryPlans = Object.fromEntries(
+          Object.entries(s.retryPlans).filter(([id]) => id !== accountId)
+        ) as Record<string, RetryPlan>;
         const activeAccountId =
           s.activeAccountId === accountId
             ? accounts[0]?.id ?? null
             : s.activeAccountId;
         saveAccounts(accounts, activeAccountId);
-        return { accounts, accountStates, activeAccountId };
+        return { accounts, accountStates, connectionReports, retryPlans, activeAccountId };
       }),
 
     resetAccounts: () => {
@@ -249,7 +262,14 @@ export const useAppStore = create<AppState>((set, get) => {
       // saved copy only, and the next account added was saved alongside the
       // old ones still in memory, resurrecting them without their passwords.
       localStorage.removeItem("aria_accounts_v2");
-      set({ accounts: [], activeAccountId: null, accountStates: {}, voicemail: {} });
+      set({
+        accounts: [],
+        activeAccountId: null,
+        accountStates: {},
+        connectionReports: {},
+        retryPlans: {},
+        voicemail: {},
+      });
     },
 
     setActiveAccount: (accountId) =>
@@ -257,6 +277,13 @@ export const useAppStore = create<AppState>((set, get) => {
         saveAccounts(s.accounts, accountId);
         return { activeAccountId: accountId };
       }),
+
+    connectionReports: {},
+    setConnectionReport: (report) =>
+      set((s) => ({ connectionReports: { ...s.connectionReports, [report.accountId]: report } })),
+    retryPlans: {},
+    setRetryPlan: (accountId, plan) =>
+      set((s) => ({ retryPlans: { ...s.retryPlans, [accountId]: plan } })),
 
     setAccountRegistrationState: (accountId, state, error) =>
       set((s) => ({
