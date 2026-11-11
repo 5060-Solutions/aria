@@ -10,22 +10,8 @@ import { useAppStore } from "../../stores/appStore";
 import { placeCall, sipSetActiveAccount } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
 import { log } from "../../utils/log";
-
-const stateColors: Record<string, string> = {
-  registered: "#4caf50",
-  registering: "#ff9800",
-  reconnecting: "#ff9800",
-  unregistered: "#9e9e9e",
-  error: "#f44336",
-};
-
-const stateLabelsKeys: Record<string, string> = {
-  registered: "status.connected",
-  registering: "status.connecting",
-  reconnecting: "status.reconnecting",
-  unregistered: "status.notConnected",
-  error: "status.connectionError",
-};
+import { ConnectionPanel } from "./ConnectionPanel";
+import { stateColors, stateLabelsKeys } from "./statusChip";
 
 export function StatusBar() {
   const { t } = useTranslation();
@@ -36,6 +22,7 @@ export function StatusBar() {
   const theme = useTheme();
 
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const [panelAnchor, setPanelAnchor] = useState<null | HTMLElement>(null);
 
   const voicemail = useAppStore((s) => s.voicemail);
 
@@ -200,6 +187,10 @@ export function StatusBar() {
           label={t(stateLabelsKeys[registrationState])}
           size="small"
           variant="outlined"
+          clickable
+          role="button"
+          aria-haspopup="dialog"
+          onClick={(e) => setPanelAnchor(e.currentTarget)}
           sx={{
             height: 24,
             fontSize: "0.7rem",
@@ -208,6 +199,14 @@ export function StatusBar() {
             WebkitAppRegion: "no-drag",
           }}
         />
+        {activeAccountId && panelAnchor && (
+          <ConnectionPanel
+            anchorEl={panelAnchor}
+            open
+            onClose={() => setPanelAnchor(null)}
+            accountId={activeAccountId}
+          />
+        )}
       </Box>
     </Box>
   );

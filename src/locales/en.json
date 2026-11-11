@@ -15,6 +15,42 @@
     "voicemail": "Voicemail",
     "voicemailWaiting": "{{count}} new voicemail message(s) — click to listen"
   },
+    "connection": {
+      "title": "Connection",
+      "steps": {
+        "resolve": "Resolve {{host}}",
+        "connect": "Open {{transport}} to {{addr}}",
+        "register": "REGISTER",
+        "authenticate": "Authenticate",
+        "registered": "Registered"
+      },
+      "retryNow": "Retry now",
+      "reregister": "Re-register",
+      "copy": "Copy details",
+      "copied": "Copied",
+      "diagnostics": "Diagnostics",
+      "retry": {
+        "in": "Next automatic retry in {{seconds}} s",
+        "reconnecting": "Reconnecting, attempt {{attempt}}",
+        "stoppedAuth": "Automatic retries stopped: this will not fix itself",
+        "onWake": "No retry scheduled; the app tries again when the network changes or the window wakes",
+        "disabled": "Account disabled"
+      },
+      "registeredDetail": "expires in {{expires}} · last refresh {{at}}",
+      "hintTitle": "What this usually means",
+      "hints": {
+        "dns": "The server name did not resolve. Check the spelling of the domain or registrar in the account settings, and that this network's DNS works (do other sites load?).",
+        "dns_timeout": "DNS did not answer within 3 s. Usually the network is down or captive (a hotel or airport Wi-Fi sign-in page).",
+        "unreachable": "Nothing is listening at that address and port over this transport. Check the port and transport (UDP, TCP or TLS) in the account settings and any firewall between you and the PBX.",
+        "tls_untrusted": "The server's certificate is not signed by a CA this computer trusts. For a lab PBX, turn on \"Allow untrusted certificate\" in the account; a production PBX needs a public certificate.",
+        "tls_name": "The certificate is for a different name than the one the account connects to. Set the TLS server name (or the registrar) to the name on the certificate.",
+        "tls_handshake": "The TLS handshake failed. If the PBX uses a self-signed or private certificate, turn on \"Allow untrusted certificate\" in the account; otherwise the server may not speak TLS on this port.",
+        "timeout": "The server did not answer. Over UDP this is usually a firewall or NAT dropping SIP; try TCP or TLS, or check that the PBX allows this address.",
+        "auth": "The PBX rejected the credentials. Check the username, auth username and password; if the PBX uses a different realm, set it under advanced account settings. Automatic retries stop on this failure.",
+        "forbidden_ip": "The PBX refused this address. A fail2ban-style block after earlier failures is the usual cause; it clears by itself after the ban period.",
+        "server_error": "The PBX answered but could not register you right now. This is on the server side; the app keeps retrying."
+      }
+    },
   "dialer": {
     "searchCountry": "Search country...",
     "enterNumber": "Enter number",

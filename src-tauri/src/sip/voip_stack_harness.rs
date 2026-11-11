@@ -981,3 +981,262 @@ fn target_server_splits_only_an_unambiguous_port() {
         assert_eq!(SipManager::target_server(&cfg), want, "{proxy}");
     }
 }
+
+/// A host that does not resolve fails the first step of the report, with
+/// the DNS text the user can act on, and the report is what the query returns.
+#[tokio::test]
+async fn an_unresolvable_server_fails_the_resolve_step() {
+    use super::connection::{FailureKind, Outcome, StepKind, StepStatus};
+    let (mgr, mut rx) = manager_with(fast_timing());
+    let mut cfg = account("127.0.0.1:5060".parse().unwrap(), None, PASSWORD);
+    cfg.registrar = Some("no-such-host.invalid".into());
+    let err = mgr.register(cfg.clone()).await.expect_err("cannot register");
+    assert!(err.starts_with("DNS"), "{err}");
+    let report = mgr.connection_report(&cfg.id).await.expect("report exists");
+    assert_eq!(report.step(StepKind::Resolve).status, StepStatus::Failed);
+    assert_eq!(report.step(StepKind::Resolve).failure, Some(FailureKind::Dns));
+    assert_eq!(report.step(StepKind::Connect).status, StepStatus::Pending);
+    assert_eq!(report.outcome, Outcome::Error);
+    assert_eq!(report.error.as_deref(), Some(err.as_str()));
+    let mut saw = false;
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(ev, super::SipEvent::ConnectionReport(_)) {
+            saw = true;
+        }
+    }
+    assert!(saw, "a sip-connection event was emitted");
+}
+
+/// A literal proxy address needs no lookup; the step says so instead of
+/// pretending one happened.
+#[tokio::test]
+async fn a_literal_address_skips_resolution() {
+    use super::connection::{StepKind, StepStatus};
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    let report = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(report.step(StepKind::Resolve).status, StepStatus::Skipped);
+    assert_eq!(report.step(StepKind::Resolve).detail.as_deref(), Some("literal address"));
+}
+
+#[tokio::test]
+async fn a_successful_registration_reports_every_step_ok() {
+    use super::connection::{Outcome, StepKind, StepStatus};
+    let (proxy, _seen, _) =
+        start_pbx_with_options(PbxOptions { register_expires: 300, ..PbxOptions::default() }).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    for k in [StepKind::Connect, StepKind::Register, StepKind::Authenticate, StepKind::Registered] {
+        assert_eq!(r.step(k.clone()).status, StepStatus::Ok, "{k:?}");
+    }
+    assert!(r.step(StepKind::Register).detail.as_deref().unwrap().starts_with("401 challenge in"));
+    assert_eq!(r.step(StepKind::Registered).detail.as_deref(), Some("expires 300 s"));
+    assert_eq!(r.outcome, Outcome::Registered);
+    assert_eq!(r.registered.as_ref().unwrap().expires_in_s, 300);
+}
+
+#[tokio::test]
+async fn a_wrong_password_fails_the_authenticate_step_as_auth() {
+    use super::connection::{FailureKind, StepKind, StepStatus};
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, "wrong");
+    let err = register(&mgr, cfg.clone()).await.expect_err("rejected");
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(r.step(StepKind::Register).status, StepStatus::Ok);
+    assert_eq!(r.step(StepKind::Authenticate).status, StepStatus::Failed);
+    assert_eq!(r.step(StepKind::Authenticate).failure, Some(FailureKind::Auth));
+    assert!(r.step(StepKind::Authenticate).detail.as_deref().unwrap().starts_with("401: Authentication failed"));
+    assert_eq!(r.error.as_deref(), Some(err.as_str()));
+}
+
+#[tokio::test]
+async fn an_unanswered_register_reports_the_timeout_with_the_send_count() {
+    use super::connection::{FailureKind, StepKind, StepStatus};
+    let opts = PbxOptions::default();
+    opts.drop_next_register.store(true, Ordering::SeqCst);
+    let (proxy, _seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    let _ = register(&mgr, cfg.clone()).await.expect_err("times out");
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    let s = r.step(StepKind::Register);
+    assert_eq!(s.status, StepStatus::Failed);
+    assert_eq!(s.failure, Some(FailureKind::Timeout));
+    let d = s.detail.as_deref().unwrap();
+    assert!(d.starts_with("no reply in ") && d.contains("(sent ") && d.ends_with(" times)"), "{d}");
+}
+
+/// Register, then make the PBX swallow the refresh; the backend goes to
+/// Reconnecting and the report must show a fresh attempt, not the old ticks.
+#[tokio::test]
+async fn a_lost_refresh_restarts_the_report_as_reconnecting() {
+    use super::connection::{Outcome, StepKind, StepStatus};
+    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let drop = opts.drop_next_register.clone();
+    let (proxy, _seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    drop.store(true, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let r = mgr.connection_report(&cfg.id).await.unwrap();
+        if r.outcome == Outcome::Reconnecting {
+            assert_ne!(r.step(StepKind::Registered).status, StepStatus::Ok);
+            assert!(r.reconnect_attempt >= 1, "attempt {}", r.reconnect_attempt);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never went reconnecting");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Poll until the account is registered, or fail after five seconds.
+async fn wait_registered(mgr: &SipManager, id: &str) {
+    for _ in 0..50 {
+        let (state, err) = mgr.registration_state_for_account(Some(id)).await;
+        match state {
+            super::RegistrationState::Registered => return,
+            super::RegistrationState::Error => panic!("registration failed: {err:?}"),
+            _ => tokio::time::sleep(Duration::from_millis(100)).await,
+        }
+    }
+    panic!("not registered within 5 s");
+}
+
+/// "Re-register" on a healthy account sends a refresh on the connection it
+/// has. It must never sign the account out (no Expires: 0, no Unregistered
+/// event) and must leave a call in progress alone.
+#[tokio::test]
+async fn register_now_on_a_registered_account_refreshes_without_signing_out() {
+    let (proxy, seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, mut rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    let before = seen.lock().unwrap().register_ok.len();
+    {
+        let mut s = mgr.state.write().await;
+        s.accounts.get_mut(&cfg.id).unwrap().calls.push(super::state::CallFSM::new_outbound(
+            &cfg.id,
+            "sip:200@harness.lan",
+            "call-1".into(),
+            "tag-1".into(),
+            40000,
+            "z9hG4bK-1".into(),
+            "sip:ghostbook@harness.lan".into(),
+        ));
+    }
+    while rx.try_recv().is_ok() {}
+    assert_eq!(mgr.register_now(cfg.clone()).await.unwrap(), "refreshing");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().register_ok.len() == before {
+        assert!(tokio::time::Instant::now() < deadline, "no refresh REGISTER arrived");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    wait_registered(&mgr, &cfg.id).await;
+    {
+        let s = mgr.state.read().await;
+        let a = s.accounts.get(&cfg.id).unwrap();
+        assert_eq!(a.calls.len(), 1, "the call survived");
+        assert!(a.registration.is_registered());
+    }
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    assert!(
+        !events.iter().any(|e| matches!(e, super::SipEvent::RegistrationChanged(r) if r.state == super::RegistrationState::Unregistered)),
+        "no sign-out event"
+    );
+    assert!(
+        !seen.lock().unwrap().register_expires.iter().any(|e| e.as_deref() == Some("0")),
+        "no Expires: 0 REGISTER"
+    );
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(r.outcome, super::connection::Outcome::Registered);
+}
+
+/// Retry on a failed account runs the whole path again, from DNS.
+#[tokio::test]
+async fn register_now_on_a_failed_account_runs_the_full_path_again() {
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let mut cfg = account(proxy, None, "wrong");
+    let _ = register(&mgr, cfg.clone()).await.expect_err("rejected");
+    cfg.password = PASSWORD.into();
+    assert_eq!(mgr.register_now(cfg.clone()).await.unwrap(), "registering");
+    wait_registered(&mgr, &cfg.id).await;
+    let report = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(report.outcome, super::connection::Outcome::Registered);
+    assert_eq!(report.step(super::connection::StepKind::Resolve).status, super::connection::StepStatus::Skipped);
+}
+
+/// A retry for an account that never got as far as an `AccountState` (DNS
+/// failed) still works, because the caller hands over the config.
+#[tokio::test]
+async fn register_now_after_a_dns_failure_registers_with_the_corrected_host() {
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let mut cfg = account(proxy, None, PASSWORD);
+    cfg.registrar = Some("no-such-host.invalid".into());
+    let _ = mgr.register(cfg.clone()).await.expect_err("dns");
+    cfg.registrar = Some(proxy.ip().to_string());
+    assert_eq!(mgr.register_now(cfg.clone()).await.unwrap(), "registering");
+    wait_registered(&mgr, &cfg.id).await;
+}
+
+/// The ordinary Wi-Fi-drop sequence: the refresh is lost, the backend
+/// reconnects, and the reconnect attempt itself fails (here at DNS). The
+/// panel must keep saying "reconnecting" with the failed step visible, not
+/// flip to a dead-end error while the backend is still trying.
+#[tokio::test]
+async fn a_reconnect_attempt_that_fails_keeps_the_report_reconnecting() {
+    use super::connection::{Outcome, StepKind, StepStatus};
+    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let drop = opts.drop_next_register.clone();
+    let (proxy, _seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    {
+        let mut s = mgr.state.write().await;
+        s.accounts.get_mut(&cfg.id).unwrap().config.registrar = Some("no-such-host.invalid".into());
+    }
+    drop.store(true, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let r = mgr.connection_report(&cfg.id).await.unwrap();
+        if r.step(StepKind::Resolve).status == StepStatus::Failed {
+            assert_eq!(r.outcome, Outcome::Reconnecting, "{r:?}");
+            assert!(r.error.as_deref().unwrap_or_default().starts_with("DNS"), "{:?}", r.error);
+            let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+            assert_eq!(state, super::RegistrationState::Reconnecting);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "reconnect never failed at DNS: {r:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A forced retry that fails before a REGISTER is sent must put the account
+/// into Error, like a first registration does, so the chip and the panel
+/// agree and the retry loop can start from it.
+#[tokio::test]
+async fn register_now_that_fails_at_dns_marks_the_account_error() {
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let mut cfg = account(proxy, None, "wrong");
+    let _ = register(&mgr, cfg.clone()).await.expect_err("rejected");
+    cfg.registrar = Some("no-such-host.invalid".into());
+    let err = mgr.register_now(cfg.clone()).await.expect_err("dns");
+    let (state, reason) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+    assert_eq!(state, super::RegistrationState::Error);
+    assert_eq!(reason.as_deref(), Some(err.as_str()));
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(r.error.as_deref(), Some(err.as_str()));
+}

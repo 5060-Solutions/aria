@@ -13,6 +13,42 @@
     "connectionError": "Erreur de connexion",
     "noAccount": "Aucun compte configuré"
   },
+    "connection": {
+      "title": "Connexion",
+      "steps": {
+        "resolve": "Résoudre {{host}}",
+        "connect": "Ouvrir {{transport}} vers {{addr}}",
+        "register": "REGISTER",
+        "authenticate": "Authentifier",
+        "registered": "Enregistré"
+      },
+      "retryNow": "Réessayer maintenant",
+      "reregister": "Réenregistrer",
+      "copy": "Copier les détails",
+      "copied": "Copié",
+      "diagnostics": "Diagnostics",
+      "retry": {
+        "in": "Prochaine tentative automatique dans {{seconds}} s",
+        "reconnecting": "Reconnexion, tentative {{attempt}}",
+        "stoppedAuth": "Tentatives automatiques arrêtées : cela ne se réglera pas tout seul",
+        "onWake": "Aucune tentative planifiée ; l'application réessaie quand le réseau change ou que la fenêtre se réveille",
+        "disabled": "Compte désactivé"
+      },
+      "registeredDetail": "expire dans {{expires}} · dernier rafraîchissement {{at}}",
+      "hintTitle": "Ce que cela signifie en général",
+      "hints": {
+        "dns": "Le nom du serveur n'a pas été résolu. Vérifiez l'orthographe du domaine ou du registrar dans les paramètres du compte, et que le DNS de ce réseau fonctionne (les autres sites se chargent-ils ?).",
+        "dns_timeout": "Le DNS n'a pas répondu en 3 s. Le réseau est généralement coupé ou captif (page de connexion d'un Wi-Fi d'hôtel ou d'aéroport).",
+        "unreachable": "Rien n'écoute à cette adresse et ce port avec ce transport. Vérifiez le port et le transport (UDP, TCP ou TLS) dans le compte et tout pare-feu entre vous et le PBX.",
+        "tls_untrusted": "Le certificat du serveur n'est pas signé par une autorité reconnue par cet ordinateur. Pour un PBX de labo, activez « Autoriser un certificat non approuvé » dans le compte ; un PBX de production a besoin d'un certificat public.",
+        "tls_name": "Le certificat correspond à un autre nom que celui auquel le compte se connecte. Mettez le nom du serveur TLS (ou le registrar) au nom figurant sur le certificat.",
+        "tls_handshake": "La négociation TLS a échoué. Si le PBX utilise un certificat auto-signé ou privé, activez « Autoriser un certificat non approuvé » dans le compte ; sinon le serveur ne parle peut-être pas TLS sur ce port.",
+        "timeout": "Le serveur n'a pas répondu. En UDP, c'est généralement un pare-feu ou un NAT qui rejette SIP ; essayez TCP ou TLS, ou vérifiez que le PBX autorise cette adresse.",
+        "auth": "Le PBX a refusé les identifiants. Vérifiez le nom d'utilisateur, le nom d'authentification et le mot de passe ; si le PBX utilise un autre realm, définissez-le dans les paramètres avancés du compte. Les tentatives automatiques s'arrêtent sur cet échec.",
+        "forbidden_ip": "Le PBX a refusé cette adresse. La cause habituelle est un blocage de type fail2ban après des échecs précédents ; il se lève de lui-même à la fin de la période de bannissement.",
+        "server_error": "Le PBX a répondu mais n'a pas pu vous enregistrer pour l'instant. Le problème est côté serveur ; l'application continue de réessayer."
+      }
+    },
   "dialer": {
     "searchCountry": "Rechercher un pays...",
     "enterNumber": "Entrer le numéro",

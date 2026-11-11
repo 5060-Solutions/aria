@@ -12,6 +12,13 @@ import type {
 import { useRingtone } from "./useRingtone";
 import { useRingback } from "./useRingback";
 import { log } from "../utils/log";
+import type { ConnectionReport } from "../types/connection";
+import { isAuthFailure } from "../utils/authFailure";
+
+interface ConnectionPayload {
+  accountId: string;
+  report: ConnectionReport;
+}
 
 interface RegistrationPayload {
   accountId: string;
@@ -77,9 +84,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * are never retried automatically: every attempt is another failed login, and
  * PBXes commonly ban an address after a handful of them.
  */
-export function isAuthFailure(error: string | null | undefined): boolean {
-  return !!error && /authenticat|\b40[13]\b/i.test(error);
-}
+export { isAuthFailure };
 
 /**
  * One attempt to hand an account to the backend. Errors here are the backend
@@ -104,26 +109,98 @@ async function applyActiveAccount() {
   if (activeAccountId) await sipSetActiveAccount(activeAccountId).catch(() => {});
 }
 
-/** Keep trying an account that failed, until it works or the delays run out. */
-async function retryRegister(accountId: string) {
+/**
+ * One retry loop per account. Bumping the generation makes a sleeping loop
+ * give up when it wakes, which is how "Retry now" keeps a forced attempt from
+ * racing the scheduled one.
+ */
+const retryGenerations = new Map<string, number>();
+
+/** Stop the retry loop for `accountId`, if one is waiting. */
+export function cancelRetry(accountId: string): void {
+  retryGenerations.set(accountId, (retryGenerations.get(accountId) ?? 0) + 1);
+  useAppStore.getState().setRetryPlan(accountId, { kind: "none" });
+}
+
+/**
+ * Why the loop will not try again, if it will not. Reads the store, because
+ * the user may have edited, disabled or removed the account, or something
+ * else may have registered it, while the loop waited.
+ */
+function retryBlocker(accountId: string): "auth" | "disabled" | "settled" | null {
+  const { accounts, accountStates } = useAppStore.getState();
+  const account = accounts.find((a) => a.id === accountId);
+  const st = accountStates[accountId];
+  if (!account) return "settled";
+  if (!account.enabled) return "disabled";
+  if (st?.registrationState !== "error") return "settled";
+  if (isAuthFailure(st.registrationError)) return "auth";
+  return null;
+}
+
+/**
+ * Keep trying an account that failed, until it works or the delays run out.
+ * The store's retry plan says what the loop is doing, so the connection
+ * panel can show when the next attempt is, or why there is none.
+ */
+export async function retryRegister(accountId: string): Promise<void> {
+  const generation = (retryGenerations.get(accountId) ?? 0) + 1;
+  retryGenerations.set(accountId, generation);
+  const { setRetryPlan } = useAppStore.getState();
+  const current = () => retryGenerations.get(accountId) === generation;
+
   for (const delay of REGISTER_RETRY_DELAYS_MS) {
-    await sleep(delay);
-    // Re-read: the user may have edited, disabled or removed the account, or
-    // something else may have registered it, while we waited.
-    const { accounts, accountStates } = useAppStore.getState();
-    const account = accounts.find((a) => a.id === accountId);
-    const st = accountStates[accountId];
-    if (!account?.enabled || st?.registrationState !== "error" || isAuthFailure(st.registrationError)) {
+    const blocker = retryBlocker(accountId);
+    if (blocker === "auth" || blocker === "disabled") {
+      setRetryPlan(accountId, { kind: "stopped", reason: blocker });
       return;
     }
+    if (blocker === "settled") {
+      setRetryPlan(accountId, { kind: "none" });
+      return;
+    }
+    setRetryPlan(accountId, { kind: "scheduled", at: Date.now() + delay });
+    await sleep(delay);
+    if (!current()) return;
+    if (retryBlocker(accountId) !== null) continue;
     log.info(`[register] Retrying ${accountId}`);
-    if (await attemptRegister(account)) {
+    const account = useAppStore.getState().accounts.find((a) => a.id === accountId);
+    if (account && (await attemptRegister(account))) {
       // The backend only learns which account is active once it knows the
       // account, so a late registration has to be told again.
       await applyActiveAccount();
+      if (current()) setRetryPlan(accountId, { kind: "none" });
       return;
     }
   }
+  if (current()) setRetryPlan(accountId, { kind: "stopped", reason: "gave_up" });
+}
+
+/**
+ * The connection panel's "Retry now" / "Re-register": cancel any waiting
+ * retry, ask the backend for a fresh attempt at once, and if that fails start
+ * the retry loop again so one failed click does not switch retries off.
+ */
+export async function retryNow(accountId: string): Promise<void> {
+  cancelRetry(accountId);
+  const store = useAppStore.getState();
+  const account = store.accounts.find((a) => a.id === accountId);
+  if (!account) return;
+  // A refresh of a live registration is invisible to the chip; only a failed
+  // or unknown account is shown "registering" while the attempt runs.
+  if (store.accountStates[accountId]?.registrationState !== "registered") {
+    store.setAccountRegistrationState(accountId, "registering");
+  }
+  try {
+    const result = await sipRegisterNow(await getAccountWithPassword(account));
+    if (result === "already_registering") return;
+  } catch (e) {
+    log.error(`[register] Retry now for ${accountId} failed:`, e);
+    useAppStore.getState().setAccountRegistrationState(accountId, "error", String(e));
+    void retryRegister(accountId);
+    return;
+  }
+  await applyActiveAccount();
 }
 
 /**
@@ -263,6 +340,10 @@ export function useSipEvents() {
       },
     );
 
+    const unlistenConnection = listen<ConnectionPayload>("sip-connection", (event) => {
+      useAppStore.getState().setConnectionReport(event.payload.report);
+    });
+
     const unlistenCall = listen<CallPayload>("sip-call", (event) => {
       const p = event.payload;
       const store = useAppStore.getState();
@@ -374,6 +455,7 @@ export function useSipEvents() {
 
     return () => {
       unlistenReg.then((fn_) => fn_());
+      unlistenConnection.then((fn_) => fn_());
       unlistenCall.then((fn_) => fn_());
       unlistenPresence.then((fn_) => fn_());
       unlistenRecording.then((fn_) => fn_());
@@ -466,30 +548,39 @@ export async function sipRegister(account: SipAccount): Promise<string> {
     port: account.port,
     hasPassword: !!account.password,
   });
-  return invoke<string>("sip_register", {
-    config: {
-      id: account.id,
-      displayName: account.displayName,
-      username: account.username,
-      domain: account.domain,
-      password: account.password,
-      transport: account.transport,
-      port: account.port,
-      registrar: account.registrar ?? null,
-      outboundProxy: account.outboundProxy ?? null,
-      authUsername: account.authUsername ?? null,
-      authRealm: account.authRealm ?? null,
-      tlsServerName: account.tlsServerName ?? null,
-      enabled: account.enabled,
-      // Every field the backend reads must be listed here. Omitting one does
-      // not fall back to the stored account — it falls back to whatever serde
-      // default the Rust struct declares, which silently discarded the user's
-      // choice for both of these.
-      autoRecord: account.autoRecord ?? false,
-      srtpMode: account.srtpMode ?? null,
-      codecs: account.codecs ?? null,
-    },
-  });
+  return invoke<string>("sip_register", { config: toSipConfig(account) });
+}
+
+/**
+ * The backend's view of an account. Every field the backend reads must be
+ * listed here. Omitting one does not fall back to the stored account — it
+ * falls back to whatever serde default the Rust struct declares, which
+ * silently discarded the user's choice for autoRecord and srtpMode once.
+ */
+function toSipConfig(account: SipAccount) {
+  return {
+    id: account.id,
+    displayName: account.displayName,
+    username: account.username,
+    domain: account.domain,
+    password: account.password,
+    transport: account.transport,
+    port: account.port,
+    registrar: account.registrar ?? null,
+    outboundProxy: account.outboundProxy ?? null,
+    authUsername: account.authUsername ?? null,
+    authRealm: account.authRealm ?? null,
+    tlsServerName: account.tlsServerName ?? null,
+    enabled: account.enabled,
+    autoRecord: account.autoRecord ?? false,
+    srtpMode: account.srtpMode ?? null,
+    codecs: account.codecs ?? null,
+  };
+}
+
+/** A fresh registration attempt now: a refresh when registered, else from DNS. */
+export async function sipRegisterNow(account: SipAccount): Promise<string> {
+  return invoke("sip_register_now", { config: toSipConfig(account) });
 }
 
 export async function sipUnregister(): Promise<void> {

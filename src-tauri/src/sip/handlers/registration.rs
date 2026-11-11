@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
+use crate::sip::connection::{self, Outcome, StepKind};
 use crate::sip::auth::DigestAuth;
 use crate::sip::builder::{extract_all_headers, extract_header, extract_via_received};
 use crate::sip::diagnostics::{self, DiagnosticLog};
@@ -64,6 +65,16 @@ async fn fail_registration(
     // Only when the FSM actually moved: a late error for a registration that
     // already failed or was torn down must not flip the UI again.
     if transitioned {
+        let step = if matches!(status, 401 | 403 | 407) { StepKind::Authenticate } else { StepKind::Register };
+        let failure = connection::classify_sip(status, reason);
+        let detail = format!("{status}: {reason}");
+        let chip_text = reason.to_string();
+        crate::sip::with_report(state, event_tx, account_id, |r| {
+            r.failed(step, failure, detail, None);
+            // The chip shows the FSM's reason; keep both texts identical.
+            r.error = Some(chip_text);
+        })
+        .await;
         let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
             account_id: account_id.to_string(),
             state: RegistrationState::Error,
@@ -102,6 +113,9 @@ pub async fn handle_register_response(
                         }
                         account.granted_expires = granted;
                     }
+                    let was_refreshing = account.refreshing;
+                    let challenged = account.registration.auth_attempts() > 0;
+                    let granted = account.granted_expires;
                     account.refreshing = false;
                     let result = account.registration.registration_success(public);
                     let ok = matches!(result, RegistrationTransitionResult::Ok);
@@ -109,10 +123,40 @@ pub async fn handle_register_response(
                         if let Some(addr) = public {
                             account.public_addr = Some(addr);
                         }
+                        let now = connection::now_ms();
+                        if let Some(r) = s.connection_reports.get_mut(account_id) {
+                            if was_refreshing {
+                                if let Some(info) = r.registered.as_mut() {
+                                    info.last_refresh_ms = now;
+                                    info.expires_in_s = granted;
+                                }
+                            } else {
+                                let step = if challenged { StepKind::Authenticate } else { StepKind::Register };
+                                let took = r.running_for(step.clone());
+                                let ms = took.map_or(0, |d| d.as_millis());
+                                r.ok(step, format!("200 OK in {ms} ms"), took);
+                                if !challenged {
+                                    r.skipped(StepKind::Authenticate, "no challenge");
+                                }
+                                r.ok(StepKind::Registered, format!("expires {granted} s"), None);
+                                r.registered = Some(connection::RegisteredInfo {
+                                    registered_at_ms: now,
+                                    expires_in_s: granted,
+                                    last_refresh_ms: now,
+                                    public_addr: public.map(|a| a.to_string()),
+                                });
+                                r.finish(Outcome::Registered);
+                            }
+                        }
                     }
                     (false, ok)
                 }
             };
+            if transitioned {
+                if let Some(r) = state.read().await.connection_reports.get(account_id) {
+                    crate::sip::push_report(event_tx, r);
+                }
+            }
             if unregistering {
                 log::info!("Unregistered account {}", account_id);
                 finish_unregister(state, event_tx, account_id).await;
@@ -181,6 +225,18 @@ pub async fn handle_register_response(
             }
             
             log::info!("Registration challenged ({}) for account {}, auth attempt #{}", status, account_id, attempts);
+            if attempts == 0 {
+                let refreshing = state.read().await.get_account(account_id).is_some_and(|a| a.refreshing);
+                if !refreshing {
+                    crate::sip::with_report(state, event_tx, account_id, |r| {
+                        let took = r.running_for(StepKind::Register);
+                        let ms = took.map_or(0, |d| d.as_millis());
+                        r.ok(StepKind::Register, format!("{status} challenge in {ms} ms"), took);
+                        r.running(StepKind::Authenticate);
+                    })
+                    .await;
+                }
+            }
             
             if attempts >= 2 {
                 log::error!("Too many auth attempts ({}) for account {} - credentials likely wrong", attempts, account_id);

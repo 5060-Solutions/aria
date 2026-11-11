@@ -356,6 +356,23 @@ pub async fn sip_register(
         !config.password.is_empty(),
     );
 
+    let account = account_from_config(config)?;
+    manager.register(account).await
+}
+
+/// The status chip's "Retry now" / "Re-register": a refresh on a live
+/// registration, the full path again on a failed one.
+#[tauri::command]
+pub async fn sip_register_now(
+    config: SipAccountConfig,
+    manager: State<'_, SipManager>,
+) -> Result<String, String> {
+    let account = account_from_config(config)?;
+    manager.register_now(account).await
+}
+
+/// The backend's view of an account from what the UI holds.
+fn account_from_config(config: SipAccountConfig) -> Result<sip::AccountConfig, String> {
     let transport = match config.transport.as_str() {
         "udp" => sip::TransportType::Udp,
         "tcp" => sip::TransportType::Tcp,
@@ -416,7 +433,7 @@ pub async fn sip_register(
         codecs,
     };
 
-    manager.register(account).await
+    Ok(account)
 }
 
 #[tauri::command]
@@ -618,6 +635,15 @@ pub async fn get_registration_state(
         "state": state,
         "error": error,
     }))
+}
+
+/// The step-by-step connection picture behind the status chip.
+#[tauri::command]
+pub async fn get_connection_report(
+    account_id: String,
+    manager: State<'_, SipManager>,
+) -> Result<Option<sip::connection::ConnectionReport>, String> {
+    Ok(manager.connection_report(&account_id).await)
 }
 
 /// Probe registration health for all accounts.

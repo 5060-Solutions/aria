@@ -468,7 +468,7 @@ impl TlsTransport {
         )
             .await
             .map_err(|_| format!("TLS handshake with {} timed out", server_addr))?
-            .map_err(|e| format!("TLS handshake with {} failed: {}", server_addr, e))?;
+            .map_err(|e| format!("TLS handshake with {} failed: {}", server_addr, describe_tls_error(&e)))?;
 
         log::info!(
             "SIP TLS transport connected {} -> {}",
@@ -518,6 +518,27 @@ impl TlsTransport {
 /// `insecure` restores the legacy "trust anything" behaviour. It is opt-in per
 /// account and logs loudly, because with it enabled any on-path attacker can
 /// read the digest credentials and the SDES-SRTP keys off the wire.
+/// The handshake error in words the connection panel can key a hint on.
+///
+/// rustls reports certificate problems as `InvalidCertificate`; the
+/// platform verifier on macOS often wraps the OS verdict in
+/// `CertificateError::Other`, which is left as the OS wrote it. Only the
+/// unambiguous variants get the `certificate not trusted` / `certificate
+/// name mismatch` prefixes that `connection::classify_connect` looks for.
+pub(crate) fn describe_tls_error(e: &std::io::Error) -> String {
+    use rustls::CertificateError as C;
+    match e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()) {
+        Some(rustls::Error::InvalidCertificate(c)) => match c {
+            C::UnknownIssuer | C::BadSignature | C::Expired | C::NotValidYet | C::Revoked => {
+                format!("certificate not trusted: {c:?}")
+            }
+            C::NotValidForName => format!("certificate name mismatch: {c:?}"),
+            _ => e.to_string(),
+        },
+        _ => e.to_string(),
+    }
+}
+
 fn build_tls_config(insecure: bool) -> Result<rustls::ClientConfig, rustls::Error> {
     // Use ring as the crypto provider (must be explicit in rustls 0.23+)
     let provider = Arc::new(rustls::crypto::ring::default_provider());
