@@ -24,6 +24,7 @@ import { stateColors, stateLabelsKeys } from "./statusChip";
 import {
   accountLine,
   copyDetails,
+  labelValues,
   registeredLine,
   retryLine,
   stepLabelKey,
@@ -47,15 +48,6 @@ function StepIcon({ status }: { status: ConnectionStep["status"] }) {
     case "pending":
       return <RadioButtonUncheckedIcon sx={{ fontSize: ICON_SIZE, color: "text.disabled" }} />;
   }
-}
-
-/** The values the step labels interpolate: host, transport and address. */
-function labelValues(report: ConnectionReport) {
-  return {
-    host: report.target.host,
-    transport: report.transport.toUpperCase(),
-    addr: `${report.target.host}:${report.target.port}`,
-  };
 }
 
 function osName(): string {
@@ -107,7 +99,10 @@ export function ConnectionPanel({ anchorEl, open, onClose, accountId }: Props) {
     return () => clearInterval(id);
   }, [ticking]);
 
-  const busy = report?.steps.some((s) => s.status === "running") ?? false;
+  // Gated on the account's state, not on the report: the backend answers a
+  // second click with "already_registering", and a report left mid-step by
+  // a failure elsewhere must never lock the button.
+  const busy = registrationState === "registering";
   const color = stateColors[registrationState];
 
   const handleRetry = () => {
@@ -121,7 +116,7 @@ export function ConnectionPanel({ anchorEl, open, onClose, accountId }: Props) {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      window.setTimeout(() => setCopied(false), 1500);
     } catch (e) {
       log.error("[ConnectionPanel] clipboard write failed:", e);
     }
@@ -129,7 +124,7 @@ export function ConnectionPanel({ anchorEl, open, onClose, accountId }: Props) {
 
   const hint = report ? hintKey(report) : null;
   const footerLine = report
-    ? (retryLine(report, plan, now, t) ?? registeredLine(report, now, t))
+    ? (retryLine(report, plan, now, t, registrationState) ?? registeredLine(report, now, t))
     : null;
 
   return (

@@ -13,6 +13,7 @@ import { useRingtone } from "./useRingtone";
 import { useRingback } from "./useRingback";
 import { log } from "../utils/log";
 import type { ConnectionReport } from "../types/connection";
+import { isAuthFailure } from "../utils/authFailure";
 
 interface ConnectionPayload {
   accountId: string;
@@ -83,9 +84,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * are never retried automatically: every attempt is another failed login, and
  * PBXes commonly ban an address after a handful of them.
  */
-export function isAuthFailure(error: string | null | undefined): boolean {
-  return !!error && /authenticat|\b40[13]\b/i.test(error);
-}
+export { isAuthFailure };
 
 /**
  * One attempt to hand an account to the backend. Errors here are the backend
@@ -187,7 +186,11 @@ export async function retryNow(accountId: string): Promise<void> {
   const store = useAppStore.getState();
   const account = store.accounts.find((a) => a.id === accountId);
   if (!account) return;
-  store.setAccountRegistrationState(accountId, "registering");
+  // A refresh of a live registration is invisible to the chip; only a failed
+  // or unknown account is shown "registering" while the attempt runs.
+  if (store.accountStates[accountId]?.registrationState !== "registered") {
+    store.setAccountRegistrationState(accountId, "registering");
+  }
   try {
     const result = await sipRegisterNow(await getAccountWithPassword(account));
     if (result === "already_registering") return;

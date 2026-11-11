@@ -722,7 +722,32 @@ impl SipManager {
         // restarted, because the server, transport or proxy may have changed.
         let mut report = connection::ConnectionReport::start(&account);
         let (server_addr, transport, rx, local_addr) =
-            resolve_and_connect(&self.state, &self.event_tx, &account, &mut report).await?;
+            match resolve_and_connect(&self.state, &self.event_tx, &account, &mut report).await {
+                Ok(v) => v,
+                Err(e) => {
+                    // An account the backend already knows must end up in
+                    // Error like any other failed registration, so the chip,
+                    // the panel and the retry loop all see the same thing. A
+                    // brand-new account has no state yet; the caller records
+                    // the error from the returned message.
+                    let marked = {
+                        let mut s = self.state.write().await;
+                        match s.accounts.get_mut(&account_id) {
+                            Some(a) => {
+                                a.registration.start_registration(account.clone());
+                                a.registration.registration_failed(0, &e);
+                                a.transport = None;
+                                true
+                            }
+                            None => false,
+                        }
+                    };
+                    if marked {
+                        self.emit_registration_event(&account_id, RegistrationState::Error, Some(e.clone()));
+                    }
+                    return Err(e);
+                }
+            };
 
         log::info!(
             "Registering {}@{} via {:?} to {} port {} (local: {})",
@@ -2786,7 +2811,11 @@ impl SipManager {
             error: Some("Connection lost — reconnecting...".into()),
         }));
         with_report(&state, &event_tx, &account_id, |r| {
+            // Keep what went wrong (a refresh that got no reply, say) so the
+            // panel can show why it is reconnecting.
+            let why = r.error.take();
             r.restart();
+            r.error = why;
             r.outcome = connection::Outcome::Reconnecting;
             r.reconnect_attempt = 0;
         })
@@ -3014,7 +3043,18 @@ impl SipManager {
             r
         };
         let (server_addr, transport, rx, local_addr) =
-            resolve_and_connect(state, event_tx, account, &mut report).await?;
+            match resolve_and_connect(state, event_tx, account, &mut report).await {
+                Ok(v) => v,
+                Err(e) => {
+                    // The backend is still trying; the panel must say so,
+                    // with the failed step left visible until the next attempt.
+                    with_report(state, event_tx, account_id, |r| {
+                        r.outcome = connection::Outcome::Reconnecting;
+                    })
+                    .await;
+                    return Err(e);
+                }
+            };
 
         let generation = {
             let mut s = state.write().await;

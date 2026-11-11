@@ -199,10 +199,10 @@ export function StatusBar() {
             WebkitAppRegion: "no-drag",
           }}
         />
-        {activeAccountId && (
+        {activeAccountId && panelAnchor && (
           <ConnectionPanel
             anchorEl={panelAnchor}
-            open={Boolean(panelAnchor)}
+            open
             onClose={() => setPanelAnchor(null)}
             accountId={activeAccountId}
           />

@@ -280,7 +280,13 @@ export const useAppStore = create<AppState>((set, get) => {
 
     connectionReports: {},
     setConnectionReport: (report) =>
-      set((s) => ({ connectionReports: { ...s.connectionReports, [report.accountId]: report } })),
+      set((s) =>
+        // The backend's last word on a removed account (its "unregistered"
+        // report) arrives after the store dropped it; do not resurrect it.
+        s.accounts.some((a) => a.id === report.accountId)
+          ? { connectionReports: { ...s.connectionReports, [report.accountId]: report } }
+          : {},
+      ),
     retryPlans: {},
     setRetryPlan: (accountId, plan) =>
       set((s) => ({ retryPlans: { ...s.retryPlans, [accountId]: plan } })),

@@ -1189,3 +1189,54 @@ async fn register_now_after_a_dns_failure_registers_with_the_corrected_host() {
     assert_eq!(mgr.register_now(cfg.clone()).await.unwrap(), "registering");
     wait_registered(&mgr, &cfg.id).await;
 }
+
+/// The ordinary Wi-Fi-drop sequence: the refresh is lost, the backend
+/// reconnects, and the reconnect attempt itself fails (here at DNS). The
+/// panel must keep saying "reconnecting" with the failed step visible, not
+/// flip to a dead-end error while the backend is still trying.
+#[tokio::test]
+async fn a_reconnect_attempt_that_fails_keeps_the_report_reconnecting() {
+    use super::connection::{Outcome, StepKind, StepStatus};
+    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let drop = opts.drop_next_register.clone();
+    let (proxy, _seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    {
+        let mut s = mgr.state.write().await;
+        s.accounts.get_mut(&cfg.id).unwrap().config.registrar = Some("no-such-host.invalid".into());
+    }
+    drop.store(true, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let r = mgr.connection_report(&cfg.id).await.unwrap();
+        if r.step(StepKind::Resolve).status == StepStatus::Failed {
+            assert_eq!(r.outcome, Outcome::Reconnecting, "{r:?}");
+            assert!(r.error.as_deref().unwrap_or_default().starts_with("DNS"), "{:?}", r.error);
+            let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+            assert_eq!(state, super::RegistrationState::Reconnecting);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "reconnect never failed at DNS: {r:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A forced retry that fails before a REGISTER is sent must put the account
+/// into Error, like a first registration does, so the chip and the panel
+/// agree and the retry loop can start from it.
+#[tokio::test]
+async fn register_now_that_fails_at_dns_marks_the_account_error() {
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let mut cfg = account(proxy, None, "wrong");
+    let _ = register(&mgr, cfg.clone()).await.expect_err("rejected");
+    cfg.registrar = Some("no-such-host.invalid".into());
+    let err = mgr.register_now(cfg.clone()).await.expect_err("dns");
+    let (state, reason) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+    assert_eq!(state, super::RegistrationState::Error);
+    assert_eq!(reason.as_deref(), Some(err.as_str()));
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(r.error.as_deref(), Some(err.as_str()));
+}

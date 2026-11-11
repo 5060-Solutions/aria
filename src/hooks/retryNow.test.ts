@@ -108,6 +108,32 @@ describe("retryNow", () => {
     expect(useAppStore.getState().retryPlans.a1).toEqual({ kind: "none" });
   });
 
+  it("a cancelled loop never registers behind a forced attempt that failed", async () => {
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === "sip_register_now" ? Promise.reject(new Error("no reply")) : "registering",
+    );
+    const p = retryRegister("a1");
+    await vi.advanceTimersByTimeAsync(0);
+    await retryNow("a1");
+    // The old loop would wake at 2000 ms; the new one, armed by the failed
+    // forced attempt, wakes at 2000 ms too. Only one of them may register.
+    await vi.advanceTimersByTimeAsync(2100);
+    await p;
+    expect(invoke.mock.calls.filter((c) => c[0] === "sip_register")).toHaveLength(1);
+  });
+
+  it("does not take a registered account off Registered for a re-register", async () => {
+    useAppStore.setState({ accountStates: { a1: st("registered", null) } });
+    invoke.mockResolvedValue("refreshing");
+    await retryNow("a1");
+    expect(useAppStore.getState().accountStates.a1.registrationState).toBe("registered");
+  });
+
+  it("ignores a report for an account that is no longer configured", () => {
+    useAppStore.getState().setConnectionReport(report("gone"));
+    expect(useAppStore.getState().connectionReports.gone).toBeUndefined();
+  });
+
   it("re-arms the retry loop when the forced attempt fails", async () => {
     invoke.mockImplementation(async (cmd: string) =>
       cmd === "sip_register_now"

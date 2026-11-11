@@ -261,11 +261,25 @@ impl ConnectionReport {
         self.error = Some(detail);
         self.outcome = Outcome::Error;
         self.attempt_finished_ms = Some(now_ms());
+        self.settle_running();
     }
 
     pub fn finish(&mut self, outcome: Outcome) {
         self.outcome = outcome;
         self.attempt_finished_ms = Some(now_ms());
+        self.settle_running();
+    }
+
+    /// Nothing runs once the attempt is over: a step left spinning after a
+    /// failure elsewhere (a 403 to the first REGISTER, an unanswered
+    /// authenticated REGISTER) would otherwise look busy forever.
+    fn settle_running(&mut self) {
+        for step in &mut self.steps {
+            if step.status == StepStatus::Running {
+                step.status = StepStatus::Pending;
+                step.started = None;
+            }
+        }
     }
 }
 
@@ -500,5 +514,18 @@ mod tests {
             classify_sip(404, "Registration failed: 404"),
             FailureKind::Other
         );
+    }
+
+    #[test]
+    fn a_failure_clears_every_other_running_step() {
+        let mut r = ConnectionReport::start(&sample_account("sip.example.com", None));
+        r.running(StepKind::Register);
+        r.running(StepKind::Authenticate);
+        r.failed(StepKind::Authenticate, FailureKind::Auth, "403: Authentication failed", None);
+        assert_eq!(r.step(StepKind::Register).status, StepStatus::Pending);
+        assert_eq!(r.step(StepKind::Authenticate).status, StepStatus::Failed);
+        r.running(StepKind::Register);
+        r.finish(Outcome::Unregistered);
+        assert_eq!(r.step(StepKind::Register).status, StepStatus::Pending);
     }
 }

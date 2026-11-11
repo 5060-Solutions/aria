@@ -9,8 +9,12 @@ import {
 } from "./connectionReport";
 import type { ConnectionReport, ConnectionStep, RetryPlan } from "../types/connection";
 
-const t = (key: string, options?: Record<string, unknown>) =>
-  options ? `${key}${JSON.stringify(options)}` : key;
+/** Echoes the key and, like i18next, fills `{{x}}` from the options. */
+const t = (key: string, options?: Record<string, unknown>) => {
+  if (!options) return key;
+  const values = Object.entries(options).map(([k, v]) => `${k}=${String(v)}`).join(",");
+  return `${key}{${values}}`;
+};
 
 function step(
   kind: ConnectionStep["kind"],
@@ -65,44 +69,66 @@ describe("connection report helpers", () => {
   it("counts down to the scheduled retry and never goes negative", () => {
     const now = 1_000_000;
     const soon: RetryPlan = { kind: "scheduled", at: now + 2400 };
-    expect(retryLine(report(), soon, now, t)).toBe('connection.retry.in{"seconds":3}');
+    expect(retryLine(report(), soon, now, t)).toBe("connection.retry.in{seconds=3}");
     const past: RetryPlan = { kind: "scheduled", at: now - 1 };
-    expect(retryLine(report(), past, now, t)).toBe('connection.retry.in{"seconds":0}');
+    expect(retryLine(report(), past, now, t)).toBe("connection.retry.in{seconds=0}");
   });
 
   it("says reconnecting with the attempt number", () => {
     const r = report({ outcome: "reconnecting", reconnectAttempt: 3 });
-    expect(retryLine(r, { kind: "none" }, 0, t)).toBe('connection.retry.reconnecting{"attempt":3}');
+    expect(retryLine(r, { kind: "none" }, 0, t)).toBe("connection.retry.reconnecting{attempt=3}");
   });
 
   it("says retries stopped only for auth", () => {
     expect(retryLine(report(), { kind: "stopped", reason: "auth" }, 0, t)).toBe("connection.retry.stoppedAuth");
     expect(retryLine(report(), { kind: "stopped", reason: "gave_up" }, 0, t)).toBe("connection.retry.onWake");
     expect(retryLine(report(), { kind: "stopped", reason: "disabled" }, 0, t)).toBe("connection.retry.disabled");
-    expect(retryLine(report(), { kind: "none" }, 0, t)).toBeNull();
+    // No loop ever ran for this error: the line is derived from the error text.
+    expect(retryLine(report(), { kind: "none" }, 0, t)).toBe("connection.retry.onWake");
     expect(retryLine(report({ outcome: "registered" }), { kind: "scheduled", at: 5 }, 0, t)).toBeNull();
   });
 
   it("formats the registered line from expiry and last refresh", () => {
-    const now = Date.UTC(2026, 10, 11, 15, 42, 18);
+    const now = Date.UTC(2026, 10, 11, 15, 42, 38);
     const r = report({
       outcome: "registered",
-      registered: { registeredAtMs: now - 20_000, expiresInS: 600, lastRefreshMs: now, publicAddr: null },
+      registered: { registeredAtMs: now - 20_000, expiresInS: 600, lastRefreshMs: now - 20_000, publicAddr: null },
     });
     const line = registeredLine(r, now, t) ?? "";
-    expect(line).toContain('"expires":"9 min 40 s"');
-    expect(line).toMatch(/"at":"\d\d:\d\d:18"/);
+    expect(line).toContain("expires=9 min 40 s");
+    expect(line).toMatch(/at=\d\d:\d\d:18/);
     expect(registeredLine(report(), now, t)).toBeNull();
+  });
+
+  it("counts the expiry from the last refresh, not the first registration", () => {
+    const now = 1_000_000_000;
+    const r = report({
+      outcome: "registered",
+      registered: { registeredAtMs: now - 900_000, expiresInS: 300, lastRefreshMs: now - 30_000, publicAddr: null },
+    });
+    expect(registeredLine(r, now, t) ?? "").toContain("expires=4 min 30 s");
+  });
+
+  it("says what happens next when no retry loop ever ran", () => {
+    const auth = report({ error: "Authentication failed - check username and password" });
+    expect(retryLine(auth, { kind: "none" }, 0, t)).toBe("connection.retry.stoppedAuth");
+    const timeout = report({ error: "Registration timed out" });
+    expect(retryLine(timeout, { kind: "none" }, 0, t)).toBe("connection.retry.onWake");
+  });
+
+  it("reads reconnecting from the registration state too", () => {
+    expect(retryLine(report(), { kind: "none" }, 0, t, "reconnecting")).toBe("connection.retry.reconnecting{attempt=0}");
   });
 
   it("copies every step with status, detail and elapsed", () => {
     const text = copyDetails(report(), { kind: "stopped", reason: "gave_up" }, { appVersion: "0.6.7", os: "macOS", now: 0 }, t);
     expect(text).toContain("Aria 0.6.7 on macOS");
     expect(text).toContain("ghostbook@harness.lan · TLS · proxy 203.0.113.9:5061");
-    expect(text).toContain("[skipped] connection.steps.resolve — literal address");
-    expect(text).toContain("[ok] connection.steps.connect — handshake in 84 ms, certificate OK (84 ms)");
-    expect(text).toContain("[failed] connection.steps.register — no reply in 32 s (sent 7 times) (32000 ms)");
-    expect(text).toContain("[pending] connection.steps.authenticate");
+    expect(text).toContain("[skipped] connection.steps.resolve{host=203.0.113.9,transport=TLS,addr=203.0.113.9:5061} — literal address");
+    expect(text).toContain("connection.steps.connect{host=203.0.113.9,transport=TLS,addr=203.0.113.9:5061} — handshake in 84 ms, certificate OK (84 ms)");
+    expect(text).toContain("[failed] connection.steps.register{host=203.0.113.9,transport=TLS,addr=203.0.113.9:5061} — no reply in 32 s (sent 7 times) (32000 ms)");
+    expect(text).toContain("[pending] connection.steps.authenticate{host=203.0.113.9,transport=TLS,addr=203.0.113.9:5061}");
+    expect(text).not.toContain("{{");
     expect(text).toContain("Error: Registration timed out");
     expect(text).toContain("connection.retry.onWake");
     expect(text).toMatch(/Captured 1970-01-01T00:00:00/);
