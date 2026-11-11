@@ -209,6 +209,13 @@ impl ConnectionReport {
         step.failure = None;
     }
 
+    /// Put a step back to pending: a later step of an attempt that is being
+    /// redone from the middle (a forced refresh).
+    pub fn pending(&mut self, kind: StepKind) {
+        let step = self.step_mut(kind.clone());
+        *step = Step::pending(kind);
+    }
+
     pub fn skipped(&mut self, kind: StepKind, detail: impl Into<String>) {
         let step = self.step_mut(kind);
         step.status = StepStatus::Skipped;

@@ -236,6 +236,7 @@ pub fn run() {
             provision::provision_link_preview,
             provision::provision_link_redeem,
             commands::sip_register,
+            commands::sip_register_now,
             commands::sip_unregister,
             commands::sip_unregister_account,
             commands::sip_set_active_account,

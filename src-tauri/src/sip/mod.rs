@@ -623,6 +623,58 @@ impl SipManager {
         self.state.read().await.connection_reports.get(account_id).cloned()
     }
 
+    /// The status chip's "Retry now" / "Re-register".
+    ///
+    /// A registered account gets a refresh REGISTER on the connection it has,
+    /// so nothing is signed out and a call in progress is untouched. An
+    /// account that is failed, reconnecting or unknown is taken through the
+    /// whole path again, from DNS, with the config the caller holds — which
+    /// is why this takes the config and not just an id: a DNS or connect
+    /// failure leaves no `AccountState` to read it from.
+    pub async fn register_now(&self, account: AccountConfig) -> Result<String, String> {
+        let account_id = account.id.clone();
+        let refresh = {
+            let mut s = self.state.write().await;
+            match s.accounts.get_mut(&account_id) {
+                Some(existing) if existing.transport.is_some() => match existing.registration.status() {
+                    RegistrationState::Registering => return Ok("already_registering".into()),
+                    RegistrationState::Registered => {
+                        existing.config = account.clone();
+                        existing.refreshing = false;
+                        existing.on_register_timeout = RegisterTimeoutPolicy::Reconnect;
+                        existing.registration.begin_re_registration();
+                        if let Some(r) = s.connection_reports.get_mut(&account_id) {
+                            r.outcome = connection::Outcome::Registering;
+                            r.pending(connection::StepKind::Authenticate);
+                            r.pending(connection::StepKind::Registered);
+                        }
+                        true
+                    }
+                    _ => {
+                        existing.transport = None;
+                        existing.timer_generation += 1;
+                        false
+                    }
+                },
+                Some(existing) => {
+                    existing.transport = None;
+                    existing.timer_generation += 1;
+                    false
+                }
+                None => false,
+            }
+        };
+        if !refresh {
+            return self.register(account).await;
+        }
+        if let Err(e) = send_register(&self.state, &self.event_tx, &account_id, None).await {
+            log::warn!("Forced refresh for {} could not be sent; reconnecting: {}", account_id, e);
+            Self::handle_transport_death(self.state.clone(), self.event_tx.clone(), account_id, true).await;
+            return Ok("reconnecting".into());
+        }
+        Ok("refreshing".into())
+    }
+
     pub async fn register(&self, account: AccountConfig) -> Result<String, String> {
         let account_id = account.id.clone();
 
