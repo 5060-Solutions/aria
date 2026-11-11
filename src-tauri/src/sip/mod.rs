@@ -2,6 +2,7 @@ pub mod account;
 pub mod auth;
 pub mod builder;
 pub mod codec;
+pub mod connection;
 pub mod diagnostics;
 mod handlers;
 #[allow(dead_code)]
@@ -210,6 +211,8 @@ pub struct RegistrationEvent {
 #[derive(Debug)]
 pub enum SipEvent {
     RegistrationChanged(RegistrationEvent),
+    /// The step-by-step picture behind the status chip changed.
+    ConnectionReport(connection::ConnectionReport),
     CallStateChanged(CallEventPayload),
     DiagnosticMessage(DiagnosticLog),
     TransferProgress(TransferEvent),
@@ -264,6 +267,10 @@ pub(crate) struct ManagerState {
     pub(crate) last_latency_ms: Option<f64>,
     /// Shared diagnostic store
     pub(crate) diagnostic_store: Arc<diagnostics::DiagnosticStore>,
+    /// What the status chip's panel shows, per account. Kept outside
+    /// `AccountState` so a failure before the account exists (DNS, a refused
+    /// connect) and the attempt after an unregister both have somewhere to go.
+    pub(crate) connection_reports: HashMap<String, connection::ConnectionReport>,
 
     // === Audio device preferences ===
     /// Preferred input (microphone) device name (None = system default)
@@ -536,6 +543,7 @@ impl SipManager {
                 active_account_id: None,
                 last_latency_ms: None,
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
+                connection_reports: HashMap::new(),
                 preferred_input_device: None,
                 preferred_output_device: None,
                 recordings_dir: None,
@@ -608,6 +616,16 @@ impl SipManager {
             state,
             error,
         }));
+    }
+
+    /// Push a connection report to the UI.
+    fn emit_connection_report(&self, report: connection::ConnectionReport) {
+        push_report(&self.event_tx, &report);
+    }
+
+    /// The step-by-step picture for `account_id`, if an attempt was ever made.
+    pub async fn connection_report(&self, account_id: &str) -> Option<connection::ConnectionReport> {
+        self.state.read().await.connection_reports.get(account_id).cloned()
     }
 
     pub async fn register(&self, account: AccountConfig) -> Result<String, String> {
@@ -3048,6 +3066,14 @@ impl SipManager {
 
         Ok((rx, generation))
     }
+}
+
+/// Push a connection report to the UI from code that has no `&SipManager`.
+pub(crate) fn push_report(
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    report: &connection::ConnectionReport,
+) {
+    let _ = event_tx.send(SipEvent::ConnectionReport(report.clone()));
 }
 
 /// Send a REGISTER for `account_id` and see its transaction through.

@@ -122,6 +122,13 @@ pub fn run() {
                                 log::info!("Emitting sip-registration event: {:?}", payload);
                                 let _ = app_handle.emit("sip-registration", payload);
                             }
+                            sip::SipEvent::ConnectionReport(report) => {
+                                let payload = serde_json::json!({
+                                    "accountId": report.account_id,
+                                    "report": report,
+                                });
+                                let _ = app_handle.emit("sip-connection", payload);
+                            }
                             sip::SipEvent::CallStateChanged(call_event) => {
                                 let _ = app_handle.emit("sip-call", call_event);
                             }
@@ -245,6 +252,7 @@ pub fn run() {
             commands::open_recordings_folder,
             commands::play_recording,
             commands::get_registration_state,
+            commands::get_connection_report,
             commands::probe_registration_health,
             commands::process_pending_resubscriptions,
             commands::get_audio_devices,

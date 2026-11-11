@@ -620,6 +620,15 @@ pub async fn get_registration_state(
     }))
 }
 
+/// The step-by-step connection picture behind the status chip.
+#[tauri::command]
+pub async fn get_connection_report(
+    account_id: String,
+    manager: State<'_, SipManager>,
+) -> Result<Option<sip::connection::ConnectionReport>, String> {
+    Ok(manager.connection_report(&account_id).await)
+}
+
 /// Probe registration health for all accounts.
 /// Sends an immediate OPTIONS ping; triggers reconnection on failure.
 /// Called by frontend on wake from sleep, network online, or window re-focus.
