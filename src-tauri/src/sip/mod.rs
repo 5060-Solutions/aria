@@ -2733,6 +2733,12 @@ impl SipManager {
             state: RegistrationState::Reconnecting,
             error: Some("Connection lost — reconnecting...".into()),
         }));
+        with_report(&state, &event_tx, &account_id, |r| {
+            r.restart();
+            r.outcome = connection::Outcome::Reconnecting;
+            r.reconnect_attempt = 0;
+        })
+        .await;
 
         // Start auto-reconnect with exponential backoff (spawned as a new task)
         tokio::spawn(Self::start_reconnect_loop(state, event_tx, account_id));
@@ -2789,6 +2795,7 @@ impl SipManager {
                     account.registration.reconnect_attempt();
                 }
             }
+            with_report(&state, &event_tx, &account_id, |r| r.reconnect_attempt = attempt + 1).await;
 
             let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
                 account_id: account_id.clone(),
@@ -3135,6 +3142,26 @@ async fn save_report(
     push_report(event_tx, report);
 }
 
+/// Change the account's report under the lock and push the result. A missing
+/// report (no attempt was ever recorded) is left missing.
+pub(crate) async fn with_report(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account_id: &str,
+    edit: impl FnOnce(&mut connection::ConnectionReport),
+) {
+    let updated = {
+        let mut s = state.write().await;
+        s.connection_reports.get_mut(account_id).map(|r| {
+            edit(r);
+            r.clone()
+        })
+    };
+    if let Some(report) = updated {
+        push_report(event_tx, &report);
+    }
+}
+
 /// Push a connection report to the UI from code that has no `&SipManager`.
 pub(crate) fn push_report(
     event_tx: &mpsc::UnboundedSender<SipEvent>,
@@ -3172,9 +3199,18 @@ pub(crate) async fn send_register(
         let call_id = account.registration.call_id().to_string();
         let from_tag = account.registration.local_tag().to_string();
         let msg = build_register(&account.config, local_addr, &call_id, cseq, &from_tag, auth_header, expires);
+        let first_of_attempt = auth_header.is_none() && !account.refreshing && !account.unregistering;
+        if first_of_attempt {
+            if let Some(report) = s.connection_reports.get_mut(account_id) {
+                report.running(connection::StepKind::Register);
+            }
+        }
         (msg, transport, server_addr, cseq, timing)
     };
     transport.send_to(msg.as_bytes(), server_addr).await?;
+    if let Some(report) = state.read().await.connection_reports.get(account_id) {
+        push_report(event_tx, report);
+    }
 
     let state = state.clone();
     let event_tx = event_tx.clone();
@@ -3184,6 +3220,7 @@ pub(crate) async fn send_register(
         let reliable = !matches!(transport, SipTransport::Udp(_));
         let started = tokio::time::Instant::now();
         let mut interval = timing.t1;
+        let mut sent: u32 = 1;
         loop {
             let remaining = timing.timer_f.saturating_sub(started.elapsed());
             let wait = if reliable { remaining } else { interval.min(remaining) };
@@ -3199,14 +3236,15 @@ pub(crate) async fn send_register(
                 return;
             }
             if started.elapsed() >= timing.timer_f {
-                register_timed_out(&state, &event_tx, &aid).await;
+                register_timed_out(&state, &event_tx, &aid, sent, started.elapsed()).await;
                 return;
             }
             log::debug!("Retransmitting REGISTER cseq {} for {}", cseq, aid);
             if transport.send_to(msg.as_bytes(), server_addr).await.is_err() {
-                register_timed_out(&state, &event_tx, &aid).await;
+                register_timed_out(&state, &event_tx, &aid, sent, started.elapsed()).await;
                 return;
             }
+            sent += 1;
             // T2 caps the interval at 4 s.
             interval = (interval * 2).min(std::time::Duration::from_secs(4));
         }
@@ -3219,6 +3257,8 @@ async fn register_timed_out(
     state: &Arc<RwLock<ManagerState>>,
     event_tx: &mpsc::UnboundedSender<SipEvent>,
     account_id: &str,
+    sent: u32,
+    elapsed: std::time::Duration,
 ) {
     let policy = {
         let s = state.read().await;
@@ -3227,6 +3267,21 @@ async fn register_timed_out(
             _ => return,
         }
     };
+    if policy != RegisterTimeoutPolicy::Forget {
+        let detail = format!("no reply in {} s (sent {} times)", elapsed.as_secs(), sent);
+        with_report(state, event_tx, account_id, |r| {
+            r.failed(
+                connection::StepKind::Register,
+                connection::FailureKind::Timeout,
+                detail,
+                Some(elapsed),
+            );
+            if policy == RegisterTimeoutPolicy::Reconnect {
+                r.outcome = connection::Outcome::Reconnecting;
+            }
+        })
+        .await;
+    }
     match policy {
         RegisterTimeoutPolicy::Forget => {
             log::warn!("Unregister for {} was not answered", account_id);
@@ -3259,6 +3314,8 @@ pub(crate) async fn finish_unregister(
     event_tx: &mpsc::UnboundedSender<SipEvent>,
     account_id: &str,
 ) {
+    // The panel's last word on this account: it was taken down on purpose.
+    with_report(state, event_tx, account_id, |r| r.finish(connection::Outcome::Unregistered)).await;
     {
         let mut s = state.write().await;
         if s.accounts.remove(account_id).is_none() {

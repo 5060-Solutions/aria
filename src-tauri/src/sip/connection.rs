@@ -187,6 +187,11 @@ impl ConnectionReport {
         elapsed.or_else(|| step.started.map(|t| t.elapsed())).map(millis)
     }
 
+    /// How long `kind` has been running, for a detail that quotes the time.
+    pub fn running_for(&self, kind: StepKind) -> Option<Duration> {
+        self.step(kind).started.map(|t| t.elapsed())
+    }
+
     pub fn running(&mut self, kind: StepKind) {
         let step = self.step_mut(kind);
         step.status = StepStatus::Running;
@@ -263,6 +268,21 @@ pub fn classify_connect(transport: &super::transport::TransportType, err: &str) 
         FailureKind::TlsHandshake
     } else {
         FailureKind::Unreachable
+    }
+}
+
+/// Which hint fits a REGISTER that was answered badly or not at all.
+/// `status` 0 means no response; `reason` is the text the FSM carries.
+pub fn classify_sip(status: u16, reason: &str) -> FailureKind {
+    let lower = reason.to_ascii_lowercase();
+    match status {
+        403 if lower.contains("ip") || lower.contains("ban") || lower.contains("block") => {
+            FailureKind::ForbiddenIp
+        }
+        401 | 403 | 407 => FailureKind::Auth,
+        408 | 480 | 500..=599 => FailureKind::ServerError,
+        0 if lower.starts_with("no reply") => FailureKind::Timeout,
+        _ => FailureKind::Other,
     }
 }
 
@@ -395,5 +415,17 @@ mod tests {
             FailureKind::Unreachable
         );
         assert_eq!(classify_connect(&Tcp, "TCP connect to 1.2.3.4:5060 timed out"), FailureKind::Unreachable);
+    }
+
+    #[test]
+    fn sip_failures_are_classified() {
+        assert_eq!(classify_sip(401, "Authentication failed - check username and password"), FailureKind::Auth);
+        assert_eq!(classify_sip(407, "Authentication failed - check username and password"), FailureKind::Auth);
+        assert_eq!(classify_sip(403, "Authentication failed"), FailureKind::Auth);
+        assert_eq!(classify_sip(403, "Forbidden: IP banned"), FailureKind::ForbiddenIp);
+        assert_eq!(classify_sip(503, "Registration failed: 503"), FailureKind::ServerError);
+        assert_eq!(classify_sip(480, "Registration failed: 480"), FailureKind::ServerError);
+        assert_eq!(classify_sip(0, "no reply in 32 s (sent 7 times)"), FailureKind::Timeout);
+        assert_eq!(classify_sip(404, "Registration failed: 404"), FailureKind::Other);
     }
 }

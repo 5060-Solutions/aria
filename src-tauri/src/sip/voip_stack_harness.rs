@@ -1020,3 +1020,78 @@ async fn a_literal_address_skips_resolution() {
     assert_eq!(report.step(StepKind::Resolve).status, StepStatus::Skipped);
     assert_eq!(report.step(StepKind::Resolve).detail.as_deref(), Some("literal address"));
 }
+
+#[tokio::test]
+async fn a_successful_registration_reports_every_step_ok() {
+    use super::connection::{Outcome, StepKind, StepStatus};
+    let (proxy, _seen, _) =
+        start_pbx_with_options(PbxOptions { register_expires: 300, ..PbxOptions::default() }).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    for k in [StepKind::Connect, StepKind::Register, StepKind::Authenticate, StepKind::Registered] {
+        assert_eq!(r.step(k.clone()).status, StepStatus::Ok, "{k:?}");
+    }
+    assert!(r.step(StepKind::Register).detail.as_deref().unwrap().starts_with("401 challenge in"));
+    assert_eq!(r.step(StepKind::Registered).detail.as_deref(), Some("expires 300 s"));
+    assert_eq!(r.outcome, Outcome::Registered);
+    assert_eq!(r.registered.as_ref().unwrap().expires_in_s, 300);
+}
+
+#[tokio::test]
+async fn a_wrong_password_fails_the_authenticate_step_as_auth() {
+    use super::connection::{FailureKind, StepKind, StepStatus};
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, "wrong");
+    let err = register(&mgr, cfg.clone()).await.expect_err("rejected");
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(r.step(StepKind::Register).status, StepStatus::Ok);
+    assert_eq!(r.step(StepKind::Authenticate).status, StepStatus::Failed);
+    assert_eq!(r.step(StepKind::Authenticate).failure, Some(FailureKind::Auth));
+    assert!(r.step(StepKind::Authenticate).detail.as_deref().unwrap().starts_with("401: Authentication failed"));
+    assert_eq!(r.error.as_deref(), Some(err.as_str()));
+}
+
+#[tokio::test]
+async fn an_unanswered_register_reports_the_timeout_with_the_send_count() {
+    use super::connection::{FailureKind, StepKind, StepStatus};
+    let opts = PbxOptions::default();
+    opts.drop_next_register.store(true, Ordering::SeqCst);
+    let (proxy, _seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    let _ = register(&mgr, cfg.clone()).await.expect_err("times out");
+    let r = mgr.connection_report(&cfg.id).await.unwrap();
+    let s = r.step(StepKind::Register);
+    assert_eq!(s.status, StepStatus::Failed);
+    assert_eq!(s.failure, Some(FailureKind::Timeout));
+    let d = s.detail.as_deref().unwrap();
+    assert!(d.starts_with("no reply in ") && d.contains("(sent ") && d.ends_with(" times)"), "{d}");
+}
+
+/// Register, then make the PBX swallow the refresh; the backend goes to
+/// Reconnecting and the report must show a fresh attempt, not the old ticks.
+#[tokio::test]
+async fn a_lost_refresh_restarts_the_report_as_reconnecting() {
+    use super::connection::{Outcome, StepKind, StepStatus};
+    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let drop = opts.drop_next_register.clone();
+    let (proxy, _seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    drop.store(true, Ordering::SeqCst);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let r = mgr.connection_report(&cfg.id).await.unwrap();
+        if r.outcome == Outcome::Reconnecting {
+            assert_ne!(r.step(StepKind::Registered).status, StepStatus::Ok);
+            assert!(r.reconnect_attempt >= 1, "attempt {}", r.reconnect_attempt);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "never went reconnecting");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
