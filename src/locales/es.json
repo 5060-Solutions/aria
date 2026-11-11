@@ -11,7 +11,8 @@
     "reconnecting": "Reconectando...",
     "notConnected": "Sin conexión",
     "connectionError": "Error de conexión",
-    "noAccount": "Sin cuenta configurada"
+    "noAccount": "Sin cuenta configurada",
+    "clickForDetails": "Haz clic para ver los detalles de la conexión"
   },
     "connection": {
       "title": "Conexión",
