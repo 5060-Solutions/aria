@@ -182,23 +182,47 @@ export function StatusBar() {
             </IconButton>
           </Tooltip>
         )}
-        <Chip
-          icon={<CircleIcon sx={{ fontSize: 8, color: `${color} !important` }} />}
-          label={t(stateLabelsKeys[registrationState])}
-          size="small"
-          variant="outlined"
-          clickable
-          role="button"
-          aria-haspopup="dialog"
-          onClick={(e) => setPanelAnchor(e.currentTarget)}
-          sx={{
-            height: 24,
-            fontSize: "0.7rem",
-            borderColor: alpha(color, 0.3),
-            color: "text.secondary",
-            WebkitAppRegion: "no-drag",
-          }}
-        />
+        <Tooltip
+          placement="bottom-end"
+          title={
+            activeAccount ? (
+              <Box sx={{ fontSize: "0.72rem", lineHeight: 1.5 }}>
+                <Box sx={{ fontWeight: 600 }}>{activeAccount.displayName || activeAccount.username}</Box>
+                <Box>
+                  {activeAccount.username}@{activeAccount.domain}
+                </Box>
+                <Box sx={{ opacity: 0.8 }}>
+                  {activeAccount.transport.toUpperCase()} ·{" "}
+                  {activeAccount.outboundProxy?.trim() ||
+                    activeAccount.registrar?.trim() ||
+                    activeAccount.domain}
+                  :{activeAccount.port}
+                </Box>
+                <Box sx={{ opacity: 0.8 }}>{t("status.clickForDetails")}</Box>
+              </Box>
+            ) : (
+              t("status.noAccount")
+            )
+          }
+        >
+          <Chip
+            icon={<CircleIcon sx={{ fontSize: 8, color: `${color} !important` }} />}
+            label={t(stateLabelsKeys[registrationState])}
+            size="small"
+            variant="outlined"
+            clickable
+            role="button"
+            aria-haspopup="dialog"
+            onClick={(e) => setPanelAnchor(e.currentTarget)}
+            sx={{
+              height: 24,
+              fontSize: "0.7rem",
+              borderColor: alpha(color, 0.3),
+              color: "text.secondary",
+              WebkitAppRegion: "no-drag",
+            }}
+          />
+        </Tooltip>
         {activeAccountId && panelAnchor && (
           <ConnectionPanel
             anchorEl={panelAnchor}

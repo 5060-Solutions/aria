@@ -12,6 +12,7 @@
     "notConnected": "Not connected",
     "connectionError": "Connection error",
     "noAccount": "No account configured",
+    "clickForDetails": "Click for connection details",
     "voicemail": "Voicemail",
     "voicemailWaiting": "{{count}} new voicemail message(s) — click to listen"
   },

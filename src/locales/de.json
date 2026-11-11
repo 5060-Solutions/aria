@@ -11,7 +11,8 @@
     "reconnecting": "Verbindung wird wiederhergestellt...",
     "notConnected": "Nicht verbunden",
     "connectionError": "Verbindungsfehler",
-    "noAccount": "Kein Konto konfiguriert"
+    "noAccount": "Kein Konto konfiguriert",
+    "clickForDetails": "Klicken für Verbindungsdetails"
   },
     "connection": {
       "title": "Verbindung",

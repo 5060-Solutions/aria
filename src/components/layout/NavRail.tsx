@@ -1,4 +1,4 @@
-import { Box, IconButton, Tooltip, alpha, useTheme } from "@mui/material";
+import { Box, ButtonBase, Tooltip, alpha, useTheme } from "@mui/material";
 import DialpadIcon from "@mui/icons-material/Dialpad";
 import HistoryIcon from "@mui/icons-material/History";
 import ContactsIcon from "@mui/icons-material/People";
@@ -69,7 +69,13 @@ export function NavRail() {
         const label = t(labelKey);
         return (
           <Tooltip key={id} title={label} placement="right">
-            <Box
+            {/* One button for the icon and the word under it: the label used
+                to be plain text, so clicking it did nothing. */}
+            <ButtonBase
+              onClick={() => setCurrentView(id)}
+              aria-label={label}
+              aria-current={active ? "page" : undefined}
+              focusRipple
               sx={{
                 display: "flex",
                 flexDirection: "column",
@@ -77,41 +83,43 @@ export function NavRail() {
                 gap: 0.5,
                 width: "100%",
                 px: 1.5,
+                py: 0.5,
+                borderRadius: "12px",
+                color: active ? "primary.main" : "text.secondary",
+                "&:hover .nav-pill": {
+                  bgcolor: active
+                    ? alpha(theme.palette.primary.main, 0.24)
+                    : alpha(theme.palette.text.secondary, 0.08),
+                },
               }}
             >
-              <IconButton
-                onClick={() => setCurrentView(id)}
-                aria-label={label}
-                aria-current={active ? "page" : undefined}
+              <Box
+                className="nav-pill"
                 sx={{
                   width: 48,
                   height: 32,
                   borderRadius: "16px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                   bgcolor: active
                     ? alpha(theme.palette.primary.main, 0.16)
                     : "transparent",
-                  color: active ? "primary.main" : "text.secondary",
                   transition: "all 0.2s ease",
-                  "&:hover": {
-                    bgcolor: active
-                      ? alpha(theme.palette.primary.main, 0.24)
-                      : alpha(theme.palette.text.secondary, 0.08),
-                  },
                 }}
               >
                 <Icon fontSize="small" />
-              </IconButton>
+              </Box>
               <Box
                 sx={{
                   fontSize: "0.7rem",
                   fontWeight: active ? 600 : 400,
-                  color: active ? "primary.main" : "text.secondary",
                   lineHeight: 1,
                 }}
               >
                 {label}
               </Box>
-            </Box>
+            </ButtonBase>
           </Tooltip>
         );
       })}
