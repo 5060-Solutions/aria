@@ -78,7 +78,14 @@ pub struct Step {
 
 impl Step {
     fn pending(kind: StepKind) -> Self {
-        Self { kind, status: StepStatus::Pending, detail: None, elapsed_ms: None, failure: None, started: None }
+        Self {
+            kind,
+            status: StepStatus::Pending,
+            detail: None,
+            elapsed_ms: None,
+            failure: None,
+            started: None,
+        }
     }
 }
 
@@ -151,7 +158,11 @@ impl ConnectionReport {
             username: account.username.clone(),
             domain: account.domain.clone(),
             transport: format!("{:?}", account.transport).to_lowercase(),
-            target: Target { host: host.to_string(), port, via_proxy },
+            target: Target {
+                host: host.to_string(),
+                port,
+                via_proxy,
+            },
             steps: StepKind::ALL.iter().cloned().map(Step::pending).collect(),
             outcome: Outcome::Registering,
             error: None,
@@ -174,17 +185,25 @@ impl ConnectionReport {
     }
 
     pub fn step(&self, kind: StepKind) -> &Step {
-        self.steps.iter().find(|s| s.kind == kind).expect("every kind is present")
+        self.steps
+            .iter()
+            .find(|s| s.kind == kind)
+            .expect("every kind is present")
     }
 
     fn step_mut(&mut self, kind: StepKind) -> &mut Step {
-        self.steps.iter_mut().find(|s| s.kind == kind).expect("every kind is present")
+        self.steps
+            .iter_mut()
+            .find(|s| s.kind == kind)
+            .expect("every kind is present")
     }
 
     /// The elapsed time for a step: what the caller measured, else the time
     /// since the step went running.
     fn elapsed_for(step: &Step, elapsed: Option<Duration>) -> Option<u32> {
-        elapsed.or_else(|| step.started.map(|t| t.elapsed())).map(millis)
+        elapsed
+            .or_else(|| step.started.map(|t| t.elapsed()))
+            .map(millis)
     }
 
     /// How long `kind` has been running, for a detail that quotes the time.
@@ -338,7 +357,11 @@ mod tests {
         assert_eq!(r.outcome, Outcome::Registering);
         assert_eq!(
             r.target,
-            Target { host: "sip.example.com".into(), port: 5060, via_proxy: false }
+            Target {
+                host: "sip.example.com".into(),
+                port: 5060,
+                via_proxy: false
+            }
         );
     }
 
@@ -347,7 +370,11 @@ mod tests {
         let r = ConnectionReport::start(&sample_account("pbx.lan", Some("203.0.113.9:5061")));
         assert_eq!(
             r.target,
-            Target { host: "203.0.113.9".into(), port: 5061, via_proxy: true }
+            Target {
+                host: "203.0.113.9".into(),
+                port: 5061,
+                via_proxy: true
+            }
         );
     }
 
@@ -401,8 +428,14 @@ mod tests {
 
     #[test]
     fn resolve_failures_are_classified() {
-        assert_eq!(classify_resolve("DNS lookup timed out for x:5060"), FailureKind::DnsTimeout);
-        assert_eq!(classify_resolve("DNS resolve failed for x:5060: no such host"), FailureKind::Dns);
+        assert_eq!(
+            classify_resolve("DNS lookup timed out for x:5060"),
+            FailureKind::DnsTimeout
+        );
+        assert_eq!(
+            classify_resolve("DNS resolve failed for x:5060: no such host"),
+            FailureKind::Dns
+        );
     }
 
     #[test]
@@ -416,23 +449,56 @@ mod tests {
             classify_connect(&Tls, "TLS handshake with 1.2.3.4:5061 failed: certificate name mismatch: NotValidForName"),
             FailureKind::TlsName
         );
-        assert_eq!(classify_connect(&Tls, "TLS handshake with 1.2.3.4:5061 timed out"), FailureKind::TlsHandshake);
         assert_eq!(
-            classify_connect(&Tls, "TLS/TCP connect to 1.2.3.4:5061 failed: connection refused"),
+            classify_connect(&Tls, "TLS handshake with 1.2.3.4:5061 timed out"),
+            FailureKind::TlsHandshake
+        );
+        assert_eq!(
+            classify_connect(
+                &Tls,
+                "TLS/TCP connect to 1.2.3.4:5061 failed: connection refused"
+            ),
             FailureKind::Unreachable
         );
-        assert_eq!(classify_connect(&Tcp, "TCP connect to 1.2.3.4:5060 timed out"), FailureKind::Unreachable);
+        assert_eq!(
+            classify_connect(&Tcp, "TCP connect to 1.2.3.4:5060 timed out"),
+            FailureKind::Unreachable
+        );
     }
 
     #[test]
     fn sip_failures_are_classified() {
-        assert_eq!(classify_sip(401, "Authentication failed - check username and password"), FailureKind::Auth);
-        assert_eq!(classify_sip(407, "Authentication failed - check username and password"), FailureKind::Auth);
-        assert_eq!(classify_sip(403, "Authentication failed"), FailureKind::Auth);
-        assert_eq!(classify_sip(403, "Forbidden: IP banned"), FailureKind::ForbiddenIp);
-        assert_eq!(classify_sip(503, "Registration failed: 503"), FailureKind::ServerError);
-        assert_eq!(classify_sip(480, "Registration failed: 480"), FailureKind::ServerError);
-        assert_eq!(classify_sip(0, "no reply in 32 s (sent 7 times)"), FailureKind::Timeout);
-        assert_eq!(classify_sip(404, "Registration failed: 404"), FailureKind::Other);
+        assert_eq!(
+            classify_sip(401, "Authentication failed - check username and password"),
+            FailureKind::Auth
+        );
+        assert_eq!(
+            classify_sip(407, "Authentication failed - check username and password"),
+            FailureKind::Auth
+        );
+        assert_eq!(
+            classify_sip(403, "Authentication failed"),
+            FailureKind::Auth
+        );
+        assert_eq!(
+            classify_sip(403, "Forbidden: IP banned"),
+            FailureKind::ForbiddenIp
+        );
+        assert_eq!(
+            classify_sip(503, "Registration failed: 503"),
+            FailureKind::ServerError
+        );
+        assert_eq!(
+            classify_sip(480, "Registration failed: 480"),
+            FailureKind::ServerError
+        );
+        assert_eq!(
+            classify_sip(0, "no reply in 32 s (sent 7 times)"),
+            FailureKind::Timeout
+        );
+        assert_eq!(
+            classify_sip(404, "Registration failed: 404"),
+            FailureKind::Other
+        );
     }
 }
