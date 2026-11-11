@@ -618,11 +618,6 @@ impl SipManager {
         }));
     }
 
-    /// Push a connection report to the UI.
-    fn emit_connection_report(&self, report: connection::ConnectionReport) {
-        push_report(&self.event_tx, &report);
-    }
-
     /// The step-by-step picture for `account_id`, if an attempt was ever made.
     pub async fn connection_report(&self, account_id: &str) -> Option<connection::ConnectionReport> {
         self.state.read().await.connection_reports.get(account_id).cloned()
@@ -671,11 +666,11 @@ impl SipManager {
             self.unregister_account(Some(&account_id)).await?;
         }
 
-        let (target_host, target_port) = Self::target_server(&account);
-        let server_addr = Self::resolve_server(target_host, target_port).await?;
-
-        let (transport, rx, local_addr) =
-            self.open_transport(&account, server_addr).await?;
+        // A fresh report for this attempt. Started from the config, not
+        // restarted, because the server, transport or proxy may have changed.
+        let mut report = connection::ConnectionReport::start(&account);
+        let (server_addr, transport, rx, local_addr) =
+            resolve_and_connect(&self.state, &self.event_tx, &account, &mut report).await?;
 
         log::info!(
             "Registering {}@{} via {:?} to {} port {} (local: {})",
@@ -744,56 +739,6 @@ impl SipManager {
 
     /// Create the account's transport and work out the local address other
     /// hosts can reach it on.
-    async fn open_transport(
-        &self,
-        account: &AccountConfig,
-        server_addr: SocketAddr,
-    ) -> Result<(SipTransport, mpsc::Receiver<SipMessage>, SocketAddr), String> {
-        log::info!("Creating {:?} transport to {}", account.transport, server_addr);
-        let (mut transport, rx) = match account.transport {
-            TransportType::Udp => {
-                let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
-                (SipTransport::Udp(t), rx)
-            }
-            TransportType::Tcp => {
-                let (t, rx) = transport::TcpTransport::connect(server_addr).await?;
-                (SipTransport::Tcp(t), rx)
-            }
-            TransportType::Tls => {
-                let tls_name = account.tls_name();
-                let (t, rx) =
-                    transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
-                        .await
-                        .inspect_err(|e| log::error!("TLS connection failed: {}", e))?;
-                (SipTransport::Tls(t), rx)
-            }
-        };
-
-        // Attach diagnostic sender so all outbound messages are logged automatically
-        {
-            let s = self.state.read().await;
-            let diag_sender = diagnostics::DiagnosticSender::new(
-                s.diagnostic_store.clone(),
-                self.event_tx.clone(),
-                account.id.clone(),
-            );
-            transport.set_diagnostic_sender(diag_sender);
-        }
-
-        // Resolve `0.0.0.0` to the actual outbound interface IP
-        let raw_addr = transport.local_addr();
-        let local_addr = if raw_addr.ip().is_unspecified() {
-            let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
-                .and_then(|s| { s.connect(server_addr)?; s.local_addr() })
-                .map(|a| a.ip())
-                .unwrap_or(raw_addr.ip());
-            std::net::SocketAddr::new(real_ip, raw_addr.port())
-        } else {
-            raw_addr
-        };
-        Ok((transport, rx, local_addr))
-    }
-
     /// Return the host and port packets for this account are sent to:
     /// the outbound proxy if configured (RFC 3261 §10.2 / §16.12),
     /// otherwise the registrar (or domain).
@@ -2992,47 +2937,25 @@ impl SipManager {
         account_id: &str,
         account: &AccountConfig,
     ) -> Result<(mpsc::Receiver<SipMessage>, u64), String> {
-        let (target_host, target_port) = Self::target_server(account);
-        let server_addr = Self::resolve_server(target_host, target_port).await?;
-
-        let (mut transport, rx) = match account.transport {
-            TransportType::Udp => {
-                let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
-                (SipTransport::Udp(t), rx)
-            }
-            TransportType::Tcp => {
-                let (t, rx) = transport::TcpTransport::connect(server_addr).await?;
-                (SipTransport::Tcp(t), rx)
-            }
-            TransportType::Tls => {
-                let tls_name = account.tls_name();
-                let (t, rx) =
-                    transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
-                        .await?;
-                (SipTransport::Tls(t), rx)
-            }
-        };
-
-        {
+        // Another attempt of the same account: the steps start over and the
+        // report says it is a reconnect, with the attempt number.
+        let mut report = {
             let s = state.read().await;
-            let diag_sender = diagnostics::DiagnosticSender::new(
-                s.diagnostic_store.clone(),
-                event_tx.clone(),
-                account.id.clone(),
-            );
-            transport.set_diagnostic_sender(diag_sender);
-        }
-
-        let raw_addr = transport.local_addr();
-        let local_addr = if raw_addr.ip().is_unspecified() {
-            let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
-                .and_then(|s| { s.connect(server_addr)?; s.local_addr() })
-                .map(|a| a.ip())
-                .unwrap_or(raw_addr.ip());
-            std::net::SocketAddr::new(real_ip, raw_addr.port())
-        } else {
-            raw_addr
+            let mut r = s
+                .connection_reports
+                .get(account_id)
+                .cloned()
+                .unwrap_or_else(|| connection::ConnectionReport::start(account));
+            r.restart();
+            r.outcome = connection::Outcome::Reconnecting;
+            r.reconnect_attempt = s
+                .accounts
+                .get(account_id)
+                .map_or(0, |a| a.registration.reconnect_attempt_count());
+            r
         };
+        let (server_addr, transport, rx, local_addr) =
+            resolve_and_connect(state, event_tx, account, &mut report).await?;
 
         let generation = {
             let mut s = state.write().await;
@@ -3066,6 +2989,150 @@ impl SipManager {
 
         Ok((rx, generation))
     }
+}
+
+
+/// Create the account's transport and work out the local address other
+/// hosts can reach it on.
+async fn open_transport_for(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account: &AccountConfig,
+    server_addr: SocketAddr,
+) -> Result<(SipTransport, mpsc::Receiver<SipMessage>, SocketAddr), String> {
+    log::info!("Creating {:?} transport to {}", account.transport, server_addr);
+    let (mut transport, rx) = match account.transport {
+        TransportType::Udp => {
+            let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
+            (SipTransport::Udp(t), rx)
+        }
+        TransportType::Tcp => {
+            let (t, rx) = transport::TcpTransport::connect(server_addr).await?;
+            (SipTransport::Tcp(t), rx)
+        }
+        TransportType::Tls => {
+            let tls_name = account.tls_name();
+            let (t, rx) =
+                transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
+                    .await
+                    .inspect_err(|e| log::error!("TLS connection failed: {}", e))?;
+            (SipTransport::Tls(t), rx)
+        }
+    };
+
+    // Attach diagnostic sender so all outbound messages are logged automatically
+    {
+        let s = state.read().await;
+        let diag_sender = diagnostics::DiagnosticSender::new(
+            s.diagnostic_store.clone(),
+            event_tx.clone(),
+            account.id.clone(),
+        );
+        transport.set_diagnostic_sender(diag_sender);
+    }
+
+    // Resolve `0.0.0.0` to the actual outbound interface IP
+    let raw_addr = transport.local_addr();
+    let local_addr = if raw_addr.ip().is_unspecified() {
+        let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+            .and_then(|s| { s.connect(server_addr)?; s.local_addr() })
+            .map(|a| a.ip())
+            .unwrap_or(raw_addr.ip());
+        std::net::SocketAddr::new(real_ip, raw_addr.port())
+    } else {
+        raw_addr
+    };
+    Ok((transport, rx, local_addr))
+}
+
+/// Resolve the server and open the transport, recording both as steps of
+/// `report`. On failure the report is stored and pushed with the failed step
+/// before the error is returned, so the panel can show what broke even when
+/// no `AccountState` exists yet.
+async fn resolve_and_connect(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account: &AccountConfig,
+    report: &mut connection::ConnectionReport,
+) -> Result<(SocketAddr, SipTransport, mpsc::Receiver<SipMessage>, SocketAddr), String> {
+    use connection::StepKind;
+
+    let (target_host, target_port) = SipManager::target_server(account);
+    report.running(StepKind::Resolve);
+    save_report(state, event_tx, report).await;
+    let started = tokio::time::Instant::now();
+    let server_addr = match SipManager::resolve_server(target_host, target_port).await {
+        Ok(addr) => {
+            let elapsed = started.elapsed();
+            if target_host.parse::<std::net::IpAddr>().is_ok() {
+                report.skipped(StepKind::Resolve, "literal address");
+            } else {
+                report.ok(
+                    StepKind::Resolve,
+                    format!("{} in {} ms", addr.ip(), elapsed.as_millis()),
+                    Some(elapsed),
+                );
+            }
+            addr
+        }
+        Err(e) => {
+            report.failed(
+                StepKind::Resolve,
+                connection::classify_resolve(&e),
+                e.clone(),
+                Some(started.elapsed()),
+            );
+            save_report(state, event_tx, report).await;
+            return Err(e);
+        }
+    };
+
+    report.running(StepKind::Connect);
+    save_report(state, event_tx, report).await;
+    let started = tokio::time::Instant::now();
+    match open_transport_for(state, event_tx, account, server_addr).await {
+        Ok((transport, rx, local_addr)) => {
+            let elapsed = started.elapsed();
+            let ms = elapsed.as_millis();
+            let detail = match account.transport {
+                TransportType::Udp => {
+                    format!("socket open on {local_addr}; UDP cannot confirm the server is reachable")
+                }
+                TransportType::Tcp => format!("connected in {ms} ms"),
+                TransportType::Tls if account.tls_insecure => {
+                    format!("handshake in {ms} ms, certificate not checked (allow untrusted is on)")
+                }
+                TransportType::Tls => format!("handshake in {ms} ms, certificate OK"),
+            };
+            report.ok(StepKind::Connect, detail, Some(elapsed));
+            save_report(state, event_tx, report).await;
+            Ok((server_addr, transport, rx, local_addr))
+        }
+        Err(e) => {
+            report.failed(
+                StepKind::Connect,
+                connection::classify_connect(&account.transport, &e),
+                e.clone(),
+                Some(started.elapsed()),
+            );
+            save_report(state, event_tx, report).await;
+            Err(e)
+        }
+    }
+}
+
+/// Store `report` as the account's current one and push it to the UI.
+async fn save_report(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    report: &connection::ConnectionReport,
+) {
+    state
+        .write()
+        .await
+        .connection_reports
+        .insert(report.account_id.clone(), report.clone());
+    push_report(event_tx, report);
 }
 
 /// Push a connection report to the UI from code that has no `&SipManager`.

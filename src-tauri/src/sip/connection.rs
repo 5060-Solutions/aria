@@ -238,6 +238,34 @@ impl ConnectionReport {
     }
 }
 
+/// Which hint fits a failed name lookup. The message is `resolve_server`'s.
+pub fn classify_resolve(err: &str) -> FailureKind {
+    if err.starts_with("DNS lookup timed out") {
+        FailureKind::DnsTimeout
+    } else {
+        FailureKind::Dns
+    }
+}
+
+/// Which hint fits a failed bind, connect or TLS handshake. The message is
+/// the transport's; the TLS wording it keys on is produced by
+/// `transport::describe_tls_error`.
+pub fn classify_connect(transport: &super::transport::TransportType, err: &str) -> FailureKind {
+    let _ = transport;
+    if err.contains("certificate not trusted") {
+        FailureKind::TlsUntrusted
+    } else if err.contains("certificate name mismatch") {
+        FailureKind::TlsName
+    } else if err.starts_with("TLS handshake")
+        || err.starts_with("TLS config")
+        || err.starts_with("Invalid server name")
+    {
+        FailureKind::TlsHandshake
+    } else {
+        FailureKind::Unreachable
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +370,30 @@ mod tests {
         assert_eq!(v["steps"][0]["kind"], "resolve");
         assert_eq!(v["steps"][0]["status"], "pending");
         assert_eq!(v["target"]["viaProxy"], false);
+    }
+
+    #[test]
+    fn resolve_failures_are_classified() {
+        assert_eq!(classify_resolve("DNS lookup timed out for x:5060"), FailureKind::DnsTimeout);
+        assert_eq!(classify_resolve("DNS resolve failed for x:5060: no such host"), FailureKind::Dns);
+    }
+
+    #[test]
+    fn connect_failures_are_classified() {
+        use TransportType::*;
+        assert_eq!(
+            classify_connect(&Tls, "TLS handshake with 1.2.3.4:5061 failed: certificate not trusted: invalid peer certificate: UnknownIssuer"),
+            FailureKind::TlsUntrusted
+        );
+        assert_eq!(
+            classify_connect(&Tls, "TLS handshake with 1.2.3.4:5061 failed: certificate name mismatch: NotValidForName"),
+            FailureKind::TlsName
+        );
+        assert_eq!(classify_connect(&Tls, "TLS handshake with 1.2.3.4:5061 timed out"), FailureKind::TlsHandshake);
+        assert_eq!(
+            classify_connect(&Tls, "TLS/TCP connect to 1.2.3.4:5061 failed: connection refused"),
+            FailureKind::Unreachable
+        );
+        assert_eq!(classify_connect(&Tcp, "TCP connect to 1.2.3.4:5060 timed out"), FailureKind::Unreachable);
     }
 }

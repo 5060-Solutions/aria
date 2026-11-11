@@ -981,3 +981,42 @@ fn target_server_splits_only_an_unambiguous_port() {
         assert_eq!(SipManager::target_server(&cfg), want, "{proxy}");
     }
 }
+
+/// A host that does not resolve fails the first step of the report, with
+/// the DNS text the user can act on, and the report is what the query returns.
+#[tokio::test]
+async fn an_unresolvable_server_fails_the_resolve_step() {
+    use super::connection::{FailureKind, Outcome, StepKind, StepStatus};
+    let (mgr, mut rx) = manager_with(fast_timing());
+    let mut cfg = account("127.0.0.1:5060".parse().unwrap(), None, PASSWORD);
+    cfg.registrar = Some("no-such-host.invalid".into());
+    let err = mgr.register(cfg.clone()).await.expect_err("cannot register");
+    assert!(err.starts_with("DNS"), "{err}");
+    let report = mgr.connection_report(&cfg.id).await.expect("report exists");
+    assert_eq!(report.step(StepKind::Resolve).status, StepStatus::Failed);
+    assert_eq!(report.step(StepKind::Resolve).failure, Some(FailureKind::Dns));
+    assert_eq!(report.step(StepKind::Connect).status, StepStatus::Pending);
+    assert_eq!(report.outcome, Outcome::Error);
+    assert_eq!(report.error.as_deref(), Some(err.as_str()));
+    let mut saw = false;
+    while let Ok(ev) = rx.try_recv() {
+        if matches!(ev, super::SipEvent::ConnectionReport(_)) {
+            saw = true;
+        }
+    }
+    assert!(saw, "a sip-connection event was emitted");
+}
+
+/// A literal proxy address needs no lookup; the step says so instead of
+/// pretending one happened.
+#[tokio::test]
+async fn a_literal_address_skips_resolution() {
+    use super::connection::{StepKind, StepStatus};
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    let report = mgr.connection_report(&cfg.id).await.unwrap();
+    assert_eq!(report.step(StepKind::Resolve).status, StepStatus::Skipped);
+    assert_eq!(report.step(StepKind::Resolve).detail.as_deref(), Some("literal address"));
+}
