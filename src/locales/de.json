@@ -13,6 +13,42 @@
     "connectionError": "Verbindungsfehler",
     "noAccount": "Kein Konto konfiguriert"
   },
+    "connection": {
+      "title": "Verbindung",
+      "steps": {
+        "resolve": "{{host}} auflösen",
+        "connect": "{{transport}} zu {{addr}} öffnen",
+        "register": "REGISTER",
+        "authenticate": "Authentifizieren",
+        "registered": "Registriert"
+      },
+      "retryNow": "Jetzt erneut versuchen",
+      "reregister": "Neu registrieren",
+      "copy": "Details kopieren",
+      "copied": "Kopiert",
+      "diagnostics": "Diagnose",
+      "retry": {
+        "in": "Nächster automatischer Versuch in {{seconds}} s",
+        "reconnecting": "Verbinde neu, Versuch {{attempt}}",
+        "stoppedAuth": "Automatische Versuche gestoppt: das löst sich nicht von selbst",
+        "onWake": "Kein Versuch geplant; die App versucht es erneut, wenn sich das Netzwerk ändert oder das Fenster aufwacht",
+        "disabled": "Konto deaktiviert"
+      },
+      "registeredDetail": "läuft ab in {{expires}} · letzte Erneuerung {{at}}",
+      "hintTitle": "Was das meistens bedeutet",
+      "hints": {
+        "dns": "Der Servername konnte nicht aufgelöst werden. Prüfen Sie die Schreibweise von Domain oder Registrar in den Kontoeinstellungen und ob das DNS dieses Netzwerks funktioniert (laden andere Seiten?).",
+        "dns_timeout": "Das DNS hat nicht innerhalb von 3 s geantwortet. Meist ist das Netzwerk aus oder ein Captive Portal (Anmeldeseite eines Hotel- oder Flughafen-WLANs).",
+        "unreachable": "An dieser Adresse und diesem Port hört über diesen Transport nichts. Prüfen Sie Port und Transport (UDP, TCP oder TLS) im Konto und jede Firewall zwischen Ihnen und der PBX.",
+        "tls_untrusted": "Das Serverzertifikat ist von keiner CA signiert, der dieser Rechner vertraut. Für eine Test-PBX aktivieren Sie „Nicht vertrauenswürdiges Zertifikat erlauben“ im Konto; eine Produktions-PBX braucht ein öffentliches Zertifikat.",
+        "tls_name": "Das Zertifikat gilt für einen anderen Namen als den, mit dem sich das Konto verbindet. Setzen Sie den TLS-Servernamen (oder den Registrar) auf den Namen im Zertifikat.",
+        "tls_handshake": "Der TLS-Handshake ist fehlgeschlagen. Wenn die PBX ein selbstsigniertes oder privates Zertifikat verwendet, aktivieren Sie „Nicht vertrauenswürdiges Zertifikat erlauben“ im Konto; sonst spricht der Server auf diesem Port vielleicht kein TLS.",
+        "timeout": "Der Server hat nicht geantwortet. Über UDP ist das meist eine Firewall oder ein NAT, das SIP verwirft; versuchen Sie TCP oder TLS oder prüfen Sie, ob die PBX diese Adresse zulässt.",
+        "auth": "Die PBX hat die Zugangsdaten abgelehnt. Prüfen Sie Benutzername, Auth-Benutzername und Passwort; verwendet die PBX einen anderen Realm, tragen Sie ihn in den erweiterten Kontoeinstellungen ein. Automatische Versuche stoppen bei diesem Fehler.",
+        "forbidden_ip": "Die PBX hat diese Adresse abgewiesen. Üblich ist eine fail2ban-artige Sperre nach früheren Fehlversuchen; sie hebt sich nach Ablauf der Sperrzeit von selbst auf.",
+        "server_error": "Die PBX hat geantwortet, konnte Sie aber gerade nicht registrieren. Das liegt auf Serverseite; die App versucht es weiter."
+      }
+    },
   "dialer": {
     "searchCountry": "Land suchen...",
     "enterNumber": "Nummer eingeben",
