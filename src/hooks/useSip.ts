@@ -11,6 +11,7 @@ import type {
 } from "../types/sip";
 import { useRingtone } from "./useRingtone";
 import { useRingback } from "./useRingback";
+import { shouldPlayRingback } from "../utils/ringback";
 import { log } from "../utils/log";
 import type { ConnectionReport } from "../types/connection";
 import { isAuthFailure } from "../utils/authFailure";
@@ -49,6 +50,8 @@ interface CallPayload {
   recordingPath?: string;
   /** Set on "connected": whether the media is encrypted, as negotiated. */
   srtpActive?: boolean;
+  /** Set on 180/183 when early media stream is present. */
+  hasEarlyMedia?: boolean;
 }
 
 interface VoicemailPayload {
@@ -296,7 +299,7 @@ export function useSipEvents() {
   const activeCall = useAppStore((s) => s.activeCall);
 
   const isIncoming = activeCall?.state === "incoming";
-  const isRinging = activeCall?.state === "ringing" || activeCall?.state === "dialing";
+  const isRinging = shouldPlayRingback(activeCall);
   useRingtone(isIncoming);
   useRingback(isRinging);
 
@@ -391,6 +394,7 @@ export function useSipEvents() {
           held: false,
           recording: false,
           sipCallId: p.sipCallId,
+          hasEarlyMedia: false,
         });
         store.setCurrentView("dialer");
         return;
@@ -420,6 +424,7 @@ export function useSipEvents() {
             recording: false,
             sipCallId: p.sipCallId,
             srtpActive: p.srtpActive,
+            hasEarlyMedia: p.hasEarlyMedia ?? false,
           });
           store.setCurrentView("dialer");
         }
@@ -431,6 +436,7 @@ export function useSipEvents() {
           p.state === "connected" && !call.connectTime ? Date.now() : call.connectTime,
         sipCallId: p.sipCallId ?? call.sipCallId,
         srtpActive: p.srtpActive ?? call.srtpActive,
+        hasEarlyMedia: p.hasEarlyMedia ?? call.hasEarlyMedia,
       });
     });
 
@@ -503,6 +509,7 @@ export async function placeCall(
     muted: false,
     held: false,
     recording: false,
+    hasEarlyMedia: false,
   };
 
   if (addOn) {

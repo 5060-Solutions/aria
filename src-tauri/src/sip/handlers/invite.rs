@@ -108,9 +108,9 @@ pub async fn handle_invite_response(
         180 | 181 | 183 => {
             log::info!("Call ringing/progress ({})", status);
 
-            // Check for SDP in 183 (early media)
+            // Check for SDP in provisional response (early media)
             let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
-            let has_sdp = status == 183 && !sdp.trim().is_empty() && sdp.contains("m=audio");
+            let has_sdp = (status == 180 || status == 181 || status == 183) && !sdp.trim().is_empty() && sdp.contains("m=audio");
 
             // Extract data needed for early media before taking write lock
             let early_media_data = if has_sdp {
@@ -146,7 +146,7 @@ pub async fn handle_invite_response(
 
             // Start early media session if we have the data
             let early_session = if let Some((local_rtp_port, remote_rtp, negotiated_codec, local_srtp_key, remote_srtp_key, _call_id, _account_id, input_dev, output_dev)) = early_media_data {
-                log::info!("Starting early media session for 183 response");
+                log::info!("Starting early media session for {} response", status);
                 let result = match (&local_srtp_key, &remote_srtp_key) {
                     (Some(local_key), Some(remote_key)) => {
                         match (
@@ -193,6 +193,7 @@ pub async fn handle_invite_response(
                 None
             };
 
+            let had_early_session = early_session.is_some();
             let mut s = state.write().await;
             if let Some((account_id, call)) = s.find_call_by_header_mut(&call_id_header) {
                 let account_id = account_id.to_string();
@@ -208,12 +209,15 @@ pub async fn handle_invite_response(
                     call.set_early_media(session);
                 }
 
-                // Only when the call actually moved to ringing. A stray 180 for
-                // a connected call must not tell the UI it is ringing again.
-                if transitioned && !was_ringing {
+                let has_early_media = call.has_early_media();
+
+                // Notify frontend when the call moves to ringing, or when early media arrives.
+                // A stray 180 for a connected call must not tell the UI it is ringing again.
+                if (transitioned && !was_ringing) || (had_early_session && has_early_media && call.is_ringing()) {
                     let _ = event_tx.send(SipEvent::CallStateChanged(
                         CallEvent::new(&account_id, &call_id, "ringing", &remote_uri, "outbound")
                             .with_sip_call_id(&call_id_header)
+                            .with_early_media(has_early_media)
                     ));
                 }
             }
