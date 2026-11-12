@@ -79,6 +79,7 @@ impl CallEventPayload {
             sip_call_id: Some(call.call_id_header.clone()),
             recording_path: None,
             srtp_active: Some(call.srtp_active),
+            has_early_media: Some(call.has_early_media()),
         }
     }
 
@@ -101,6 +102,7 @@ impl CallEventPayload {
             sip_call_id: None,
             recording_path: None,
             srtp_active: None,
+            has_early_media: None,
         }
     }
 
@@ -119,6 +121,12 @@ impl CallEventPayload {
     /// Attach the path of the recording this call produced.
     pub fn with_recording_path(mut self, path: impl Into<String>) -> Self {
         self.recording_path = Some(path.into());
+        self
+    }
+
+    /// Set whether early media is active on this call.
+    pub fn with_early_media(mut self, has_early_media: bool) -> Self {
+        self.has_early_media = Some(has_early_media);
         self
     }
 }
@@ -149,6 +157,11 @@ pub struct CallEventPayload {
     /// it, so every call showed "Not encrypted".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub srtp_active: Option<bool>,
+    /// Whether early media is active (180/183 with SDP).
+    /// Used by the frontend to suppress local ringback tone when in-band
+    /// network audio is already playing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_early_media: Option<bool>,
 }
 
 /// Protocol timers.

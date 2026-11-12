@@ -191,6 +191,12 @@ export interface ActiveCall {
   srtpActive?: boolean;
   /** SIP Call-ID header (for linking to PCAP/diagnostic traces) */
   sipCallId?: string;
+  /**
+   * Whether early media is active on this call (180/183 with SDP).
+   * When true, in-band network audio from the carrier is playing,
+   * so local ringback tone generation must be suppressed.
+   */
+  hasEarlyMedia?: boolean;
 }
 
 export interface CallHistoryEntry {
