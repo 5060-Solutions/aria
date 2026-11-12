@@ -14,42 +14,42 @@
     "noAccount": "Sin cuenta configurada",
     "clickForDetails": "Haz clic para ver los detalles de la conexión"
   },
-    "connection": {
-      "title": "Conexión",
-      "steps": {
-        "resolve": "Resolver {{host}}",
-        "connect": "Abrir {{transport}} a {{addr}}",
-        "register": "REGISTER",
-        "authenticate": "Autenticar",
-        "registered": "Registrado"
-      },
-      "retryNow": "Reintentar ahora",
-      "reregister": "Volver a registrar",
-      "copy": "Copiar detalles",
-      "copied": "Copiado",
-      "diagnostics": "Diagnóstico",
-      "retry": {
-        "in": "Próximo reintento automático en {{seconds}} s",
-        "reconnecting": "Reconectando, intento {{attempt}}",
-        "stoppedAuth": "Reintentos automáticos detenidos: esto no se arreglará solo",
-        "onWake": "Sin reintento programado; la app vuelve a intentarlo cuando cambia la red o se activa la ventana",
-        "disabled": "Cuenta desactivada"
-      },
-      "registeredDetail": "caduca en {{expires}} · última renovación {{at}}",
-      "hintTitle": "Qué suele significar",
-      "hints": {
-        "dns": "El nombre del servidor no se resolvió. Revisa la ortografía del dominio o registrar en la configuración de la cuenta y que el DNS de esta red funcione (¿cargan otros sitios?).",
-        "dns_timeout": "El DNS no respondió en 3 s. Normalmente la red está caída o es cautiva (página de inicio de sesión de un Wi-Fi de hotel o aeropuerto).",
-        "unreachable": "Nada escucha en esa dirección y puerto con este transporte. Revisa el puerto y el transporte (UDP, TCP o TLS) en la cuenta y cualquier firewall entre tú y la PBX.",
-        "tls_untrusted": "El certificado del servidor no está firmado por una CA en la que confíe este equipo. Para una PBX de laboratorio, activa \"Permitir certificado no confiable\" en la cuenta; una PBX de producción necesita un certificado público.",
-        "tls_name": "El certificado es para un nombre distinto del que usa la cuenta para conectarse. Pon como nombre del servidor TLS (o registrar) el nombre del certificado.",
-        "tls_handshake": "Falló el handshake TLS. Si la PBX usa un certificado autofirmado o privado, activa \"Permitir certificado no confiable\" en la cuenta; si no, puede que el servidor no hable TLS en este puerto.",
-        "timeout": "El servidor no respondió. Por UDP suele ser un firewall o NAT que descarta SIP; prueba TCP o TLS, o comprueba que la PBX permite esta dirección.",
-        "auth": "La PBX rechazó las credenciales. Revisa el usuario, el usuario de autenticación y la contraseña; si la PBX usa otro realm, configúralo en los ajustes avanzados de la cuenta. Los reintentos automáticos se detienen con este fallo.",
-        "forbidden_ip": "La PBX rechazó esta dirección. La causa habitual es un bloqueo tipo fail2ban tras fallos anteriores; se levanta solo al terminar el periodo de bloqueo.",
-        "server_error": "La PBX respondió pero no pudo registrarte ahora mismo. Es un problema del lado del servidor; la app sigue reintentando."
-      }
+  "connection": {
+    "title": "Conexión",
+    "steps": {
+      "resolve": "Resolver {{host}}",
+      "connect": "Abrir {{transport}} a {{addr}}",
+      "register": "REGISTER",
+      "authenticate": "Autenticar",
+      "registered": "Registrado"
     },
+    "retryNow": "Reintentar ahora",
+    "reregister": "Volver a registrar",
+    "copy": "Copiar detalles",
+    "copied": "Copiado",
+    "diagnostics": "Diagnóstico",
+    "retry": {
+      "in": "Próximo reintento automático en {{seconds}} s",
+      "reconnecting": "Reconectando, intento {{attempt}}",
+      "stoppedAuth": "Reintentos automáticos detenidos: esto no se arreglará solo",
+      "onWake": "Sin reintento programado; la app vuelve a intentarlo cuando cambia la red o se activa la ventana",
+      "disabled": "Cuenta desactivada"
+    },
+    "registeredDetail": "caduca en {{expires}} · última renovación {{at}}",
+    "hintTitle": "Qué suele significar",
+    "hints": {
+      "dns": "El nombre del servidor no se resolvió. Revisa la ortografía del dominio o registrar en la configuración de la cuenta y que el DNS de esta red funcione (¿cargan otros sitios?).",
+      "dns_timeout": "El DNS no respondió en 3 s. Normalmente la red está caída o es cautiva (página de inicio de sesión de un Wi-Fi de hotel o aeropuerto).",
+      "unreachable": "Nada escucha en esa dirección y puerto con este transporte. Revisa el puerto y el transporte (UDP, TCP o TLS) en la cuenta y cualquier firewall entre tú y la PBX.",
+      "tls_untrusted": "El certificado del servidor no está firmado por una CA en la que confíe este equipo. Para una PBX de laboratorio, activa \"Permitir certificado no confiable\" en la cuenta; una PBX de producción necesita un certificado público.",
+      "tls_name": "El certificado es para un nombre distinto del que usa la cuenta para conectarse. Pon como nombre del servidor TLS (o registrar) el nombre del certificado.",
+      "tls_handshake": "Falló el handshake TLS. Si la PBX usa un certificado autofirmado o privado, activa \"Permitir certificado no confiable\" en la cuenta; si no, puede que el servidor no hable TLS en este puerto.",
+      "timeout": "El servidor no respondió. Por UDP suele ser un firewall o NAT que descarta SIP; prueba TCP o TLS, o comprueba que la PBX permite esta dirección.",
+      "auth": "La PBX rechazó las credenciales. Revisa el usuario, el usuario de autenticación y la contraseña; si la PBX usa otro realm, configúralo en los ajustes avanzados de la cuenta. Los reintentos automáticos se detienen con este fallo.",
+      "forbidden_ip": "La PBX rechazó esta dirección. La causa habitual es un bloqueo tipo fail2ban tras fallos anteriores; se levanta solo al terminar el periodo de bloqueo.",
+      "server_error": "La PBX respondió pero no pudo registrarte ahora mismo. Es un problema del lado del servidor; la app sigue reintentando."
+    }
+  },
   "dialer": {
     "searchCountry": "Buscar país...",
     "enterNumber": "Ingrese número",
@@ -161,6 +161,11 @@
     "googleContacts": "Contactos de Google",
     "googleComingSoon": "Próximamente - requiere configuración OAuth",
     "contactsSyncNote": "Los contactos sincronizados aparecen en tu pestaña de Contactos.",
+    "contactsDenied": "Aria no tiene permiso para leer tus contactos. Actívalo en Privacidad y seguridad › Contactos en Ajustes del Sistema.",
+    "contactsRestricted": "El acceso a los contactos está bloqueado en este Mac por una política del dispositivo.",
+    "contactsUnsupported": "Los contactos del sistema solo están disponibles en macOS por ahora.",
+    "contactsFailed": "No se pudieron leer tus contactos: {{error}}",
+    "openSystemSettings": "Abrir Ajustes del Sistema",
     "callRecordings": "Grabaciones de llamadas",
     "savedTo": "Guardado en: {{path}}",
     "signOutAll": "Cerrar todas las sesiones",

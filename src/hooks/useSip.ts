@@ -687,11 +687,8 @@ export async function playRecording(path: string): Promise<void> {
 
 // ── System Contacts ─────────────────────────────────────────────────────────
 
-export interface SystemContact {
-  id: string;
-  name: string;
-  phone: string | null;
-}
+import type { SystemContact } from "../utils/systemContacts";
+export type { SystemContact } from "../utils/systemContacts";
 
 // ── Per-call diagnostics ─────────────────────────────────────────────────────
 
@@ -717,6 +714,11 @@ export async function getCallSipTrace(
 
 export async function fetchSystemContacts(): Promise<SystemContact[]> {
   return invoke("fetch_system_contacts");
+}
+
+/** macOS: open System Settings › Privacy & Security › Contacts. */
+export async function openContactsPrivacySettings(): Promise<void> {
+  return invoke("open_contacts_privacy_settings");
 }
 
 // ── Presence / BLF ──────────────────────────────────────────────────────────

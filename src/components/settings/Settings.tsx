@@ -58,7 +58,8 @@ import SystemUpdateAltIcon from "@mui/icons-material/SystemUpdateAlt";
 import Menu from "@mui/material/Menu";
 import InputAdornment from "@mui/material/InputAdornment";
 import { useTranslation } from "react-i18next";
-import { openRecordingsFolder, getDefaultRecordingsDir, fetchSystemContacts } from "../../hooks/useSip";
+import { openRecordingsFolder, getDefaultRecordingsDir, fetchSystemContacts, openContactsPrivacySettings } from "../../hooks/useSip";
+import { describeContactsError, mapSystemContacts } from "../../utils/systemContacts";
 import { changeLanguage, supportedLanguages, getCurrentLanguage } from "../../i18n";
 import { AudioLevelMeter } from "../call/AudioLevelMeter";
 import { log } from "../../utils/log";
@@ -193,6 +194,7 @@ export function Settings() {
   const [tonePlaying, setTonePlaying] = useState(false);
   const [recordingsDir, setRecordingsDir] = useState<string>("");
   const [syncingSystemContacts, setSyncingSystemContacts] = useState(false);
+  const [systemContactsError, setSystemContactsError] = useState<{ message: string; denied: boolean } | null>(null);
 
   // Contacts sync state from store
   const googleConnected = useAppStore((s) => s.googleConnected);
@@ -504,25 +506,19 @@ export function Settings() {
     return state.registrationState;
   };
 
-  const handleSyncSystemContacts = async () => {
+  /** Resolves to whether the sync succeeded; the failure is shown in place. */
+  const handleSyncSystemContacts = async (): Promise<boolean> => {
     setSyncingSystemContacts(true);
+    setSystemContactsError(null);
     try {
       const systemContacts = await fetchSystemContacts();
-      const mappedContacts = systemContacts
-        .filter((c): c is typeof c & { phone: string } => c.phone != null)
-        .map((c) => ({
-          id: `system-${c.id}`,
-          name: c.name,
-          uri: `sip:${c.phone.replace(/\D/g, "")}`,
-          phone: c.phone,
-          favorite: false,
-          source: "system" as const,
-          sourceId: c.id,
-        }));
-      importContacts(mappedContacts, "system");
+      importContacts(mapSystemContacts(systemContacts), "system");
       setSystemLastSync(Date.now());
+      return true;
     } catch (e) {
       log.error("Failed to sync system contacts:", e);
+      setSystemContactsError(describeContactsError(e, t));
+      return false;
     } finally {
       setSyncingSystemContacts(false);
     }
@@ -531,10 +527,13 @@ export function Settings() {
   const handleToggleSystemContacts = async (enabled: boolean) => {
     setSystemContactsEnabled(enabled);
     if (enabled) {
-      await handleSyncSystemContacts();
+      // A switch that stays on after a refused or failed sync would claim
+      // "0 contacts" forever; the error text says what to do instead.
+      if (!(await handleSyncSystemContacts())) setSystemContactsEnabled(false);
     } else {
       removeContactsBySource("system");
       setSystemLastSync(null);
+      setSystemContactsError(null);
     }
   };
 
@@ -1278,6 +1277,18 @@ export function Settings() {
                   />
                 </Box>
               </Box>
+              {systemContactsError && (
+                <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 1, pb: 1 }}>
+                  <Typography variant="caption" sx={{ color: "error.main" }}>
+                    {systemContactsError.message}
+                  </Typography>
+                  {systemContactsError.denied && (
+                    <Button size="small" variant="text" onClick={() => void openContactsPrivacySettings()}>
+                      {t("settings.openSystemSettings")}
+                    </Button>
+                  )}
+                </Box>
+              )}
 
               {/* Google Contacts (placeholder - requires OAuth setup) */}
               <Box

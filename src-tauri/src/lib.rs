@@ -285,6 +285,7 @@ pub fn run() {
             commands::get_credential,
             commands::delete_credential,
             commands::fetch_system_contacts,
+            commands::open_contacts_privacy_settings,
             commands::export_diagnostic_report,
             commands::export_call_history_csv,
             commands::start_audio_test,

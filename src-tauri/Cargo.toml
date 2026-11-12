@@ -82,6 +82,11 @@ axum = "0.8"
 # Secure credential storage - platform-specific keychain backends
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+# Contacts.framework, for importing the address book (system_contacts.rs).
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSError", "NSString"] }
+objc2-contacts = { version = "0.3", default-features = false, features = ["std", "block2", "CNContact", "CNFetchRequest", "CNContactFetchRequest", "CNContactStore", "CNLabeledValue", "CNPhoneNumber"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
