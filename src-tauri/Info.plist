@@ -6,5 +6,7 @@
     <string>Aria needs microphone access to make and receive phone calls.</string>
     <key>NSCameraUsageDescription</key>
     <string>Aria uses the camera to scan QR codes for account provisioning.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>Aria reads your contacts so you can call them from the Contacts tab. Nothing is sent anywhere.</string>
 </dict>
 </plist>

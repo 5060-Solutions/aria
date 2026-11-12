@@ -1233,10 +1233,33 @@ fn delete_credential_blocking(account_id: &str) -> Result<(), String> {
 
 // ── System Contacts ─────────────────────────────────────────────────────────
 
-/// Fetch contacts from the system contacts database (macOS only)
+/// Fetch contacts from the system contacts database (macOS only). Runs on a
+/// blocking thread: the OS permission prompt needs the main thread free.
 #[tauri::command]
-pub fn fetch_system_contacts() -> Result<Vec<crate::system_contacts::SystemContact>, String> {
-    crate::system_contacts::fetch_contacts()
+pub async fn fetch_system_contacts(
+) -> Result<Vec<crate::system_contacts::SystemContact>, crate::system_contacts::ContactsError> {
+    use crate::system_contacts::{ContactsError, ContactsErrorKind};
+    tokio::task::spawn_blocking(crate::system_contacts::fetch_contacts)
+        .await
+        .map_err(|e| ContactsError::new(ContactsErrorKind::Failed, format!("contacts task failed: {e}")))?
+}
+
+/// Open the System Settings pane where Contacts access is granted, for a
+/// user who refused the prompt once and cannot be asked again.
+#[tauri::command]
+pub fn open_contacts_privacy_settings(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+        app.opener()
+            .open_url(crate::system_contacts::PRIVACY_SETTINGS_URL, None::<&str>)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("only macOS has a Contacts privacy pane".into())
+    }
 }
 
 // ── Comprehensive Diagnostic Export ─────────────────────────────────────────
