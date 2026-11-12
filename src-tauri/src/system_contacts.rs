@@ -44,6 +44,9 @@ impl ContactsError {
     }
 }
 
+// The raw shape and `flatten` only have a producer on macOS; other
+// platforms still compile and test them.
+#[cfg(any(target_os = "macos", test))]
 /// A person as the address book stores them, before flattening.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RawContact {
@@ -55,12 +58,14 @@ pub struct RawContact {
     pub phones: Vec<RawPhone>,
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawPhone {
     pub label: Option<String>,
     pub number: String,
 }
 
+#[cfg(any(target_os = "macos", test))]
 /// One contact per usable phone number, named the way Contacts.app names
 /// people: "Given Family", else the organization, else the nickname, else
 /// the number itself. Numbers with no digit and people with no usable
@@ -89,6 +94,7 @@ pub fn flatten(raw: &[RawContact]) -> Vec<SystemContact> {
     out
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn squeeze(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
