@@ -18,26 +18,30 @@ fn configure_tcp_keepalive(stream: &TcpStream) {
 
 use super::diagnostics::DiagnosticSender;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum TransportType {
     Udp,
     Tcp,
     Tls,
+    /// Let DNS SRV decide: `_sips._tcp`, then `_sip._tcp`, then `_sip._udp`.
+    /// An account holds this only as its configured choice; the transport it
+    /// is actually using is always one of the other three.
+    Auto,
 }
 
 impl TransportType {
     #[allow(dead_code)]
     pub fn default_port(&self) -> u16 {
         match self {
-            Self::Udp | Self::Tcp => 5060,
+            Self::Udp | Self::Tcp | Self::Auto => 5060,
             Self::Tls => 5061,
         }
     }
 
     pub fn param(&self) -> &str {
         match self {
-            Self::Udp => "udp",
+            Self::Udp | Self::Auto => "udp",
             Self::Tcp => "tcp",
             Self::Tls => "tls",
         }
@@ -74,6 +78,22 @@ impl SipTransport {
             Self::Udp(t) => t.send_to(data, addr).await,
             Self::Tcp(t) => t.send_to(data, addr).await,
             Self::Tls(t) => t.send_to(data, addr).await,
+        }
+    }
+
+    /// Whether the connection is a stream, where a CRLF keep-alive (RFC 5626
+    /// §3.5.1) applies.
+    pub fn is_stream(&self) -> bool {
+        !matches!(self, Self::Udp(_))
+    }
+
+    /// An RFC 5626 CRLF ping on a stream connection. Bypasses the diagnostic
+    /// log: a ping every 25 s is not a SIP message anyone wants to read.
+    pub async fn send_crlf_ping(&self) -> Result<(), String> {
+        match self {
+            Self::Udp(_) => Ok(()),
+            Self::Tcp(t) => t.send_to(b"\r\n\r\n", t.local_addr).await,
+            Self::Tls(t) => t.send_to(b"\r\n\r\n", t.local_addr).await,
         }
     }
 
@@ -206,6 +226,12 @@ fn extract_sip_messages(buf: &[u8], out: &mut Vec<Vec<u8>>) -> FrameResult {
     let mut consumed = 0;
 
     loop {
+        // RFC 5626 keep-alives: a server answers our CRLF CRLF ping with a
+        // CRLF, and may send its own ping. They are not SIP messages and
+        // must not end up in front of the next one.
+        while buf[consumed..].starts_with(b"\r\n") {
+            consumed += 2;
+        }
         let remaining = &buf[consumed..];
         if remaining.is_empty() {
             break;
@@ -615,5 +641,35 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyCert {
             rustls::SignatureScheme::ED25519,
             rustls::SignatureScheme::ED448,
         ]
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+
+    fn frames(buf: &[u8]) -> (Vec<Vec<u8>>, usize) {
+        let mut out = Vec::new();
+        match extract_sip_messages(buf, &mut out) {
+            FrameResult::Consumed(n) => (out, n),
+            FrameResult::Fatal(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn a_keepalive_pong_in_front_of_a_message_is_dropped() {
+        let msg = b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let mut buf = b"\r\n".to_vec();
+        buf.extend_from_slice(msg);
+        let (out, n) = frames(&buf);
+        assert_eq!(out, vec![msg.to_vec()]);
+        assert_eq!(n, buf.len());
+    }
+
+    #[test]
+    fn a_lone_pong_is_consumed() {
+        let (out, n) = frames(b"\r\n\r\n");
+        assert!(out.is_empty());
+        assert_eq!(n, 4);
     }
 }

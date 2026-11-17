@@ -19,14 +19,14 @@ export function labelValues(report: ConnectionReport): Record<string, string> {
   return {
     host: report.target.host,
     transport: report.transport.toUpperCase(),
-    addr: `${report.target.host}:${report.target.port}`,
+    addr: report.target.port ? `${report.target.host}:${report.target.port}` : report.target.host,
   };
 }
 
 /** `user@domain · TLS · host:port`, with `proxy ` in front of a proxy. */
 export function accountLine(report: ConnectionReport): string {
   const { host, port, viaProxy } = report.target;
-  const target = `${viaProxy ? "proxy " : ""}${host}:${port}`;
+  const target = `${viaProxy ? "proxy " : ""}${port ? `${host}:${port}` : host}`;
   return `${report.username}@${report.domain} · ${report.transport.toUpperCase()} · ${target}`;
 }
 

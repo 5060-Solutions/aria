@@ -66,6 +66,12 @@ pub async fn handle_response(
         "SUBSCRIBE" => handle_subscribe_response(state, event_tx, text, status, account_id).await,
         "OPTIONS" => {
             log::debug!("OPTIONS response: {}", status);
+            // Any answer, whatever its status, shows the server is there; the
+            // keepalive counts the ones that never come.
+            let mut s = state.write().await;
+            if let Some(account) = s.get_account_mut(account_id) {
+                account.options_last_response = Some(std::time::Instant::now());
+            }
         }
         _ => {
             log::debug!("Unhandled response for {}: {}", method, status);

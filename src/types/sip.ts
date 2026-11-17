@@ -1,4 +1,5 @@
-export type TransportType = "udp" | "tcp" | "tls";
+/** `auto` lets DNS SRV pick TLS, TCP or UDP, in that order of preference. */
+export type TransportType = "udp" | "tcp" | "tls" | "auto";
 
 /** SRTP mode for media encryption */
 export type SrtpMode = "disabled" | "sdes";

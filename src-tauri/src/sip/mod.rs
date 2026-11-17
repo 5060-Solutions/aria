@@ -7,10 +7,12 @@ pub mod diagnostics;
 mod handlers;
 #[allow(dead_code)]
 pub mod ice;
+mod instance;
 pub mod media;
 pub mod presence;
 #[allow(dead_code)]
 pub mod srtp;
+pub mod srv;
 pub mod state;
 pub mod transfer;
 pub mod transport;
@@ -181,6 +183,13 @@ pub(crate) struct Timing {
     pub unregister_wait: std::time::Duration,
     /// How often the SUBSCRIBE refresh timer looks for subscriptions due.
     pub subscribe_tick: std::time::Duration,
+    /// How often the OPTIONS keepalive goes out.
+    pub options_interval: std::time::Duration,
+    /// How long an OPTIONS keepalive may go unanswered before it is a miss.
+    pub options_wait: std::time::Duration,
+    /// The longest a reconnect waits between rounds, whatever a `Retry-After`
+    /// asked for.
+    pub max_wait: std::time::Duration,
 }
 
 impl Default for Timing {
@@ -191,6 +200,9 @@ impl Default for Timing {
             min_refresh: std::time::Duration::from_secs(30),
             unregister_wait: std::time::Duration::from_secs(3),
             subscribe_tick: std::time::Duration::from_secs(15),
+            options_interval: std::time::Duration::from_secs(15),
+            options_wait: std::time::Duration::from_secs(5),
+            max_wait: std::time::Duration::from_secs(600),
         }
     }
 }
@@ -272,6 +284,8 @@ pub(crate) struct ManagerState {
     pub(crate) accounts: HashMap<String, AccountState>,
     /// Protocol timers. Production uses RFC 3261 values; tests shrink them.
     pub(crate) timing: Timing,
+    /// How SIP server names are looked up.
+    pub(crate) dns: Arc<dyn srv::DnsResolver>,
     /// Currently active/default account ID for backward-compatible single-account operations
     pub(crate) active_account_id: Option<String>,
 
@@ -548,11 +562,19 @@ impl SipManager {
     }
 
     pub(crate) fn new_with_timing(timing: Timing) -> (Self, mpsc::UnboundedReceiver<SipEvent>) {
+        Self::new_with_dns(timing, Arc::new(srv::SystemResolver::default()))
+    }
+
+    pub(crate) fn new_with_dns(
+        timing: Timing,
+        dns: Arc<dyn srv::DnsResolver>,
+    ) -> (Self, mpsc::UnboundedReceiver<SipEvent>) {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let manager = Self {
             state: Arc::new(RwLock::new(ManagerState {
                 accounts: HashMap::new(),
                 timing,
+                dns,
                 active_account_id: None,
                 last_latency_ms: None,
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
@@ -652,7 +674,7 @@ impl SipManager {
                 Some(existing) if existing.transport.is_some() => match existing.registration.status() {
                     RegistrationState::Registering => return Ok("already_registering".into()),
                     RegistrationState::Registered => {
-                        existing.config = account.clone();
+                        existing.adopt_config(&account);
                         existing.refreshing = false;
                         existing.on_register_timeout = RegisterTimeoutPolicy::Reconnect;
                         existing.registration.begin_re_registration();
@@ -702,7 +724,7 @@ impl SipManager {
                             RegistrationState::Registering | RegistrationState::Registered
                         ) =>
                 {
-                    if connection_changed(&existing.config, &account) {
+                    if connection_changed(existing, &account) {
                         // Server, credentials or transport changed: the binding
                         // we hold is for the old settings. Editing a registered
                         // account used to only overwrite the config, and the
@@ -712,7 +734,7 @@ impl SipManager {
                         // Settings that take effect per call (SRTP, codecs,
                         // auto-record) only need the config refreshed.
                         log::info!("Account {} already registered — updating config", account_id);
-                        existing.config = account.clone();
+                        existing.adopt_config(&account);
                         (false, Some(existing.registration.status()))
                     }
                 }
@@ -734,10 +756,17 @@ impl SipManager {
         // A fresh report for this attempt. Started from the config, not
         // restarted, because the server, transport or proxy may have changed.
         let mut report = connection::ConnectionReport::start(&account);
-        let (server_addr, transport, rx, local_addr) =
-            match resolve_and_connect(&self.state, &self.event_tx, &account, &mut report).await {
+        // What this account has learned about its servers survives a failed
+        // attempt, so a retry does not start the list over.
+        let mut failover = {
+            let s = self.state.read().await;
+            s.accounts.get(&account_id).map(|a| a.failover.clone()).unwrap_or_default()
+        };
+        failover.restart();
+        let Connected { server_addr, transport, rx, local_addr, target } =
+            match resolve_and_connect(&self.state, &self.event_tx, &account, &mut report, &mut failover).await {
                 Ok(v) => v,
-                Err(e) => {
+                Err(ConnectFailure { message: e, .. }) => {
                     // An account the backend already knows must end up in
                     // Error like any other failed registration, so the chip,
                     // the panel and the retry loop all see the same thing. A
@@ -750,6 +779,7 @@ impl SipManager {
                                 a.registration.start_registration(account.clone());
                                 a.registration.registration_failed(0, &e);
                                 a.transport = None;
+                                a.failover = failover;
                                 true
                             }
                             None => false,
@@ -763,14 +793,18 @@ impl SipManager {
             };
 
         log::info!(
-            "Registering {}@{} via {:?} to {} port {} (local: {})",
+            "Registering {}@{} via {:?} to {} ({}) (local: {})",
             account.username,
             account.domain,
-            account.transport,
+            target.transport,
             server_addr,
-            account.port,
+            target.host,
             local_addr
         );
+        // The account as it will be run: the configured transport can be
+        // `Auto`, the target's never is.
+        let configured = account.clone();
+        let account = with_transport(&account, &target.transport);
 
         let generation = {
             let mut state = self.state.write().await;
@@ -782,6 +816,10 @@ impl SipManager {
             }
             let account_state = state.accounts.get_mut(&account_id).unwrap();
             account_state.config = account.clone();
+            account_state.configured_transport = configured.transport.clone();
+            account_state.failover = failover;
+            account_state.target = Some(target);
+            account_state.flow_timer = None;
             account_state.registration.start_registration(account.clone());
             account_state.registration.set_server_addr(server_addr);
             account_state.registration.set_local_addr(local_addr);
@@ -833,6 +871,15 @@ impl SipManager {
     /// the outbound proxy if configured (RFC 3261 §10.2 / §16.12),
     /// otherwise the registrar (or domain).
     pub(crate) fn target_server(account: &AccountConfig) -> (&str, u16) {
+        let (host, port) = Self::target_endpoint(account);
+        (host, port.unwrap_or(0))
+    }
+
+    /// Like `target_server`, but a port is `Some` only when one was given: in
+    /// the proxy or registrar string, or as the account's non-zero port. No
+    /// port means the name is a service name and DNS SRV decides the port
+    /// (RFC 3263 section 4.2).
+    pub(crate) fn target_endpoint(account: &AccountConfig) -> (&str, Option<u16>) {
         let raw = account
             .outbound_proxy
             .as_deref()
@@ -858,38 +905,13 @@ impl SipManager {
         };
         if let Some((host, port_str)) = host_port {
             if let Ok(port) = port_str.parse::<u16>() {
-                return (host, port);
+                return (host, Some(port).filter(|p| *p != 0));
             }
         }
-        (raw.trim_start_matches('[').trim_end_matches(']'), account.port)
-    }
-
-    /// Resolve the server's address.
-    async fn resolve_server(server: &str, port: u16) -> Result<SocketAddr, String> {
-        // `lookup_host` resolves addresses (A/AAAA) only; it never issues an
-        // SRV query. The "SRV lookup" that used to be here asked it for
-        // `_sip._udp.<domain>`, which can never resolve, so it only ever added
-        // a timeout before this lookup. Real SRV support needs a DNS resolver
-        // crate and is not implemented.
-        let addr_str = format!("{}:{}", server, port);
-        let addrs: Vec<SocketAddr> = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            tokio::net::lookup_host(&addr_str)
+        (
+            raw.trim_start_matches('[').trim_end_matches(']'),
+            Some(account.port).filter(|p| *p != 0),
         )
-            .await
-            .map_err(|_| format!("DNS lookup timed out for {}", addr_str))?
-            .map_err(|e| format!("DNS resolve failed for {}: {}", addr_str, e))?
-            .collect();
-        // The transports bind IPv4 sockets, so an AAAA record — which the
-        // resolver often lists first on a dual-stack host — cannot be used.
-        // Taking the first address regardless failed the very first send
-        // with "address family not supported".
-        addrs
-            .iter()
-            .copied()
-            .find(SocketAddr::is_ipv4)
-            .or_else(|| addrs.first().copied())
-            .ok_or_else(|| format!("No address found for {}", addr_str))
     }
 
     /// Start the refresh and keepalive loops for one transport generation.
@@ -905,7 +927,8 @@ impl SipManager {
         generation: u64,
     ) {
         tokio::spawn(Self::re_register_loop(state.clone(), event_tx.clone(), account_id.clone(), generation));
-        tokio::spawn(Self::options_keepalive_loop(state, event_tx, account_id, generation));
+        tokio::spawn(Self::options_keepalive_loop(state.clone(), event_tx.clone(), account_id.clone(), generation));
+        tokio::spawn(Self::crlf_keepalive_loop(state, event_tx, account_id, generation));
     }
 
     /// Whether the account still exists on this transport generation.
@@ -964,6 +987,13 @@ impl SipManager {
                 account.registration.begin_re_registration();
             }
 
+            // Each refresh is also when the server list is renewed if its TTL
+            // has run out, and when a better server that has come back is
+            // moved back to.
+            if Self::maintain_targets(&state, &event_tx, &aid).await {
+                return;
+            }
+
             if let Err(e) = send_register(&state, &event_tx, &aid, None).await {
                 log::error!("Re-REGISTER failed for {} — transport dead: {}", aid, e);
                 Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), true).await;
@@ -972,16 +1002,85 @@ impl SipManager {
         }
     }
 
-    /// Keep the NAT pinhole open with an OPTIONS every 15 s.
+    /// Renew the account's server list when its TTL has run out, and move
+    /// back to a higher-priority server that has started answering again.
+    /// Returns true when it did move (the reconnect takes it from here).
+    async fn maintain_targets(
+        state: &Arc<RwLock<ManagerState>>,
+        event_tx: &mpsc::UnboundedSender<SipEvent>,
+        aid: &str,
+    ) -> bool {
+        let now = std::time::Instant::now();
+        let (config, failover, dns, busy) = {
+            let s = state.read().await;
+            let Some(a) = s.accounts.get(aid) else { return false };
+            let mut cfg = a.config.clone();
+            cfg.transport = a.configured_transport.clone();
+            (cfg, a.failover.clone(), s.dns.clone(), !a.calls.is_empty())
+        };
+
+        if failover.needs_resolve(now) && !failover.is_empty() {
+            let (host, port) = Self::target_endpoint(&config);
+            match srv::resolve(&*dns, host, port, &config.transport, &mut srv::random_draw).await {
+                Ok(resolved) => {
+                    log::debug!("Server list for {aid} renewed: {} target(s)", resolved.targets.len());
+                    if let Some(a) = state.write().await.accounts.get_mut(aid) {
+                        a.failover.install(resolved, std::time::Instant::now());
+                    }
+                }
+                Err(e) => log::warn!("Could not renew the server list for {aid}: {e}"),
+            }
+        }
+
+        // Never move a call that is up.
+        if busy {
+            return false;
+        }
+        let Some(candidate) = state.read().await.accounts.get(aid).and_then(|a| a.failover.failback_candidate(now)) else {
+            return false;
+        };
+        let (tls_name, local_addr) = {
+            let s = state.read().await;
+            let Some(a) = s.accounts.get(aid) else { return false };
+            let name = config.tls_name_for(a.failover.via_srv(), a.failover.lookup_host()).to_string();
+            let Some(local) = a.local_addr else { return false };
+            (name, local)
+        };
+        let probe_config = with_transport(&config, &candidate.transport);
+        if probe_target(&probe_config, &candidate, &tls_name, local_addr).await {
+            log::info!("Higher-priority server {} ({}) answers again; moving back to it", candidate.addr, candidate.host);
+            {
+                let mut s = state.write().await;
+                let Some(a) = s.accounts.get_mut(aid) else { return false };
+                a.failover.prefer(&candidate);
+            }
+            SipManager::handle_transport_death(state.clone(), event_tx.clone(), aid.to_string(), true).await;
+            true
+        } else {
+            if let Some(a) = state.write().await.accounts.get_mut(aid) {
+                a.failover.report_failure(&candidate, &srv::Failure::Connect, std::time::Instant::now());
+            }
+            false
+        }
+    }
+
+    /// Keep the NAT pinhole open with an OPTIONS, and notice when nothing
+    /// answers: a send that fails, or two OPTIONS in a row with no response of
+    /// any kind, means the server is gone. Over UDP a send never fails, so the
+    /// missing response is the only way a dead server is ever seen.
     async fn options_keepalive_loop(
         state: Arc<RwLock<ManagerState>>,
         event_tx: mpsc::UnboundedSender<SipEvent>,
         aid: String,
         generation: u64,
     ) {
-        let mut fail_count = 0u32;
+        let mut misses = 0u32;
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let (interval, wait) = {
+                let s = state.read().await;
+                (s.timing.options_interval, s.timing.options_wait)
+            };
+            tokio::time::sleep(interval).await;
 
             let (account_config, local_addr, server_addr, transport, cseq) = {
                 let mut s = state.write().await;
@@ -993,7 +1092,7 @@ impl SipManager {
                     RegistrationState::Unregistered | RegistrationState::Reconnecting => return,
                     RegistrationState::Registered => {}
                     _ => {
-                        fail_count = 0;
+                        misses = 0;
                         continue;
                     }
                 }
@@ -1016,17 +1115,84 @@ impl SipManager {
                 account_config.transport.param(),
             );
 
-            if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
-                fail_count += 1;
-                log::warn!("OPTIONS keepalive failed for {} ({}/2): {}", aid, fail_count, e);
-                if fail_count >= 2 {
-                    log::error!("OPTIONS keepalive lost for {} — triggering transport death", aid);
-                    Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), false).await;
+            let sent_at = std::time::Instant::now();
+            let answered = if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+                log::warn!("OPTIONS keepalive could not be sent for {}: {}", aid, e);
+                false
+            } else {
+                tokio::time::sleep(wait).await;
+                let s = state.read().await;
+                if !Self::account_current(&s, &aid, generation) {
                     return;
                 }
-            } else {
-                fail_count = 0;
+                s.accounts
+                    .get(&aid)
+                    .and_then(|a| a.options_last_response)
+                    .is_some_and(|at| at >= sent_at)
+            };
+
+            if answered {
+                misses = 0;
+                continue;
             }
+            misses += 1;
+            log::warn!("OPTIONS keepalive unanswered for {} ({}/2)", aid, misses);
+            if misses >= 2 {
+                log::error!("OPTIONS keepalive lost for {} — the server has stopped answering", aid);
+                fail_over(&state, &event_tx, &aid, srv::Failure::Timeout, false).await;
+                return;
+            }
+        }
+    }
+
+    /// RFC 5626 section 3.5.1 keep-alive: a CRLF CRLF ping on a stream
+    /// connection, at the registrar's Flow-Timer (80 to 100 percent of it) or
+    /// every 25 s when it gave none. Holds the connection open through NATs
+    /// that time out idle flows. A ping that cannot be written means the
+    /// connection is dead.
+    async fn crlf_keepalive_loop(
+        state: Arc<RwLock<ManagerState>>,
+        event_tx: mpsc::UnboundedSender<SipEvent>,
+        aid: String,
+        generation: u64,
+    ) {
+        loop {
+            let interval = {
+                let s = state.read().await;
+                if !Self::account_current(&s, &aid, generation) {
+                    return;
+                }
+                let account = s.accounts.get(&aid).unwrap();
+                match account.transport.as_ref() {
+                    Some(t) if t.is_stream() => {}
+                    _ => return,
+                }
+                srv::keepalive_interval(account.flow_timer, srv::random_draw(21))
+            };
+            tokio::time::sleep(interval).await;
+
+            let transport = {
+                let s = state.read().await;
+                if !Self::account_current(&s, &aid, generation) {
+                    return;
+                }
+                let account = s.accounts.get(&aid).unwrap();
+                match account.registration.status() {
+                    RegistrationState::Unregistered | RegistrationState::Reconnecting => return,
+                    RegistrationState::Registered => {}
+                    _ => continue,
+                }
+                match account.transport.clone() {
+                    Some(t) => t,
+                    None => return,
+                }
+            };
+            if let Err(e) = transport.send_crlf_ping().await {
+                log::error!("CRLF keep-alive could not be written for {}: {}", aid, e);
+                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), false).await;
+                return;
+            }
+            log::trace!("CRLF keep-alive sent for {}", aid);
         }
     }
 
@@ -2839,8 +3005,13 @@ impl SipManager {
         })
     }
 
-    /// Exponential backoff reconnection loop.
-    /// Attempts to re-establish transport and re-register automatically.
+    /// Reconnection loop: walks the account's server list, backing off once
+    /// every target has failed, and never gives up.
+    ///
+    /// The first attempt is immediate when the list has a target left to try
+    /// (the one that just failed has been marked), and otherwise waits what the
+    /// list says: the backoff, or a server's `Retry-After`, whichever is
+    /// longer.
     async fn start_reconnect_loop(
         state: Arc<RwLock<ManagerState>>,
         event_tx: mpsc::UnboundedSender<SipEvent>,
@@ -2848,9 +3019,15 @@ impl SipManager {
     ) {
         const BACKOFF_SECS: &[u64] = &[1, 2, 4, 8, 16, 30];
 
-        for attempt in 0u32.. {
-            let delay = BACKOFF_SECS[std::cmp::min(attempt as usize, BACKOFF_SECS.len() - 1)];
+        let mut delay = {
+            let s = state.read().await;
+            match s.accounts.get(&account_id) {
+                Some(a) if a.failover.has_alternative(std::time::Instant::now()) => std::time::Duration::ZERO,
+                _ => std::time::Duration::from_secs(BACKOFF_SECS[0]),
+            }
+        };
 
+        for attempt in 0u32.. {
             // Check if account still exists and is still in reconnecting state
             {
                 let s = state.read().await;
@@ -2879,7 +3056,7 @@ impl SipManager {
                 "Reconnect attempt {} for {} — waiting {}s",
                 attempt + 1,
                 account_id,
-                delay
+                delay.as_secs()
             );
 
             // Update attempt counter in state
@@ -2898,18 +3075,23 @@ impl SipManager {
             }));
 
             // Shortened in tests, where the backoff would otherwise dominate.
-            let delay = {
+            let delay_now = {
                 let s = state.read().await;
-                std::time::Duration::from_secs(delay).min(s.timing.timer_f)
+                delay.min(s.timing.max_wait)
             };
-            tokio::time::sleep(delay).await;
+            if !delay_now.is_zero() {
+                tokio::time::sleep(delay_now).await;
+            }
 
             // Re-check state after sleeping (user may have unregistered during the wait)
             let account_config = {
                 let s = state.read().await;
                 match s.accounts.get(&account_id) {
                     Some(account) if account.registration.status() == RegistrationState::Reconnecting => {
-                        account.config.clone()
+                        // The configured transport, which `Auto` leaves to DNS.
+                        let mut cfg = account.config.clone();
+                        cfg.transport = account.configured_transport.clone();
+                        cfg
                     }
                     _ => {
                         log::info!("Reconnect loop stopping for {} — state changed during backoff", account_id);
@@ -2937,8 +3119,13 @@ impl SipManager {
                     return;
                 }
                 Err(e) => {
-                    log::warn!("Reconnect attempt {} failed for {}: {}", attempt + 1, account_id, e);
-                    // Continue to next attempt
+                    log::warn!("Reconnect attempt {} failed for {}: {}", attempt + 1, account_id, e.message);
+                    // The list says how long (backoff, `Retry-After`); a
+                    // failure that is not about the targets, DNS say, backs
+                    // off by attempt.
+                    delay = e.wait.unwrap_or_else(|| {
+                        std::time::Duration::from_secs(BACKOFF_SECS[(attempt as usize + 1).min(BACKOFF_SECS.len() - 1)])
+                    });
                 }
             }
         }
@@ -3030,14 +3217,15 @@ impl SipManager {
         }
     }
 
-    /// Attempt a single reconnection: resolve DNS, create transport, send REGISTER.
+    /// Attempt a single reconnection: resolve DNS if the list has gone stale,
+    /// connect to the first target that accepts, send REGISTER.
     /// Returns the new receive channel and transport generation on success.
     async fn attempt_reconnect(
         state: &Arc<RwLock<ManagerState>>,
         event_tx: &mpsc::UnboundedSender<SipEvent>,
         account_id: &str,
         account: &AccountConfig,
-    ) -> Result<(mpsc::Receiver<SipMessage>, u64), String> {
+    ) -> Result<(mpsc::Receiver<SipMessage>, u64), ConnectFailure> {
         // Another attempt of the same account: the steps start over and the
         // report says it is a reconnect, with the attempt number.
         let mut report = {
@@ -3055,29 +3243,42 @@ impl SipManager {
                 .map_or(0, |a| a.registration.reconnect_attempt_count());
             r
         };
-        let (server_addr, transport, rx, local_addr) =
-            match resolve_and_connect(state, event_tx, account, &mut report).await {
-                Ok(v) => v,
-                Err(e) => {
-                    // The backend is still trying; the panel must say so,
-                    // with the failed step left visible until the next attempt.
-                    with_report(state, event_tx, account_id, |r| {
-                        r.outcome = connection::Outcome::Reconnecting;
-                    })
-                    .await;
-                    return Err(e);
+        let mut failover = {
+            let s = state.read().await;
+            s.accounts.get(account_id).map(|a| a.failover.clone()).unwrap_or_default()
+        };
+        let connected = resolve_and_connect(state, event_tx, account, &mut report, &mut failover).await;
+        let Connected { server_addr, transport, rx, local_addr, target } = match connected {
+            Ok(v) => v,
+            Err(e) => {
+                // Keep the failures and the round count for the next attempt.
+                if let Some(a) = state.write().await.accounts.get_mut(account_id) {
+                    a.failover = failover;
                 }
-            };
+                // The backend is still trying; the panel must say so,
+                // with the failed step left visible until the next attempt.
+                with_report(state, event_tx, account_id, |r| {
+                    r.outcome = connection::Outcome::Reconnecting;
+                })
+                .await;
+                return Err(e);
+            }
+        };
 
         let generation = {
             let mut s = state.write().await;
             let account_state = match s.accounts.get_mut(account_id) {
                 Some(a) => a,
-                None => return Err("Account removed during reconnect".into()),
+                None => return Err("Account removed during reconnect".to_string().into()),
             };
 
-            account_state.config = account.clone();
-            account_state.registration.start_registration(account.clone());
+            let effective = with_transport(account, &target.transport);
+            account_state.config = effective.clone();
+            account_state.configured_transport = account.transport.clone();
+            account_state.failover = failover;
+            account_state.target = Some(target);
+            account_state.flow_timer = None;
+            account_state.registration.start_registration(effective);
             account_state.registration.set_server_addr(server_addr);
             account_state.registration.set_local_addr(local_addr);
             account_state.transport = Some(transport);
@@ -3105,29 +3306,37 @@ impl SipManager {
 
 
 /// Create the account's transport and work out the local address other
-/// hosts can reach it on.
+/// hosts can reach it on. `account.transport` is the concrete transport for
+/// this target, and `tls_name` the name its certificate is checked against.
 async fn open_transport_for(
     state: &Arc<RwLock<ManagerState>>,
     event_tx: &mpsc::UnboundedSender<SipEvent>,
     account: &AccountConfig,
     server_addr: SocketAddr,
+    tls_name: &str,
 ) -> Result<(SipTransport, mpsc::Receiver<SipMessage>, SocketAddr), String> {
     log::info!("Creating {:?} transport to {}", account.transport, server_addr);
+    // One target must not hold up the next: a black-holed address would
+    // otherwise cost the transport's own 10 s per step.
     let (mut transport, rx) = match account.transport {
-        TransportType::Udp => {
+        TransportType::Udp | TransportType::Auto => {
             let (t, rx) = transport::UdpTransport::bind("0.0.0.0:0").await?;
             (SipTransport::Udp(t), rx)
         }
         TransportType::Tcp => {
-            let (t, rx) = transport::TcpTransport::connect(server_addr).await?;
+            let (t, rx) = tokio::time::timeout(srv::CONNECT_TIMEOUT, transport::TcpTransport::connect(server_addr))
+                .await
+                .map_err(|_| format!("TCP connect to {server_addr} timed out"))??;
             (SipTransport::Tcp(t), rx)
         }
         TransportType::Tls => {
-            let tls_name = account.tls_name();
-            let (t, rx) =
-                transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure)
-                    .await
-                    .inspect_err(|e| log::error!("TLS connection failed: {}", e))?;
+            let (t, rx) = tokio::time::timeout(
+                srv::CONNECT_TIMEOUT,
+                transport::TlsTransport::connect(server_addr, tls_name, account.tls_insecure),
+            )
+            .await
+            .map_err(|_| format!("TLS handshake with {server_addr} timed out"))?
+            .inspect_err(|e| log::error!("TLS connection failed: {}", e))?;
             (SipTransport::Tls(t), rx)
         }
     };
@@ -3146,7 +3355,8 @@ async fn open_transport_for(
     // Resolve `0.0.0.0` to the actual outbound interface IP
     let raw_addr = transport.local_addr();
     let local_addr = if raw_addr.ip().is_unspecified() {
-        let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+        let bind: &str = if server_addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+        let real_ip = std::net::UdpSocket::bind(bind)
             .and_then(|s| { s.connect(server_addr)?; s.local_addr() })
             .map(|a| a.ip())
             .unwrap_or(raw_addr.ip());
@@ -3157,78 +3367,162 @@ async fn open_transport_for(
     Ok((transport, rx, local_addr))
 }
 
-/// Resolve the server and open the transport, recording both as steps of
-/// `report`. On failure the report is stored and pushed with the failed step
-/// before the error is returned, so the panel can show what broke even when
-/// no `AccountState` exists yet.
+/// A transport opened to one target of the account's server list.
+struct Connected {
+    server_addr: SocketAddr,
+    transport: SipTransport,
+    rx: mpsc::Receiver<SipMessage>,
+    local_addr: SocketAddr,
+    target: srv::Target,
+}
+
+/// Why no target could be connected to, and how long to wait before asking
+/// the list again (`None`: not a matter of the targets, so the caller's own
+/// backoff applies).
+struct ConnectFailure {
+    message: String,
+    wait: Option<std::time::Duration>,
+}
+
+impl From<String> for ConnectFailure {
+    fn from(message: String) -> Self {
+        Self { message, wait: None }
+    }
+}
+
+/// The account as it is configured to use `transport`, which is the target's.
+fn with_transport(account: &AccountConfig, transport: &TransportType) -> AccountConfig {
+    let mut effective = account.clone();
+    effective.transport = transport.clone();
+    effective
+}
+
+/// What the account's server list is a list *for*. A different answer to this
+/// means the list is for some other server.
+fn failover_key(account: &AccountConfig) -> String {
+    let (host, port) = SipManager::target_endpoint(account);
+    format!("{host}|{port:?}|{}", account.transport.param_static_or_auto())
+}
+
+/// Resolve the server (when the list is missing or past its TTL) and connect
+/// to the first target that accepts a connection, recording both as steps of
+/// `report`. A target that cannot be connected to is marked failed in
+/// `failover` and the next one is tried at once. On failure the report is
+/// stored and pushed with the failed step before the error is returned, so
+/// the panel can show what broke even when no `AccountState` exists yet.
+///
+/// `account.transport` is the *configured* transport, possibly `Auto`.
 async fn resolve_and_connect(
     state: &Arc<RwLock<ManagerState>>,
     event_tx: &mpsc::UnboundedSender<SipEvent>,
     account: &AccountConfig,
     report: &mut connection::ConnectionReport,
-) -> Result<(SocketAddr, SipTransport, mpsc::Receiver<SipMessage>, SocketAddr), String> {
+    failover: &mut srv::Failover,
+) -> Result<Connected, ConnectFailure> {
     use connection::StepKind;
 
-    let (target_host, target_port) = SipManager::target_server(account);
-    report.running(StepKind::Resolve);
-    save_report(state, event_tx, report).await;
-    let started = tokio::time::Instant::now();
-    let server_addr = match SipManager::resolve_server(target_host, target_port).await {
-        Ok(addr) => {
-            let elapsed = started.elapsed();
-            if target_host.parse::<std::net::IpAddr>().is_ok() {
-                report.skipped(StepKind::Resolve, "literal address");
-            } else {
-                report.ok(
-                    StepKind::Resolve,
-                    format!("{} in {} ms", addr.ip(), elapsed.as_millis()),
-                    Some(elapsed),
-                );
-            }
-            addr
-        }
-        Err(e) => {
-            report.failed(
-                StepKind::Resolve,
-                connection::classify_resolve(&e),
-                e.clone(),
-                Some(started.elapsed()),
-            );
-            save_report(state, event_tx, report).await;
-            return Err(e);
-        }
-    };
+    let (target_host, target_port) = SipManager::target_endpoint(account);
+    let key = failover_key(account);
+    if failover.key != key {
+        *failover = srv::Failover::default();
+        failover.key = key;
+    }
 
-    report.running(StepKind::Connect);
-    save_report(state, event_tx, report).await;
-    let started = tokio::time::Instant::now();
-    match open_transport_for(state, event_tx, account, server_addr).await {
-        Ok((transport, rx, local_addr)) => {
-            let elapsed = started.elapsed();
-            let ms = elapsed.as_millis();
-            let detail = match account.transport {
-                TransportType::Udp => {
-                    format!("socket open on {local_addr}; UDP cannot confirm the server is reachable")
+    if failover.needs_resolve(std::time::Instant::now()) {
+        report.running(StepKind::Resolve);
+        save_report(state, event_tx, report).await;
+        let started = tokio::time::Instant::now();
+        let dns = state.read().await.dns.clone();
+        match srv::resolve(&*dns, target_host, target_port, &account.transport, &mut srv::random_draw).await {
+            Ok(resolved) => {
+                let elapsed = started.elapsed();
+                if target_host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok() {
+                    report.skipped(StepKind::Resolve, "literal address");
+                } else {
+                    let first = &resolved.targets[0];
+                    let how = if resolved.via_srv { "SRV" } else { "A/AAAA" };
+                    report.ok(
+                        StepKind::Resolve,
+                        format!(
+                            "{} target(s) via {how}, first {} ({}) in {} ms",
+                            resolved.targets.len(),
+                            first.addr,
+                            first.host,
+                            elapsed.as_millis()
+                        ),
+                        Some(elapsed),
+                    );
                 }
-                TransportType::Tcp => format!("connected in {ms} ms"),
-                TransportType::Tls if account.tls_insecure => {
-                    format!("handshake in {ms} ms, certificate not checked (allow untrusted is on)")
-                }
-                TransportType::Tls => format!("handshake in {ms} ms, certificate OK"),
-            };
-            report.ok(StepKind::Connect, detail, Some(elapsed));
-            save_report(state, event_tx, report).await;
-            Ok((server_addr, transport, rx, local_addr))
+                failover.install(resolved, std::time::Instant::now());
+            }
+            // An answer we already hold outlives a lookup that failed.
+            Err(e) if !failover.is_empty() => {
+                log::warn!("DNS refresh for {target_host} failed ({e}); keeping the list we have");
+            }
+            Err(e) => {
+                report.failed(
+                    StepKind::Resolve,
+                    connection::classify_resolve(&e),
+                    e.clone(),
+                    Some(started.elapsed()),
+                );
+                save_report(state, event_tx, report).await;
+                return Err(e.into());
+            }
         }
-        Err(e) => {
-            report.failed(
-                StepKind::Connect,
-                connection::classify_connect(&account.transport, &e),
-                e.clone(),
-                Some(started.elapsed()),
-            );
-            save_report(state, event_tx, report).await;
-            Err(e)
+    } else {
+        report.skipped(StepKind::Resolve, "server list still valid");
+    }
+
+    let mut last_error = String::new();
+    loop {
+        let target = match failover.next_action(std::time::Instant::now()) {
+            srv::Action::Try(t) => t,
+            srv::Action::Wait(wait) => {
+                let message = if last_error.is_empty() {
+                    format!("No server of {target_host} can be tried right now")
+                } else {
+                    last_error
+                };
+                return Err(ConnectFailure { message, wait: Some(wait) });
+            }
+        };
+        let effective = with_transport(account, &target.transport);
+        let tls_name = account.tls_name_for(failover.via_srv(), failover.lookup_host()).to_string();
+
+        report.running(StepKind::Connect);
+        save_report(state, event_tx, report).await;
+        let started = tokio::time::Instant::now();
+        match open_transport_for(state, event_tx, &effective, target.addr, &tls_name).await {
+            Ok((transport, rx, local_addr)) => {
+                let elapsed = started.elapsed();
+                let ms = elapsed.as_millis();
+                let detail = match effective.transport {
+                    TransportType::Udp | TransportType::Auto => {
+                        format!("socket open on {local_addr}; UDP cannot confirm the server is reachable")
+                    }
+                    TransportType::Tcp => format!("connected in {ms} ms"),
+                    TransportType::Tls if effective.tls_insecure => {
+                        format!("handshake in {ms} ms, certificate not checked (allow untrusted is on)")
+                    }
+                    TransportType::Tls => format!("handshake in {ms} ms, certificate OK for {tls_name}"),
+                };
+                report.ok(StepKind::Connect, detail, Some(elapsed));
+                save_report(state, event_tx, report).await;
+                return Ok(Connected { server_addr: target.addr, transport, rx, local_addr, target });
+            }
+            Err(e) => {
+                log::warn!("Connect to {} ({}) failed: {}", target.addr, target.host, e);
+                failover.report_failure(&target, &srv::Failure::Connect, std::time::Instant::now());
+                report.failed(
+                    StepKind::Connect,
+                    connection::classify_connect(&effective.transport, &e),
+                    e.clone(),
+                    Some(started.elapsed()),
+                );
+                save_report(state, event_tx, report).await;
+                last_error = e;
+            }
         }
     }
 }
@@ -3294,7 +3588,10 @@ pub(crate) async fn send_register(
 ) -> Result<(), String> {
     let (msg, transport, server_addr, cseq, timing) = {
         let mut s = state.write().await;
-        let timing = s.timing;
+        let mut timing = s.timing;
+        // Timer F is 32 s, far too long to sit on a server that is not
+        // answering when there may be another to try.
+        timing.timer_f = timing.timer_f.min(srv::REGISTER_FAILOVER_TIMEOUT);
         let account = s.get_account_mut(account_id).ok_or("Account not found")?;
         let local_addr = account.local_addr.ok_or("No local addr")?;
         let server_addr = account.server_addr.ok_or("No server addr")?;
@@ -3368,6 +3665,16 @@ async fn register_timed_out(
     let policy = {
         let s = state.read().await;
         match s.accounts.get(account_id) {
+            // A first REGISTER that goes unanswered is a failure to report
+            // only when there is nowhere else to go; with another server in
+            // the list it is a reason to move on.
+            Some(a)
+                if a.registration.is_registering()
+                    && a.on_register_timeout == RegisterTimeoutPolicy::Error
+                    && a.failover.has_alternative(std::time::Instant::now()) =>
+            {
+                RegisterTimeoutPolicy::Reconnect
+            }
             Some(a) if a.registration.is_registering() => a.on_register_timeout,
             _ => return,
         }
@@ -3393,8 +3700,8 @@ async fn register_timed_out(
             finish_unregister(state, event_tx, account_id).await;
         }
         RegisterTimeoutPolicy::Reconnect => {
-            log::warn!("REGISTER for {} was not answered; reconnecting", account_id);
-            SipManager::handle_transport_death(state.clone(), event_tx.clone(), account_id.to_string(), true).await;
+            log::warn!("REGISTER for {} was not answered; trying another server", account_id);
+            fail_over(state, event_tx, account_id, srv::Failure::Timeout, true).await;
         }
         RegisterTimeoutPolicy::Error => {
             let error = {
@@ -3411,6 +3718,76 @@ async fn register_timed_out(
             }));
         }
     }
+}
+
+/// Whether a server answers at all, without registering anything: a connect
+/// for TCP and TLS (the TLS handshake included, so the certificate is checked
+/// as it will be), an OPTIONS for UDP.
+async fn probe_target(
+    account: &AccountConfig,
+    target: &srv::Target,
+    tls_name: &str,
+    local_addr: SocketAddr,
+) -> bool {
+    match target.transport {
+        TransportType::Tcp => {
+            matches!(
+                tokio::time::timeout(srv::CONNECT_TIMEOUT, tokio::net::TcpStream::connect(target.addr)).await,
+                Ok(Ok(_))
+            )
+        }
+        TransportType::Tls => matches!(
+            tokio::time::timeout(
+                srv::CONNECT_TIMEOUT,
+                transport::TlsTransport::connect(target.addr, tls_name, account.tls_insecure),
+            )
+            .await,
+            Ok(Ok(_))
+        ),
+        TransportType::Udp | TransportType::Auto => {
+            let bind = if target.addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+            let Ok(sock) = tokio::net::UdpSocket::bind(bind).await else { return false };
+            let Ok(sock_addr) = sock.local_addr() else { return false };
+            let msg = build_options(
+                &account.domain,
+                SocketAddr::new(local_addr.ip(), sock_addr.port()),
+                &builder::generate_call_id(),
+                1,
+                &builder::generate_tag(),
+                &account.username,
+                "udp",
+            );
+            if sock.send_to(msg.as_bytes(), target.addr).await.is_err() {
+                return false;
+            }
+            let mut buf = [0u8; 2048];
+            matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv_from(&mut buf)).await,
+                Ok(Ok((_, from))) if from == target.addr
+            )
+        }
+    }
+}
+
+/// The account's current server is no good: remember that, and let the
+/// reconnect loop move to the next one (or back off, when it was the last).
+pub(crate) async fn fail_over(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    account_id: &str,
+    failure: srv::Failure,
+    keep_calls: bool,
+) {
+    {
+        let mut s = state.write().await;
+        if let Some(account) = s.accounts.get_mut(account_id) {
+            if let Some(target) = account.target.clone() {
+                log::warn!("Server {} ({}) failed for {}: {:?}", target.addr, target.host, account_id, failure);
+                account.failover.report_failure(&target, &failure, std::time::Instant::now());
+            }
+        }
+    }
+    SipManager::handle_transport_death(state.clone(), event_tx.clone(), account_id.to_string(), keep_calls).await;
 }
 
 /// Forget an account and tell the UI it is unregistered.
@@ -3440,7 +3817,11 @@ pub(crate) async fn finish_unregister(
 /// Whether two configurations register differently: a different server,
 /// credentials or transport means the existing binding is for the wrong
 /// thing and the account has to be registered afresh.
-fn connection_changed(current: &AccountConfig, next: &AccountConfig) -> bool {
+fn connection_changed(existing: &AccountState, next: &AccountConfig) -> bool {
+    let mut current = existing.config.clone();
+    // The transport in use differs from the configured one under `Auto`.
+    current.transport = existing.configured_transport.clone();
+    let current = &current;
     let key = |c: &AccountConfig| {
         (
             c.domain.clone(),

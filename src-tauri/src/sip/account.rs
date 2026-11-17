@@ -115,6 +115,24 @@ impl AccountConfig {
             .unwrap_or(&self.domain)
     }
 
+    /// The name the server's certificate is checked against when connecting to
+    /// a target found by DNS.
+    ///
+    /// An explicit `tls_server_name` always wins. When the target came from SRV
+    /// the certificate is for the name that was looked up, not for whatever
+    /// host the SRV record points at (RFC 5922 §7.2), so that name is used
+    /// while the connection goes to the target's IP. Otherwise the usual:
+    /// registrar, then domain.
+    pub fn tls_name_for<'a>(&'a self, via_srv: bool, lookup_host: &'a str) -> &'a str {
+        if let Some(explicit) = self.tls_server_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            return explicit;
+        }
+        if via_srv && !lookup_host.is_empty() {
+            return lookup_host;
+        }
+        self.tls_name()
+    }
+
     pub fn effective_auth_username(&self) -> &str {
         self.auth_username
             .as_deref()
@@ -162,5 +180,23 @@ mod tests {
         assert_eq!(c.tls_name(), "pbx.example.com");
         c.registrar = None;
         assert_eq!(c.tls_name(), "tenant.example.com");
+    }
+
+    #[test]
+    fn tls_name_for_srv_targets_is_the_looked_up_name() {
+        let mut c = config();
+        c.registrar = Some("pbx.example.com".into());
+        // Without SRV nothing changes.
+        assert_eq!(c.tls_name_for(false, "pbx.example.com"), "pbx.example.com");
+        // With SRV the certificate is checked against the SIP domain that was
+        // looked up, never the SRV target's own host name.
+        assert_eq!(c.tls_name_for(true, "tenant.example.com"), "tenant.example.com");
+        // An explicit name still wins, with or without SRV.
+        c.tls_server_name = Some("sip.example.com".into());
+        assert_eq!(c.tls_name_for(true, "tenant.example.com"), "sip.example.com");
+        assert_eq!(c.tls_name_for(false, "tenant.example.com"), "sip.example.com");
+        // A blank explicit name is no name.
+        c.tls_server_name = Some(" ".into());
+        assert_eq!(c.tls_name_for(true, "tenant.example.com"), "tenant.example.com");
     }
 }

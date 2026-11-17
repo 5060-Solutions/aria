@@ -38,6 +38,8 @@ struct Seen {
     register_expires: Vec<Option<String>>,
     /// How many REGISTERs arrived without credentials.
     register_unauth: usize,
+    /// The Contact header of every REGISTER.
+    register_contacts: Vec<String>,
     /// Every SUBSCRIBE, raw.
     subscribes: Vec<String>,
     /// Every INVITE, raw.
@@ -87,6 +89,8 @@ struct PbxOptions {
     reject_subscribe_auth: bool,
     /// The Expires it grants a subscription.
     subscribe_expires: u32,
+    /// Answer every REGISTER with `503` and this `Retry-After` (seconds).
+    register_503: Option<u32>,
 }
 
 impl Default for PbxOptions {
@@ -97,6 +101,7 @@ impl Default for PbxOptions {
             drop_next_register: Arc::new(AtomicBool::new(false)),
             reject_subscribe_auth: false,
             subscribe_expires: 600,
+            register_503: None,
         }
     }
 }
@@ -123,6 +128,9 @@ fn fast_timing() -> super::Timing {
         min_refresh: Duration::from_secs(1),
         unregister_wait: Duration::from_secs(2),
         subscribe_tick: Duration::from_millis(200),
+        options_interval: Duration::from_secs(15),
+        options_wait: Duration::from_secs(5),
+        max_wait: Duration::from_secs(2),
     }
 }
 
@@ -216,6 +224,7 @@ async fn start_pbx_with_options(
             }
             if method == "REGISTER" {
                 let cseq = header(&msg, "CSeq").map(str::to_owned);
+                rec.lock().unwrap().register_contacts.push(header(&msg, "Contact").unwrap_or_default().to_owned());
                 if opts.drop_next_register.swap(false, Ordering::SeqCst) {
                     dropping_cseq = cseq.clone();
                 }
@@ -234,6 +243,10 @@ async fn start_pbx_with_options(
                 "SUBSCRIBE" => {
                     rec.lock().unwrap().subscribes.push(msg.clone());
                     respond(&msg, 200, "OK", &[format!("Expires: {}", opts.subscribe_expires)])
+                }
+                "REGISTER" if opts.register_503.is_some() => {
+                    rec.lock().unwrap().register_unauth += 1;
+                    respond(&msg, 503, "Service Unavailable", &[format!("Retry-After: {}", opts.register_503.unwrap())])
                 }
                 "REGISTER" => match header(&msg, "Authorization") {
                     None => {
@@ -1239,4 +1252,85 @@ async fn register_now_that_fails_at_dns_marks_the_account_error() {
     assert_eq!(reason.as_deref(), Some(err.as_str()));
     let r = mgr.connection_report(&cfg.id).await.unwrap();
     assert_eq!(r.error.as_deref(), Some(err.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// DNS SRV failover, against a fake resolver and fake servers on loopback
+// ---------------------------------------------------------------------------
+
+/// A manager whose DNS says `harness.lan` is served by `targets`, each
+/// `(srv priority, port)` on loopback, in that priority order.
+fn manager_with_srv(targets: &[(u16, u16)]) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
+    use super::srv::fake_dns::FakeDns;
+    use super::srv::SrvRecord;
+    let mut dns = FakeDns::default();
+    let records = targets
+        .iter()
+        .enumerate()
+        .map(|(i, (priority, port))| {
+            let host = format!("s{i}.harness.lan");
+            dns.ips.insert(host.clone(), vec!["127.0.0.1".parse().unwrap()]);
+            SrvRecord { priority: *priority, weight: 1, port: *port, target: host }
+        })
+        .collect();
+    dns.srv.insert("_sip._udp.harness.lan".into(), records);
+    let (mgr, rx) = SipManager::new_with_dns(fast_timing(), Arc::new(dns));
+    mgr.start_background_tasks();
+    (mgr, rx)
+}
+
+/// An account for `harness.lan` with no port: SRV decides.
+fn srv_account() -> AccountConfig {
+    let mut cfg = account("127.0.0.1:1".parse().unwrap(), None, PASSWORD);
+    cfg.registrar = None;
+    cfg.port = 0;
+    cfg
+}
+
+/// The first target never answers: the REGISTER times out after the shortened
+/// deadline and the next target is tried, with no error in between.
+#[tokio::test]
+async fn a_silent_srv_target_fails_over_to_the_next_one() {
+    let (pbx, seen) = start_pbx().await;
+    let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let (mgr, _rx) = manager_with_srv(&[(10, silent.local_addr().unwrap().port()), (20, pbx.port())]);
+    let cfg = srv_account();
+    register(&mgr, cfg.clone()).await.expect("registered on the second target");
+    let mut buf = [0u8; 2048];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(1), silent.recv_from(&mut buf))
+        .await
+        .expect("the first target was tried")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("REGISTER "));
+    let s = seen.lock().unwrap();
+    assert_eq!(s.register_ok, [true]);
+    // The Contact carries the RFC 5626 outbound parameters.
+    let contact = s.register_contacts.first().cloned().unwrap_or_default();
+    assert!(contact.contains(";ob>") && contact.contains("+sip.instance=") && contact.contains("reg-id=1"), "{contact}");
+}
+
+/// A 503 is never final: the next target is tried at once, and the account
+/// ends up registered.
+#[tokio::test]
+async fn a_503_fails_over_to_the_next_srv_target() {
+    let (busy, busy_seen, _) =
+        start_pbx_with_options(PbxOptions { register_503: Some(30), ..PbxOptions::default() }).await;
+    let (pbx, _seen) = start_pbx().await;
+    let (mgr, _rx) = manager_with_srv(&[(10, busy.port()), (20, pbx.port())]);
+    register(&mgr, srv_account()).await.expect("registered on the second target");
+    assert!(busy_seen.lock().unwrap().register_unauth >= 1, "the first target was asked");
+}
+
+/// With nothing else to try, a 503 is retried (not reported as a failure): the
+/// account is not left in `Error`.
+#[tokio::test]
+async fn a_lone_503_is_retried_not_reported_as_an_error() {
+    let (busy, _seen, _) =
+        start_pbx_with_options(PbxOptions { register_503: Some(1), ..PbxOptions::default() }).await;
+    let (mgr, _rx) = manager_with_srv(&[(10, busy.port())]);
+    let cfg = srv_account();
+    mgr.register(cfg.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (state, err) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+    assert_ne!(state, super::RegistrationState::Error, "{err:?}");
 }
