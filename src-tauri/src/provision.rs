@@ -276,12 +276,14 @@ pub struct RedeemedLine {
     pub auth_username: Option<String>,
     pub password: String,
     pub domain: String,
-    /// `host:port`, the form `AccountConfig::outbound_proxy` takes.
+    /// `host` or `host:port`, the form `AccountConfig::outbound_proxy` takes.
+    /// No port means SRV.
     pub outbound_proxy: Option<String>,
     /// The proxy's host, so the TLS certificate is checked against the host
     /// actually connected to. The registrar stays unset: REGISTER goes to the
     /// domain.
     pub tls_server_name: Option<String>,
+    /// 0: no port, resolved through DNS SRV.
     pub port: u16,
     pub transport: String,
     pub voicemail: Option<String>,
@@ -335,24 +337,30 @@ pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<
     let domain = host_field(map, "domain", "domain")?;
     let transport = match get_str(map, "transport").map(str::to_ascii_lowercase) {
         None => "tls".to_string(),
-        Some(t) if matches!(t.as_str(), "udp" | "tcp" | "tls") => t,
+        Some(t) if matches!(t.as_str(), "udp" | "tcp" | "tls" | "auto") => t,
         Some(_) => return Err(ProvisionError::BadReply("transport")),
     };
+    // Optional. Absent, null or 0 means no port: the client asks DNS for the
+    // SRV records and fails over between the servers they name. A port pins
+    // the connection to that port of the host (RFC 3263 section 4.2).
     let port = match map.get("port") {
-        None | Some(serde_json::Value::Null) => {
-            if transport == "tls" { 5061 } else { 5060 }
-        }
+        None | Some(serde_json::Value::Null) => 0,
         Some(v) => v
             .as_u64()
             .and_then(|p| u16::try_from(p).ok())
-            .filter(|p| *p != 0)
             .ok_or(ProvisionError::BadReply("port"))?,
     };
     let (outbound_proxy, tls_server_name) = match get_str(map, "outbound_proxy") {
         None => (None, None),
         Some(raw) => {
             let (host, own_port) = parse_proxy(raw).ok_or(ProvisionError::BadReply("outbound_proxy"))?;
-            (Some(format!("{host}:{}", own_port.unwrap_or(port))), Some(host))
+            // `host` alone when there is no port to give it: a port in the
+            // proxy string would switch SRV off.
+            let proxy = match own_port.or(Some(port).filter(|p| *p != 0)) {
+                Some(p) => format!("{host}:{p}"),
+                None => host.clone(),
+            };
+            (Some(proxy), Some(host))
         }
     };
     // Optional; anything but the two known values (a newer mode, a typo, a

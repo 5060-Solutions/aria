@@ -36,7 +36,7 @@ export interface ConnectionReport {
   accountId: string;
   username: string;
   domain: string;
-  transport: "udp" | "tcp" | "tls";
+  transport: "udp" | "tcp" | "tls" | "auto";
   target: { host: string; port: number; viaProxy: boolean };
   steps: ConnectionStep[];
   outcome: Outcome;

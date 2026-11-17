@@ -8,6 +8,7 @@ use crate::sip::connection::{self, Outcome, StepKind};
 use crate::sip::auth::DigestAuth;
 use crate::sip::builder::{extract_all_headers, extract_header, extract_via_received};
 use crate::sip::diagnostics::{self, DiagnosticLog};
+use crate::sip::srv;
 use crate::sip::state::RegistrationTransitionResult;
 use crate::sip::{finish_unregister, send_register, ManagerState, RegistrationEvent, RegistrationState, SipEvent};
 
@@ -122,6 +123,14 @@ pub async fn handle_register_response(
                     if ok {
                         if let Some(addr) = public {
                             account.public_addr = Some(addr);
+                        }
+                        // This target answered: remember it, and forget the
+                        // failures that led here.
+                        if let Some(target) = account.target.clone() {
+                            account.failover.report_success(&target);
+                        }
+                        if let Some(timer) = extract_header(text, "Flow-Timer").and_then(|v| v.trim().parse::<u32>().ok()) {
+                            account.flow_timer = Some(timer).filter(|t| *t > 0);
                         }
                         let now = connection::now_ms();
                         if let Some(r) = s.connection_reports.get_mut(account_id) {
@@ -472,16 +481,35 @@ pub async fn handle_register_response(
             // unavailable, internal error) is a connection problem: reconnect
             // with backoff, as a lost response would. It used to become a
             // terminal error that nothing in the backend recovered from.
-            let refreshing = {
+            //
+            // A 503 is never final: the server is saying "not now", so the
+            // next target is tried, honouring its Retry-After, and the whole
+            // list again after a backoff. A 408 or any other 5xx moves on when
+            // there is another target to move to; a lone server's refusal is
+            // reported, as before.
+            let (refreshing, unregistering, alternative) = {
                 let s = state.read().await;
-                s.get_account(account_id).is_some_and(|a| a.refreshing && !a.unregistering)
+                s.get_account(account_id).map_or((false, false, false), |a| {
+                    (a.refreshing, a.unregistering, a.failover.has_alternative(std::time::Instant::now()))
+                })
             };
-            if refreshing && matches!(status, 408 | 480 | 500..=599) {
-                log::warn!("Refresh for {} failed with {}; reconnecting", account_id, status);
-                crate::sip::SipManager::handle_transport_death(
-                    state.clone(),
-                    event_tx.clone(),
-                    account_id.to_string(),
+            let moves_on = !unregistering
+                && (status == 503
+                    || (refreshing && matches!(status, 408 | 480 | 500..=599))
+                    || (srv::Failure::is_failover_status(status) && alternative));
+            if moves_on {
+                let retry_after = extract_header(text, "Retry-After").and_then(|v| srv::parse_retry_after(&v));
+                log::warn!(
+                    "Registration for {} failed with {} (Retry-After {:?}); trying another server",
+                    account_id,
+                    status,
+                    retry_after
+                );
+                crate::sip::fail_over(
+                    state,
+                    event_tx,
+                    account_id,
+                    srv::Failure::Status { code: status, retry_after },
                     true,
                 )
                 .await;

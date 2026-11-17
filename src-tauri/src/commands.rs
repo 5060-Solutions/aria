@@ -230,6 +230,7 @@ pub async fn provision_from_qr(
         "udp" => sip::TransportType::Udp,
         "tcp" => sip::TransportType::Tcp,
         "tls" => sip::TransportType::Tls,
+        "auto" => sip::TransportType::Auto,
         _ => sip::TransportType::Udp,
     };
 
@@ -377,6 +378,7 @@ fn account_from_config(config: SipAccountConfig) -> Result<sip::AccountConfig, S
         "udp" => sip::TransportType::Udp,
         "tcp" => sip::TransportType::Tcp,
         "tls" => sip::TransportType::Tls,
+        "auto" => sip::TransportType::Auto,
         _ => return Err("Invalid transport type".into()),
     };
 

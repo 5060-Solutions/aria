@@ -82,7 +82,7 @@ function parseAriaUri(uri: string): QrProvisionData | null {
         }
         return {
           server: json.server ?? "",
-          port: json.port ?? 5060,
+          port: json.port ?? 0,
           username: json.username ?? "",
           password: json.password ?? "",
           displayName: json.display_name ?? json.username ?? "",
@@ -119,7 +119,7 @@ function parseAriaUri(uri: string): QrProvisionData | null {
 
     return {
       server,
-      port: parseInt(params.get("port") ?? "5060", 10),
+      port: parseInt(params.get("port") ?? "0", 10) || 0,
       username: user,
       password,
       displayName: params.get("name") ?? user,

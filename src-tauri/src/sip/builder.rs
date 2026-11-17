@@ -130,6 +130,24 @@ fn base_request_headers(
 // REGISTER
 // ---------------------------------------------------------------------------
 
+/// The `reg-id` of the one flow this client keeps to its registrar (RFC 5626
+/// §4.2): a client with a single connection per account always uses 1.
+pub const REG_ID: u32 = 1;
+
+/// Extensions a REGISTER claims to support: outbound (RFC 5626) and path
+/// (RFC 3327).
+pub const REGISTER_SUPPORTED: &str = "outbound, path";
+
+/// The Contact of a REGISTER, with the RFC 5626 outbound parameters: `;ob` on
+/// the URI, and `+sip.instance` and `reg-id` on the contact.
+pub fn register_contact(username: &str, local_addr: SocketAddr, transport: &str, instance_id: &str) -> String {
+    format!(
+        "<sip:{username}@{}:{};transport={transport};ob>;+sip.instance=\"<urn:uuid:{instance_id}>\";reg-id={REG_ID}",
+        local_addr.ip(),
+        local_addr.port(),
+    )
+}
+
 /// Build a REGISTER request
 #[allow(clippy::too_many_arguments)]
 pub fn build_register(
@@ -158,13 +176,11 @@ pub fn build_register(
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
 
-    let contact = format!(
-        "<sip:{}@{}:{};transport={}>",
-        account.username, local_addr.ip(), local_addr.port(), transport_param,
-    );
+    let contact = register_contact(&account.username, local_addr, transport_param, super::instance::get());
     headers.push(rsip::headers::Contact::new(contact).into());
     headers.push(rsip::headers::Expires::new(expires.to_string()).into());
     headers.push(rsip::headers::Allow::new(ALLOW).into());
+    headers.push(rsip::headers::Supported::new(REGISTER_SUPPORTED).into());
     headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
 
     if let Some(auth) = auth_header {
@@ -1266,6 +1282,50 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn register_contact_carries_the_outbound_parameters() {
+        let c = register_contact(
+            "1001",
+            "192.0.2.10:50123".parse().unwrap(),
+            "tls",
+            "6f1c1d3e-0a4b-4c55-9f0e-2d3b8a7c9e10",
+        );
+        assert_eq!(
+            c,
+            "<sip:1001@192.0.2.10:50123;transport=tls;ob>;\
+             +sip.instance=\"<urn:uuid:6f1c1d3e-0a4b-4c55-9f0e-2d3b8a7c9e10>\";reg-id=1"
+        );
+    }
+
+    #[test]
+    fn register_advertises_outbound_and_path() {
+        use super::super::account::{default_codec_preferences, AccountConfig, SrtpMode};
+        use super::super::transport::TransportType;
+        let account = AccountConfig {
+            id: "a".into(),
+            display_name: String::new(),
+            username: "1001".into(),
+            domain: "pbx.example".into(),
+            password: String::new(),
+            transport: TransportType::Tcp,
+            port: 0,
+            registrar: None,
+            outbound_proxy: None,
+            auth_username: None,
+            auth_realm: None,
+            tls_server_name: None,
+            enabled: true,
+            auto_record: false,
+            tls_insecure: false,
+            srtp_mode: SrtpMode::Disabled,
+            codecs: default_codec_preferences(),
+        };
+        let msg = build_register(&account, addr(), "cid", 1, "tag", None, 300);
+        assert!(msg.contains("Supported: outbound, path\r\n"), "{msg}");
+        assert!(msg.contains(";transport=tcp;ob>;+sip.instance=\"<urn:uuid:"), "{msg}");
+        assert!(msg.contains(";reg-id=1\r\n"), "{msg}");
+    }
 
     /// rtp-engine's G.729 is not ITU-T G.729, so the softphone neither offers
     /// it (by default or from a saved preference) nor answers with it.

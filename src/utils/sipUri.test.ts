@@ -53,6 +53,16 @@ describe("formatDialNumber", () => {
     expect(formatDialNumber("3035551234", { stripPrefix: "1" })).toBe("3035551234");
   });
 
+  it("never puts an outside-line prefix in front of an emergency number", () => {
+    const acct = { prependPrefix: "9" };
+    expect(formatDialNumber("911", acct)).toBe("911");
+    expect(formatDialNumber("9911", acct)).toBe("911");
+    expect(formatDialNumber("112", acct)).toBe("112");
+    expect(formatDialNumber("9112", acct)).toBe("112");
+    // Not an emergency number: the prefix still applies.
+    expect(formatDialNumber("9115", acct)).toBe("99115");
+  });
+
   it("adds prependPrefix", () => {
     expect(formatDialNumber("3035551234", { prependPrefix: "9" })).toBe("93035551234");
   });

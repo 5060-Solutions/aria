@@ -328,9 +328,45 @@ fn redeem_defaults_and_optional_fields() {
     assert_eq!(line.auth_username, None);
     assert_eq!(line.outbound_proxy, None);
     assert_eq!(line.tls_server_name, None);
-    assert_eq!(line.port, 5061);
+    // No port in the reply: DNS SRV decides.
+    assert_eq!(line.port, 0);
     assert_eq!(line.transport, "tls");
     assert_eq!(line.display_name, "1001");
+}
+
+#[test]
+fn an_absent_null_or_zero_port_means_srv_and_a_proxy_keeps_no_port() {
+    for port in [None, Some(serde_json::Value::Null), Some(json!(0))] {
+        let mut body = redeem_body();
+        match port {
+            None => {
+                body.as_object_mut().unwrap().remove("port");
+            }
+            Some(p) => body["port"] = p,
+        }
+        let line = parse_redeem(&obj(body)).unwrap();
+        assert_eq!(line.port, 0);
+        // A port in the proxy string would switch SRV off.
+        assert_eq!(line.outbound_proxy.as_deref(), Some("sip.ariaroute.com"));
+        assert_eq!(line.tls_server_name.as_deref(), Some("sip.ariaroute.com"));
+    }
+}
+
+#[test]
+fn an_explicit_port_still_pins_the_proxy_and_a_proxy_port_wins() {
+    let line = parse_redeem(&obj(redeem_body())).unwrap();
+    assert_eq!((line.port, line.outbound_proxy.as_deref()), (5061, Some("sip.ariaroute.com:5061")));
+    let mut body = redeem_body();
+    body["port"] = json!(0);
+    body["outbound_proxy"] = json!("sip.ariaroute.com:5071");
+    assert_eq!(parse_redeem(&obj(body)).unwrap().outbound_proxy.as_deref(), Some("sip.ariaroute.com:5071"));
+}
+
+#[test]
+fn auto_is_an_accepted_transport() {
+    let mut body = redeem_body();
+    body["transport"] = json!("AUTO");
+    assert_eq!(parse_redeem(&obj(body)).unwrap().transport, "auto");
 }
 
 #[test]
@@ -401,7 +437,7 @@ fn redeem_rejects_unusable_fields() {
         ("password", json!("")),
         ("domain", json!("evil.com\r\nX: y")),
         ("transport", json!("ws")),
-        ("port", json!(0)),
+        ("port", json!(70000)),
         ("port", json!("5061")),
     ];
     for (key, value) in cases {

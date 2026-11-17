@@ -38,6 +38,8 @@ struct Seen {
     register_expires: Vec<Option<String>>,
     /// How many REGISTERs arrived without credentials.
     register_unauth: usize,
+    /// The Contact header of every REGISTER.
+    register_contacts: Vec<String>,
     /// Every SUBSCRIBE, raw.
     subscribes: Vec<String>,
     /// Every INVITE, raw.
@@ -87,6 +89,10 @@ struct PbxOptions {
     reject_subscribe_auth: bool,
     /// The Expires it grants a subscription.
     subscribe_expires: u32,
+    /// Answer every REGISTER with `503` and this `Retry-After` (seconds).
+    register_503: Option<u32>,
+    /// Never answer OPTIONS.
+    ignore_options: bool,
 }
 
 impl Default for PbxOptions {
@@ -97,6 +103,8 @@ impl Default for PbxOptions {
             drop_next_register: Arc::new(AtomicBool::new(false)),
             reject_subscribe_auth: false,
             subscribe_expires: 600,
+            register_503: None,
+            ignore_options: false,
         }
     }
 }
@@ -123,6 +131,9 @@ fn fast_timing() -> super::Timing {
         min_refresh: Duration::from_secs(1),
         unregister_wait: Duration::from_secs(2),
         subscribe_tick: Duration::from_millis(200),
+        options_interval: Duration::from_secs(15),
+        options_wait: Duration::from_secs(5),
+        max_wait: Duration::from_secs(2),
     }
 }
 
@@ -216,12 +227,16 @@ async fn start_pbx_with_options(
             }
             if method == "REGISTER" {
                 let cseq = header(&msg, "CSeq").map(str::to_owned);
+                rec.lock().unwrap().register_contacts.push(header(&msg, "Contact").unwrap_or_default().to_owned());
                 if opts.drop_next_register.swap(false, Ordering::SeqCst) {
                     dropping_cseq = cseq.clone();
                 }
                 if dropping_cseq.is_some() && dropping_cseq == cseq {
                     continue;
                 }
+            }
+            if method == "OPTIONS" && opts.ignore_options {
+                continue;
             }
             let reply = match method {
                 "SUBSCRIBE" if opts.reject_subscribe_auth => {
@@ -234,6 +249,10 @@ async fn start_pbx_with_options(
                 "SUBSCRIBE" => {
                     rec.lock().unwrap().subscribes.push(msg.clone());
                     respond(&msg, 200, "OK", &[format!("Expires: {}", opts.subscribe_expires)])
+                }
+                "REGISTER" if opts.register_503.is_some() => {
+                    rec.lock().unwrap().register_unauth += 1;
+                    respond(&msg, 503, "Service Unavailable", &[format!("Retry-After: {}", opts.register_503.unwrap())])
                 }
                 "REGISTER" => match header(&msg, "Authorization") {
                     None => {
@@ -1239,4 +1258,184 @@ async fn register_now_that_fails_at_dns_marks_the_account_error() {
     assert_eq!(reason.as_deref(), Some(err.as_str()));
     let r = mgr.connection_report(&cfg.id).await.unwrap();
     assert_eq!(r.error.as_deref(), Some(err.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// DNS SRV failover, against a fake resolver and fake servers on loopback
+// ---------------------------------------------------------------------------
+
+/// A manager whose DNS says `harness.lan` is served by `targets`, each
+/// `(srv priority, port)` on loopback, in that priority order.
+fn manager_with_srv(targets: &[(u16, u16)]) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
+    use super::srv::fake_dns::FakeDns;
+    use super::srv::SrvRecord;
+    let mut dns = FakeDns::default();
+    let records = targets
+        .iter()
+        .enumerate()
+        .map(|(i, (priority, port))| {
+            let host = format!("s{i}.harness.lan");
+            dns.ips.insert(host.clone(), vec!["127.0.0.1".parse().unwrap()]);
+            SrvRecord { priority: *priority, weight: 1, port: *port, target: host }
+        })
+        .collect();
+    dns.srv.insert("_sip._udp.harness.lan".into(), records);
+    let (mgr, rx) = SipManager::new_with_dns(fast_timing(), Arc::new(dns));
+    mgr.start_background_tasks();
+    (mgr, rx)
+}
+
+/// An account for `harness.lan` with no port: SRV decides.
+fn srv_account() -> AccountConfig {
+    let mut cfg = account("127.0.0.1:1".parse().unwrap(), None, PASSWORD);
+    cfg.registrar = None;
+    cfg.port = 0;
+    cfg
+}
+
+/// The first target never answers: the REGISTER times out after the shortened
+/// deadline and the next target is tried, with no error in between.
+#[tokio::test]
+async fn a_silent_srv_target_fails_over_to_the_next_one() {
+    let (pbx, seen) = start_pbx().await;
+    let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let (mgr, _rx) = manager_with_srv(&[(10, silent.local_addr().unwrap().port()), (20, pbx.port())]);
+    let cfg = srv_account();
+    register(&mgr, cfg.clone()).await.expect("registered on the second target");
+    let mut buf = [0u8; 2048];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(1), silent.recv_from(&mut buf))
+        .await
+        .expect("the first target was tried")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("REGISTER "));
+    let s = seen.lock().unwrap();
+    assert_eq!(s.register_ok, [true]);
+    // The Contact carries the RFC 5626 outbound parameters.
+    let contact = s.register_contacts.first().cloned().unwrap_or_default();
+    assert!(contact.contains(";ob>") && contact.contains("+sip.instance=") && contact.contains("reg-id=1"), "{contact}");
+}
+
+/// A 503 is never final: the next target is tried at once, and the account
+/// ends up registered.
+#[tokio::test]
+async fn a_503_fails_over_to_the_next_srv_target() {
+    let (busy, busy_seen, _) =
+        start_pbx_with_options(PbxOptions { register_503: Some(30), ..PbxOptions::default() }).await;
+    let (pbx, _seen) = start_pbx().await;
+    let (mgr, _rx) = manager_with_srv(&[(10, busy.port()), (20, pbx.port())]);
+    register(&mgr, srv_account()).await.expect("registered on the second target");
+    assert!(busy_seen.lock().unwrap().register_unauth >= 1, "the first target was asked");
+}
+
+/// With nothing else to try, a 503 is retried (not reported as a failure): the
+/// account is not left in `Error`.
+#[tokio::test]
+async fn a_lone_503_is_retried_not_reported_as_an_error() {
+    let (busy, _seen, _) =
+        start_pbx_with_options(PbxOptions { register_503: Some(1), ..PbxOptions::default() }).await;
+    let (mgr, _rx) = manager_with_srv(&[(10, busy.port())]);
+    let cfg = srv_account();
+    mgr.register(cfg.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let (state, err) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+    assert_ne!(state, super::RegistrationState::Error, "{err:?}");
+}
+
+/// Keepalives that go unanswered must not drop a call that is up: the server
+/// here never answers OPTIONS, and the keepalive runs every 100 ms.
+#[tokio::test]
+async fn a_call_survives_a_keepalive_failure_and_the_account_fails_over_without_one() {
+    let (pbx, _seen, _) = start_pbx_with_options(PbxOptions {
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        ignore_options: true,
+        ..PbxOptions::default()
+    })
+    .await;
+    let mut timing = fast_timing();
+    timing.options_interval = Duration::from_millis(100);
+    timing.options_wait = Duration::from_millis(100);
+    let (mgr, mut rx) = manager_with(timing);
+    let cfg = account(pbx, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "{states:?}");
+
+    // Many missed keepalives later the call is still there, and the account
+    // has not been taken down.
+    let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_millis(1500)).await;
+    assert!(!later.contains(&"ended".to_owned()), "a keepalive failure ended the call: {later:?}");
+    let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+    assert_eq!(state, super::RegistrationState::Registered);
+    mgr.hangup(&call_id).await.expect("hung up");
+
+    // With no call up the same silence does fail the connection over.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+        if state != super::RegistrationState::Registered {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "silence never triggered a failover");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The only server answers every REGISTER with 503 and Retry-After 600. An
+/// emergency call is placed at once all the same; an ordinary call is refused.
+#[tokio::test]
+async fn an_emergency_call_dials_through_a_503_retry_after() {
+    let (busy, seen, _) =
+        start_pbx_with_options(PbxOptions { register_503: Some(600), ..PbxOptions::default() }).await;
+    let (mgr, _rx) = manager_with_srv(&[(10, busy.port())]);
+    mgr.register(srv_account()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(mgr.make_call("sip:1001@harness.lan").await.is_err(), "an ordinary call needs a registration");
+    let started = tokio::time::Instant::now();
+    let id = mgr.make_call("sip:911@harness.lan").await.expect("the emergency call is placed");
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    assert!(!id.is_empty());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s = seen.lock().unwrap();
+    assert!(s.invites[0].starts_with("INVITE sip:911@harness.lan"), "{:?}", s.invites);
+    assert!(s.methods.iter().any(|m| m == "INVITE"), "the INVITE reached the server: {:?}", s.methods);
+}
+
+/// A 911 call placed while the account is reconnecting stays up, on the same
+/// transport, while the reconnect loop fires over and over.
+#[tokio::test]
+async fn an_emergency_call_stays_up_while_the_reconnect_loop_fires() {
+    let (busy, seen, _) = start_pbx_with_options(PbxOptions {
+        register_503: Some(1),
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        ..PbxOptions::default()
+    })
+    .await;
+    let (mgr, mut rx) = manager_with_srv(&[(10, busy.port())]);
+    let cfg = srv_account();
+    mgr.register(cfg.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let call_id = mgr.make_call("sip:911@harness.lan").await.expect("emergency call placed");
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "{states:?}");
+
+    let local_before = mgr.state.read().await.accounts[&cfg.id].local_addr;
+    // Several reconnect rounds (backoff capped at 2 s here).
+    let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(5)).await;
+    assert!(!later.contains(&"ended".to_owned()), "the call was ended: {later:?}");
+    {
+        let s = mgr.state.read().await;
+        let a = &s.accounts[&cfg.id];
+        assert_eq!(a.local_addr, local_before, "the transport was replaced under the call");
+        assert!(a.transport.is_some());
+        assert!(a.calls.iter().any(|c| !c.is_ended()));
+    }
+    // Every INVITE came from the one socket.
+    assert_eq!(seen.lock().unwrap().invites.len(), 2, "INVITE and its authenticated retry only");
+
+    // Once the call ends the reconnect loop is free again.
+    mgr.hangup(&call_id).await.expect("hung up");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(seen.lock().unwrap().byes.len() == 1, "BYE went to the same server");
 }

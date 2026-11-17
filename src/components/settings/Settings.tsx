@@ -95,6 +95,7 @@ const transports: { value: TransportType; labelKey: string }[] = [
   { value: "udp", labelKey: "wizard.transportUdp" },
   { value: "tcp", labelKey: "wizard.transportTcp" },
   { value: "tls", labelKey: "wizard.transportTls" },
+  { value: "auto", labelKey: "wizard.transportAuto" },
 ];
 
 const inputSx = {
@@ -122,10 +123,13 @@ interface AccountFormData {
   prependPrefix: string;
 }
 
-/** A port the backend's u16 will accept; 5060 if the field is empty or junk. */
+/**
+ * A port the backend's u16 will accept. An empty or junk field is 0: no port,
+ * so DNS SRV decides where to connect (and fails over between servers).
+ */
 function clampPort(value: string): number {
   const n = parseInt(value, 10);
-  if (!Number.isFinite(n)) return 5060;
+  if (!Number.isFinite(n)) return 0;
   return Math.min(Math.max(n, 1), 65535);
 }
 
@@ -277,7 +281,7 @@ export function Settings() {
           authUsername: editingAccount.authUsername || "",
           authRealm: editingAccount.authRealm || "",
           transport: editingAccount.transport || "udp",
-          port: editingAccount.port || 5060,
+          port: editingAccount.port ?? 5060,
           registrar: editingAccount.registrar || "",
           outboundProxy: editingAccount.outboundProxy || "",
           autoRecord: editingAccount.autoRecord ?? false,
@@ -337,7 +341,10 @@ export function Settings() {
     setForm((f) => {
       const next = { ...f, [field]: value };
       if (field === "transport") {
-        next.port = value === "tls" ? 5061 : 5060;
+        // A port left empty means SRV and stays empty; "auto" has no default
+        // port because the SRV records give one per target.
+        if (f.port !== 0) next.port = value === "tls" ? 5061 : 5060;
+        if (value === "auto") next.port = 0;
       }
       return next;
     });
@@ -764,7 +771,7 @@ export function Settings() {
                       display: "block",
                     }}
                   >
-                    {account.username}@{account.domain} · {account.transport.toUpperCase()}:{account.port}
+                    {account.username}@{account.domain} · {account.transport.toUpperCase()}{account.port ? `:${account.port}` : " (SRV)"}
                   </Typography>
                 </Box>
                 {isActive && (status === "error" || status === "unregistered") ? (
@@ -1615,9 +1622,11 @@ export function Settings() {
                     label={t("wizard.port")}
                     size="small"
                     type="number"
-                    value={form.port}
+                    value={form.port === 0 ? "" : form.port}
+                    placeholder={t("wizard.portSrv")}
+                    slotProps={{ inputLabel: { shrink: true } }}
                     onChange={(e) => update("port", clampPort(e.target.value))}
-                    sx={{ ...inputSx, width: 90 }}
+                    sx={{ ...inputSx, width: 120 }}
                   />
                 </Box>
                 <TextField

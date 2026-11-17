@@ -3,6 +3,7 @@ import {
   accountLine,
   copyDetails,
   failedStep,
+  labelValues,
   registeredLine,
   retryLine,
   stepLabelKey,
@@ -60,6 +61,12 @@ describe("connection report helpers", () => {
     expect(
       accountLine(report({ transport: "udp", target: { host: "pbx.lan", port: 5060, viaProxy: false } })),
     ).toBe("ghostbook@harness.lan · UDP · pbx.lan:5060");
+  });
+
+  it("shows no port when DNS SRV picks it", () => {
+    const srv = report({ transport: "auto", target: { host: "pbx.lan", port: 0, viaProxy: false } });
+    expect(accountLine(srv)).toBe("ghostbook@harness.lan · AUTO · pbx.lan");
+    expect(labelValues(srv).addr).toBe("pbx.lan");
   });
 
   it("names step labels by kind", () => {

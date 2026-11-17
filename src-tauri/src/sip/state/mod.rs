@@ -22,10 +22,12 @@ pub mod registration;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use super::account::AccountConfig;
 use super::presence::{BlfEntry, Subscription};
-use super::transport::SipTransport;
+use super::srv::{Failover, Target};
+use super::transport::{SipTransport, TransportType};
 
 pub use call::{CallFSM, CallFSMEvent, EndReason, InboundCallParams};
 pub use registration::{RegistrationFSM, RegistrationState, RegistrationStatus};
@@ -95,6 +97,17 @@ pub struct AccountState {
     pub unregistering: bool,
     /// What to do if the REGISTER in flight gets no final response.
     pub on_register_timeout: RegisterTimeoutPolicy,
+    /// The servers this account can reach, and the state of walking them.
+    pub failover: Failover,
+    /// The target the current transport goes to.
+    pub target: Option<Target>,
+    /// The transport the user configured. `config.transport` is the one in
+    /// use, which differs only when this is `Auto`.
+    pub configured_transport: TransportType,
+    /// When the last response to an OPTIONS keepalive arrived.
+    pub options_last_response: Option<Instant>,
+    /// The registrar's `Flow-Timer` (RFC 5626 §11), in seconds.
+    pub flow_timer: Option<u32>,
 }
 
 /// What a REGISTER that never gets a final response means for the account.
@@ -112,9 +125,26 @@ pub enum RegisterTimeoutPolicy {
 pub const DEFAULT_REGISTER_EXPIRES: u32 = 300;
 
 impl AccountState {
+    /// Take a new configuration for settings that apply per call. The
+    /// transport in use stays when the configuration says `Auto`: which one
+    /// that is was decided by DNS, not by the user.
+    pub fn adopt_config(&mut self, next: &AccountConfig) {
+        let mut config = next.clone();
+        if config.transport == TransportType::Auto {
+            config.transport = self.config.transport.clone();
+        }
+        self.configured_transport = next.transport.clone();
+        self.config = config;
+    }
+
     /// Create a new account state from configuration
     pub fn new(config: AccountConfig) -> Self {
         Self {
+            configured_transport: config.transport.clone(),
+            failover: Failover::default(),
+            target: None,
+            options_last_response: None,
+            flow_timer: None,
             config,
             registration: RegistrationFSM::new(),
             transport: None,
