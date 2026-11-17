@@ -713,6 +713,16 @@ impl SipManager {
 
     pub async fn register(&self, account: AccountConfig) -> Result<String, String> {
         let account_id = account.id.clone();
+        if self
+            .state
+            .read()
+            .await
+            .accounts
+            .get(&account_id)
+            .is_some_and(|a| emergency_call_active(a) && a.transport.is_some())
+        {
+            return Err("An emergency call is in progress; try again when it ends".into());
+        }
 
         // Already up, or on its way up, with a live transport?
         let (replace, current_status) = {
@@ -3036,6 +3046,18 @@ impl SipManager {
                 return;
             }
 
+            // An emergency call outlives its transport: its dialog is kept, and
+            // the reconnect starts at the target it was on, so a BYE or
+            // re-INVITE goes to the same server over the new connection.
+            let keep_calls = if emergency_call_active(account) {
+                if let Some(target) = account.target.clone() {
+                    account.failover.prefer(&target);
+                }
+                true
+            } else {
+                keep_calls
+            };
+
             // Transition to reconnecting
             account.registration.transport_lost();
             account.refreshing = false;
@@ -3333,6 +3355,17 @@ impl SipManager {
         account_id: &str,
         account: &AccountConfig,
     ) -> Result<(mpsc::Receiver<SipMessage>, u64), ConnectFailure> {
+        // The transport an emergency call is on is not replaced; this attempt
+        // (and any REGISTER behind it) waits until the call ends.
+        {
+            let s = state.read().await;
+            if s.accounts.get(account_id).is_some_and(|a| emergency_call_active(a) && a.transport.is_some()) {
+                return Err(ConnectFailure {
+                    message: "an emergency call is in progress".into(),
+                    wait: Some(std::time::Duration::from_secs(1)),
+                });
+            }
+        }
         // Another attempt of the same account: the steps start over and the
         // report says it is a reconnect, with the attempt number.
         let mut report = {
@@ -3833,6 +3866,12 @@ async fn register_timed_out(
     }
 }
 
+/// An emergency call is up on this account. While it is, nothing replaces or
+/// closes the transport it runs on: reconnect, failover and failback wait.
+fn emergency_call_active(account: &AccountState) -> bool {
+    account.calls.iter().any(|c| !c.is_ended() && emergency::is_emergency(&c.remote_uri))
+}
+
 /// Whether a server answers at all, without registering anything: a connect
 /// for TCP and TLS (the TLS handshake included, so the certificate is checked
 /// as it will be), an OPTIONS for UDP.
@@ -3893,6 +3932,37 @@ pub(crate) async fn fail_over(
 ) {
     {
         let mut s = state.write().await;
+        if let Some(account) = s.accounts.get(account_id) {
+            if emergency_call_active(account) && account.transport.is_some() {
+                log::warn!("{account_id}: {failure:?}, but an emergency call is up; failing over after it");
+                // Queued: the same failure is acted on when the call has ended.
+                let (state, event_tx, id) = (state.clone(), event_tx.clone(), account_id.to_string());
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        let waiting = state
+                            .read()
+                            .await
+                            .accounts
+                            .get(&id)
+                            .is_some_and(|a| emergency_call_active(a) && a.transport.is_some());
+                        if !waiting {
+                            break;
+                        }
+                    }
+                    {
+                        let mut s = state.write().await;
+                        if let Some(account) = s.accounts.get_mut(&id) {
+                            if let Some(target) = account.target.clone() {
+                                account.failover.report_failure(&target, &failure, std::time::Instant::now());
+                            }
+                        }
+                    }
+                    SipManager::handle_transport_death(state, event_tx, id, keep_calls).await;
+                });
+                return;
+            }
+        }
         if let Some(account) = s.accounts.get_mut(account_id) {
             if let Some(target) = account.target.clone() {
                 log::warn!("Server {} ({}) failed for {}: {:?}", target.addr, target.host, account_id, failure);

@@ -64,7 +64,17 @@ export function formatDialNumber(
     }
   }
 
+  // An emergency number is dialled as it is, never behind an outside-line
+  // prefix: "9911" must reach the PBX as 911, whether the user typed 911 (and
+  // the prefix would have been added) or 9911 (and it is already there).
   const prepend = account?.prependPrefix?.trim();
+  if (prepend && number.startsWith(prepend) && isEmergencyNumber(number.slice(prepend.length))) {
+    return number.slice(prepend.length);
+  }
+  if (isEmergencyNumber(number)) {
+    return number;
+  }
+
   if (prepend && !number.startsWith("+")) {
     number = `${prepend}${number}`;
   }
@@ -117,4 +127,11 @@ export function toSipUri(input: string, domain: string): string {
   if (target.includes("@")) return `sip:${target}`;
   const user = target.replace(/[\s\-().]/g, "").replace(/#/g, "%23");
   return `sip:${user}@${domain}`;
+}
+
+/** The built-in emergency numbers; the same list as the backend's `sip::emergency`. */
+export const EMERGENCY_NUMBERS = ["911", "112", "999", "000"];
+
+export function isEmergencyNumber(number: string): boolean {
+  return EMERGENCY_NUMBERS.includes(number);
 }

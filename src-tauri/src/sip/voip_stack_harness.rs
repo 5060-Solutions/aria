@@ -1401,3 +1401,41 @@ async fn an_emergency_call_dials_through_a_503_retry_after() {
     assert!(s.invites[0].starts_with("INVITE sip:911@harness.lan"), "{:?}", s.invites);
     assert!(s.methods.iter().any(|m| m == "INVITE"), "the INVITE reached the server: {:?}", s.methods);
 }
+
+/// A 911 call placed while the account is reconnecting stays up, on the same
+/// transport, while the reconnect loop fires over and over.
+#[tokio::test]
+async fn an_emergency_call_stays_up_while_the_reconnect_loop_fires() {
+    let (busy, seen, _) = start_pbx_with_options(PbxOptions {
+        register_503: Some(1),
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        ..PbxOptions::default()
+    })
+    .await;
+    let (mgr, mut rx) = manager_with_srv(&[(10, busy.port())]);
+    let cfg = srv_account();
+    mgr.register(cfg.clone()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let call_id = mgr.make_call("sip:911@harness.lan").await.expect("emergency call placed");
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "{states:?}");
+
+    let local_before = mgr.state.read().await.accounts[&cfg.id].local_addr;
+    // Several reconnect rounds (backoff capped at 2 s here).
+    let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(5)).await;
+    assert!(!later.contains(&"ended".to_owned()), "the call was ended: {later:?}");
+    {
+        let s = mgr.state.read().await;
+        let a = &s.accounts[&cfg.id];
+        assert_eq!(a.local_addr, local_before, "the transport was replaced under the call");
+        assert!(a.transport.is_some());
+        assert!(a.calls.iter().any(|c| !c.is_ended()));
+    }
+    // Every INVITE came from the one socket.
+    assert_eq!(seen.lock().unwrap().invites.len(), 2, "INVITE and its authenticated retry only");
+
+    // Once the call ends the reconnect loop is free again.
+    mgr.hangup(&call_id).await.expect("hung up");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(seen.lock().unwrap().byes.len() == 1, "BYE went to the same server");
+}
