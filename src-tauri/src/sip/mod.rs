@@ -7,6 +7,7 @@ pub mod diagnostics;
 mod handlers;
 #[allow(dead_code)]
 pub mod ice;
+mod emergency;
 mod instance;
 pub mod media;
 pub mod presence;
@@ -202,7 +203,7 @@ impl Default for Timing {
             subscribe_tick: std::time::Duration::from_secs(15),
             options_interval: std::time::Duration::from_secs(15),
             options_wait: std::time::Duration::from_secs(5),
-            max_wait: std::time::Duration::from_secs(600),
+            max_wait: srv::MAX_WAIT,
         }
     }
 }
@@ -1016,7 +1017,7 @@ impl SipManager {
             let Some(a) = s.accounts.get(aid) else { return false };
             let mut cfg = a.config.clone();
             cfg.transport = a.configured_transport.clone();
-            (cfg, a.failover.clone(), s.dns.clone(), !a.calls.is_empty())
+            (cfg, a.failover.clone(), s.dns.clone(), a.calls.iter().any(|c| !c.is_ended()))
         };
 
         if failover.needs_resolve(now) && !failover.is_empty() {
@@ -1052,6 +1053,11 @@ impl SipManager {
             {
                 let mut s = state.write().await;
                 let Some(a) = s.accounts.get_mut(aid) else { return false };
+                // A call may have started during the probe.
+                if a.calls.iter().any(|c| !c.is_ended()) {
+                    log::info!("A call started while probing; staying on the current server");
+                    return false;
+                }
                 a.failover.prefer(&candidate);
             }
             SipManager::handle_transport_death(state.clone(), event_tx.clone(), aid.to_string(), true).await;
@@ -1138,6 +1144,20 @@ impl SipManager {
             misses += 1;
             log::warn!("OPTIONS keepalive unanswered for {} ({}/2)", aid, misses);
             if misses >= 2 {
+                // A call in progress is not dropped for a server that has gone
+                // quiet: its media may well still be flowing. Failover waits
+                // until the calls have ended.
+                let on_call = state
+                    .read()
+                    .await
+                    .accounts
+                    .get(&aid)
+                    .is_some_and(|a| a.calls.iter().any(|c| !c.is_ended()));
+                if on_call {
+                    log::warn!("Server of {} is not answering, but a call is up; not failing over", aid);
+                    misses = 1;
+                    continue;
+                }
                 log::error!("OPTIONS keepalive lost for {} — the server has stopped answering", aid);
                 fail_over(&state, &event_tx, &aid, srv::Failure::Timeout, false).await;
                 return;
@@ -1189,7 +1209,9 @@ impl SipManager {
             };
             if let Err(e) = transport.send_crlf_ping().await {
                 log::error!("CRLF keep-alive could not be written for {}: {}", aid, e);
-                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), false).await;
+                // The connection is gone, but a call on it is not ended here:
+                // reconnecting keeps the calls.
+                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), true).await;
                 return;
             }
             log::trace!("CRLF keep-alive sent for {}", aid);
@@ -1402,6 +1424,13 @@ impl SipManager {
             };
             let account = s.get_account(&aid).ok_or("Account not found")?;
             if account.registration.status() != RegistrationState::Registered {
+                // An emergency call is placed whatever the registration says:
+                // no backoff, Retry-After or failover state may delay it.
+                if emergency::is_emergency(uri) {
+                    drop(s);
+                    let (cfg, local, server, transport, public) = self.emergency_transport(&aid).await?;
+                    return self.place_call(uri, aid, cfg, local, server, transport, public, call_id_override).await;
+                }
                 return Err("Not registered".into());
             }
             let local_addr = account.local_addr.ok_or("No local addr")?;
@@ -1410,6 +1439,84 @@ impl SipManager {
             let public_addr = account.public_addr;
             (account.config.clone(), local_addr, server_addr, transport, aid, public_addr)
         };
+        self.place_call(uri, aid, account_config, local_addr, server_addr, transport, public_addr, call_id_override)
+            .await
+    }
+
+    /// A transport an emergency call can be sent on while the account is not
+    /// registered: the one it has, or a new one to the best target in the
+    /// server list. Nothing here waits for a backoff or consults what has been
+    /// marked failed; every target is tried in priority order until one
+    /// connects.
+    async fn emergency_transport(
+        &self,
+        aid: &str,
+    ) -> Result<(AccountConfig, SocketAddr, SocketAddr, SipTransport, Option<SocketAddr>), String> {
+        let (config, failover, dns) = {
+            let s = self.state.read().await;
+            let a = s.get_account(aid).ok_or("Account not found")?;
+            if let (Some(t), Some(l), Some(sv)) = (a.transport.clone(), a.local_addr, a.server_addr) {
+                return Ok((a.config.clone(), l, sv, t, a.public_addr));
+            }
+            let mut cfg = a.config.clone();
+            cfg.transport = a.configured_transport.clone();
+            (cfg, a.failover.clone(), s.dns.clone())
+        };
+        let mut failover = failover;
+        if failover.is_empty() {
+            let (host, port) = Self::target_endpoint(&config);
+            let resolved = srv::resolve(&*dns, host, port, &config.transport, &mut srv::random_draw).await?;
+            failover.install(resolved, std::time::Instant::now());
+        }
+        let tls_name = config.tls_name_for(failover.via_srv(), failover.lookup_host()).to_string();
+        let mut last = "no server".to_string();
+        for target in failover.targets().to_vec() {
+            let effective = with_transport(&config, &target.transport);
+            match open_transport_for(&self.state, &self.event_tx, &effective, target.addr, &tls_name).await {
+                Ok((transport, rx, local_addr)) => {
+                    log::warn!("Emergency call: using {} ({}) without a registration", target.addr, target.host);
+                    let generation = {
+                        let mut s = self.state.write().await;
+                        let a = s.accounts.get_mut(aid).ok_or("Account not found")?;
+                        a.config = effective.clone();
+                        a.target = Some(target.clone());
+                        a.transport = Some(transport.clone());
+                        a.server_addr = Some(target.addr);
+                        a.local_addr = Some(local_addr);
+                        a.timer_generation += 1;
+                        a.timer_generation
+                    };
+                    Self::start_receive_loop_for_account(
+                        self.state.clone(),
+                        self.event_tx.clone(),
+                        rx,
+                        aid.to_string(),
+                        generation,
+                    );
+                    let public = self.state.read().await.get_account(aid).and_then(|a| a.public_addr);
+                    return Ok((effective, local_addr, target.addr, transport, public));
+                }
+                Err(e) => {
+                    log::warn!("Emergency call: {} failed: {}", target.addr, e);
+                    last = e;
+                }
+            }
+        }
+        Err(format!("No server reachable for an emergency call: {last}"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn place_call(
+        &self,
+        uri: &str,
+        aid: String,
+        account_config: AccountConfig,
+        local_addr: SocketAddr,
+        server_addr: SocketAddr,
+        transport: SipTransport,
+        public_addr: Option<SocketAddr>,
+        call_id_override: Option<String>,
+    ) -> Result<String, String> {
 
         let call_id = builder::generate_call_id();
         let from_tag = builder::generate_tag();
@@ -3589,10 +3696,16 @@ pub(crate) async fn send_register(
     let (msg, transport, server_addr, cseq, timing) = {
         let mut s = state.write().await;
         let mut timing = s.timing;
-        // Timer F is 32 s, far too long to sit on a server that is not
-        // answering when there may be another to try.
-        timing.timer_f = timing.timer_f.min(srv::REGISTER_FAILOVER_TIMEOUT);
         let account = s.get_account_mut(account_id).ok_or("Account not found")?;
+        // Timer F is 32 s, far too long to sit on a server that is not
+        // answering when there may be another to try. That applies to the
+        // first REGISTER of an attempt; a refresh keeps the full Timer F
+        // unless another target is there to move to.
+        if !account.unregistering
+            && (!account.refreshing || account.failover.has_alternative(std::time::Instant::now()))
+        {
+            timing.timer_f = timing.timer_f.min(srv::REGISTER_FAILOVER_TIMEOUT);
+        }
         let local_addr = account.local_addr.ok_or("No local addr")?;
         let server_addr = account.server_addr.ok_or("No server addr")?;
         let transport = account.transport.clone().ok_or("No transport")?;

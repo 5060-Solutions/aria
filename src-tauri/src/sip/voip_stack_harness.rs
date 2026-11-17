@@ -91,6 +91,8 @@ struct PbxOptions {
     subscribe_expires: u32,
     /// Answer every REGISTER with `503` and this `Retry-After` (seconds).
     register_503: Option<u32>,
+    /// Never answer OPTIONS.
+    ignore_options: bool,
 }
 
 impl Default for PbxOptions {
@@ -102,6 +104,7 @@ impl Default for PbxOptions {
             reject_subscribe_auth: false,
             subscribe_expires: 600,
             register_503: None,
+            ignore_options: false,
         }
     }
 }
@@ -231,6 +234,9 @@ async fn start_pbx_with_options(
                 if dropping_cseq.is_some() && dropping_cseq == cseq {
                     continue;
                 }
+            }
+            if method == "OPTIONS" && opts.ignore_options {
+                continue;
             }
             let reply = match method {
                 "SUBSCRIBE" if opts.reject_subscribe_auth => {
@@ -1333,4 +1339,65 @@ async fn a_lone_503_is_retried_not_reported_as_an_error() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let (state, err) = mgr.registration_state_for_account(Some(&cfg.id)).await;
     assert_ne!(state, super::RegistrationState::Error, "{err:?}");
+}
+
+/// Keepalives that go unanswered must not drop a call that is up: the server
+/// here never answers OPTIONS, and the keepalive runs every 100 ms.
+#[tokio::test]
+async fn a_call_survives_a_keepalive_failure_and_the_account_fails_over_without_one() {
+    let (pbx, _seen, _) = start_pbx_with_options(PbxOptions {
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        ignore_options: true,
+        ..PbxOptions::default()
+    })
+    .await;
+    let mut timing = fast_timing();
+    timing.options_interval = Duration::from_millis(100);
+    timing.options_wait = Duration::from_millis(100);
+    let (mgr, mut rx) = manager_with(timing);
+    let cfg = account(pbx, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "{states:?}");
+
+    // Many missed keepalives later the call is still there, and the account
+    // has not been taken down.
+    let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_millis(1500)).await;
+    assert!(!later.contains(&"ended".to_owned()), "a keepalive failure ended the call: {later:?}");
+    let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+    assert_eq!(state, super::RegistrationState::Registered);
+    mgr.hangup(&call_id).await.expect("hung up");
+
+    // With no call up the same silence does fail the connection over.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+        if state != super::RegistrationState::Registered {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "silence never triggered a failover");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The only server answers every REGISTER with 503 and Retry-After 600. An
+/// emergency call is placed at once all the same; an ordinary call is refused.
+#[tokio::test]
+async fn an_emergency_call_dials_through_a_503_retry_after() {
+    let (busy, seen, _) =
+        start_pbx_with_options(PbxOptions { register_503: Some(600), ..PbxOptions::default() }).await;
+    let (mgr, _rx) = manager_with_srv(&[(10, busy.port())]);
+    mgr.register(srv_account()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(mgr.make_call("sip:1001@harness.lan").await.is_err(), "an ordinary call needs a registration");
+    let started = tokio::time::Instant::now();
+    let id = mgr.make_call("sip:911@harness.lan").await.expect("the emergency call is placed");
+    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    assert!(!id.is_empty());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let s = seen.lock().unwrap();
+    assert!(s.invites[0].starts_with("INVITE sip:911@harness.lan"), "{:?}", s.invites);
+    assert!(s.methods.iter().any(|m| m == "INVITE"), "the INVITE reached the server: {:?}", s.methods);
 }

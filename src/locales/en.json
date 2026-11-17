@@ -269,7 +269,7 @@
     "transportTls": "TLS (Recommended)",
     "transportAuto": "Automatic (DNS SRV)",
     "port": "Port",
-    "portSrv": "auto",
+    "portSrv": "Auto (SRV)",
     "registrar": "Registrar",
     "registrarPlaceholder": "Defaults to server",
     "outboundProxy": "Outbound Proxy",

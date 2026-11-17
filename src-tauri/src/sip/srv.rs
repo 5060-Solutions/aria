@@ -41,7 +41,9 @@ const BACKOFF_SECS: &[u64] = &[1, 2, 4, 8, 16, 30];
 const HOLD_DOWN: Duration = Duration::from_secs(30);
 
 /// The longest `Retry-After` that is honoured.
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(600);
+/// The longest any wait is: a `Retry-After` or a backoff. A phone that can be
+/// made to sit idle for ten minutes is a phone that cannot be reached.
+pub const MAX_WAIT: Duration = Duration::from_secs(30);
 
 const MIN_TTL: Duration = Duration::from_secs(30);
 const MAX_TTL: Duration = Duration::from_secs(300);
@@ -85,44 +87,32 @@ pub trait DnsResolver: Send + Sync {
     fn ips<'a>(&'a self, host: &'a str) -> BoxFut<'a, Result<IpAnswer, String>>;
 }
 
-/// hickory over the system's resolver configuration. Built on first use, so the
-/// manager can be constructed with no Tokio runtime.
+/// SRV through hickory on the system's resolver configuration, addresses
+/// through the OS. Built on first use, so the manager can be constructed with
+/// no Tokio runtime.
 #[derive(Default)]
 pub struct SystemResolver {
     inner: tokio::sync::OnceCell<Option<Arc<hickory_resolver::TokioResolver>>>,
 }
 
 impl SystemResolver {
+    /// The system's own resolver configuration, or an error. There is no
+    /// fallback to a public resolver: a name that only a corporate or VPN
+    /// resolver knows must not be sent to one that does not.
     async fn resolver(&self) -> Result<Arc<hickory_resolver::TokioResolver>, String> {
-        use hickory_resolver::config::{ResolverConfig, CLOUDFLARE};
-        use hickory_resolver::net::runtime::TokioRuntimeProvider;
         use hickory_resolver::{ResolverBuilder, TokioResolver};
 
         self.inner
             .get_or_init(|| async {
-                let built = TokioResolver::builder_tokio().and_then(ResolverBuilder::build);
-                match built {
-                    Ok(r) => Some(Arc::new(r)),
-                    Err(e) => {
-                        // A machine with no usable resolver configuration
-                        // should still register.
-                        log::warn!(
-                            "no usable system DNS configuration ({e}); using a public resolver"
-                        );
-                        TokioResolver::builder_with_config(
-                            ResolverConfig::udp_and_tcp(&CLOUDFLARE),
-                            TokioRuntimeProvider::default(),
-                        )
-                        .build()
-                        .map(Arc::new)
-                        .map_err(|e| log::error!("no DNS resolver could be built: {e}"))
-                        .ok()
-                    }
-                }
+                TokioResolver::builder_tokio()
+                    .and_then(ResolverBuilder::build)
+                    .map(Arc::new)
+                    .map_err(|e| log::error!("no usable system DNS configuration for SRV: {e}"))
+                    .ok()
             })
             .await
             .clone()
-            .ok_or_else(|| "no DNS resolver available".to_string())
+            .ok_or_else(|| "no usable system DNS configuration for SRV lookups".to_string())
     }
 }
 
@@ -169,19 +159,18 @@ impl DnsResolver for SystemResolver {
         })
     }
 
+    /// A and AAAA through the operating system's resolver (`getaddrinfo`), so
+    /// split-DNS, VPN and hosts-file configuration apply.
     fn ips<'a>(&'a self, host: &'a str) -> BoxFut<'a, Result<IpAnswer, String>> {
         Box::pin(async move {
-            let resolver = self.resolver().await?;
-            match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_ip(host)).await {
-                Err(_) => Err(format!("DNS lookup for {host} timed out")),
+            match tokio::time::timeout(LOOKUP_TIMEOUT, tokio::net::lookup_host((host, 0))).await {
+                Err(_) => Err(format!("DNS lookup timed out for {host}")),
                 Ok(Err(e)) => Err(format!("DNS resolve failed for {host}: {e}")),
-                Ok(Ok(ips)) => {
-                    let ttl = ttl_of(ips.as_lookup().valid_until());
-                    Ok(IpAnswer {
-                        ips: ips.iter().collect(),
-                        ttl,
-                    })
-                }
+                Ok(Ok(addrs)) => Ok(IpAnswer {
+                    ips: addrs.map(|a| a.ip()).collect(),
+                    // The OS does not report one.
+                    ttl: MIN_TTL,
+                }),
             }
         })
     }
@@ -375,6 +364,13 @@ pub async fn resolve(
             let mut records = answer.records;
             // A target of "." means the service is decidedly not available.
             records.retain(|r| !r.target.is_empty() && r.target != ".");
+            if records.is_empty() {
+                continue;
+            }
+            // `auto` never falls from TLS to cleartext: once the domain
+            // publishes a _sips service, TCP and UDP are not even asked about.
+            let sips_published =
+                t == TransportType::Tls && matches!(transport, TransportType::Auto);
             for r in order_records(records, rng) {
                 if targets.len() >= MAX_TARGETS || Instant::now() >= deadline {
                     break;
@@ -402,6 +398,15 @@ pub async fn resolve(
                         rank: (u8::try_from(pref).unwrap_or(u8::MAX), r.priority),
                     });
                 }
+            }
+            if sips_published {
+                if targets.is_empty() {
+                    return Err(format!(
+                        "{host} publishes a TLS (_sips) service but none of its targets resolve; \
+                         not falling back to an unencrypted transport"
+                    ));
+                }
+                break;
             }
         }
     }
@@ -508,7 +513,6 @@ impl Failover {
         &self.lookup_host
     }
 
-    #[cfg(test)]
     pub fn targets(&self) -> &[Target] {
         &self.targets
     }
@@ -587,7 +591,7 @@ impl Failover {
             .unwrap_or(Duration::ZERO);
         self.round += 1;
         self.tried.clear();
-        Action::Wait(backoff.max(earliest))
+        Action::Wait(backoff.max(earliest).min(MAX_WAIT))
     }
 
     pub fn report_failure(&mut self, target: &Target, failure: &Failure, now: Instant) {
@@ -600,8 +604,7 @@ impl Failover {
             ..
         } = failure
         {
-            self.retry_until
-                .insert(key, now + (*ra).min(MAX_RETRY_AFTER));
+            self.retry_until.insert(key, now + (*ra).min(MAX_WAIT));
         }
         if self.current == Some(key) {
             self.current = None;
@@ -707,7 +710,6 @@ pub(crate) mod fake_dns {
             })
         }
     }
-
 }
 
 #[cfg(test)]
@@ -863,10 +865,19 @@ mod tests {
 
     #[tokio::test]
     async fn auto_prefers_tls_then_tcp_then_udp() {
-        let d = dns();
+        let mut d = dns();
+        d.srv.insert(
+            "_sip._tcp.legacy.example".into(),
+            vec![rec(0, 1, 5060, "t.pbx.example")],
+        );
+        d.srv.insert(
+            "_sip._udp.legacy.example".into(),
+            vec![rec(0, 1, 5060, "u.pbx.example")],
+        );
+        d.ips.insert("t.pbx.example".into(), vec![ip("192.0.2.4")]);
         let r = resolve(
             &d,
-            "pbx.example",
+            "legacy.example",
             None,
             &TransportType::Auto,
             &mut random_draw,
@@ -878,11 +889,70 @@ mod tests {
             .iter()
             .map(|t| t.transport.param_static())
             .collect();
-        assert_eq!(ts, ["tls", "tls", "tls", "udp"]);
+        assert_eq!(ts, ["tcp", "udp"]);
         let asked = d.asked.lock().unwrap();
-        assert_eq!(asked[0], "SRV _sips._tcp.pbx.example");
-        assert!(asked.contains(&"SRV _sip._tcp.pbx.example".to_string()));
-        assert!(asked.contains(&"SRV _sip._udp.pbx.example".to_string()));
+        assert_eq!(asked[0], "SRV _sips._tcp.legacy.example");
+    }
+
+    #[tokio::test]
+    async fn auto_never_downgrades_from_tls_when_a_sips_service_exists() {
+        let d = dns(); // pbx.example publishes _sips._tcp AND _sip._udp
+        let r = resolve(
+            &d,
+            "pbx.example",
+            None,
+            &TransportType::Auto,
+            &mut random_draw,
+        )
+        .await
+        .unwrap();
+        assert!(r.targets.iter().all(|t| t.transport == TransportType::Tls));
+        // The cleartext services are not even asked about.
+        assert!(!d.asked.lock().unwrap().iter().any(|q| q.contains("_sip._")));
+
+        // A _sips service whose targets do not resolve is a failure, not a
+        // reason to try UDP.
+        let mut broken = FakeDns::default();
+        broken.srv.insert(
+            "_sips._tcp.x.example".into(),
+            vec![rec(0, 1, 5061, "gone.x.example")],
+        );
+        broken.srv.insert(
+            "_sip._udp.x.example".into(),
+            vec![rec(0, 1, 5060, "u.x.example")],
+        );
+        broken
+            .ips
+            .insert("u.x.example".into(), vec![ip("192.0.2.50")]);
+        broken
+            .ips
+            .insert("x.example".into(), vec![ip("192.0.2.51")]);
+        let err = resolve(
+            &broken,
+            "x.example",
+            None,
+            &TransportType::Auto,
+            &mut random_draw,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("not falling back"), "{err}");
+    }
+
+    #[test]
+    fn no_wait_is_longer_than_30_seconds() {
+        let (mut f, now, t) = fixture(1);
+        assert_eq!(f.next_action(now), Action::Try(t[0].clone()));
+        f.report_failure(
+            &t[0],
+            &Failure::Status {
+                code: 503,
+                retry_after: Some(secs(600)),
+            },
+            now,
+        );
+        assert_eq!(f.next_action(now), Action::Wait(secs(30)));
+        assert_eq!(f.next_action(now + secs(30)), Action::Try(t[0].clone()));
     }
 
     #[tokio::test]
@@ -1120,10 +1190,11 @@ mod tests {
             },
             now,
         );
-        // Not the 1 s backoff: the server asked for 90.
-        assert_eq!(f.next_action(now), Action::Wait(secs(90)));
+        // Not the 1 s backoff: the server asked for 90, but no wait is longer
+        // than 30 s.
+        assert_eq!(f.next_action(now), Action::Wait(secs(30)));
         // After waiting, it is offered again.
-        assert_eq!(f.next_action(now + secs(90)), Action::Try(t0.clone()));
+        assert_eq!(f.next_action(now + secs(30)), Action::Try(t0.clone()));
     }
 
     #[test]
@@ -1246,12 +1317,12 @@ mod tests {
             &t[0],
             &Failure::Status {
                 code: 503,
-                retry_after: Some(secs(300)),
+                retry_after: Some(secs(25)),
             },
             now,
         );
-        assert_eq!(f.failback_candidate(now + secs(100)), None);
-        assert_eq!(f.failback_candidate(now + secs(301)), Some(t[0].clone()));
+        assert_eq!(f.failback_candidate(now + secs(10)), None);
+        assert_eq!(f.failback_candidate(now + secs(31)), Some(t[0].clone()));
 
         // Two targets of one priority are peers: no failback between them.
         let now = Instant::now();

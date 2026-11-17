@@ -1624,8 +1624,9 @@ export function Settings() {
                     type="number"
                     value={form.port === 0 ? "" : form.port}
                     placeholder={t("wizard.portSrv")}
+                    slotProps={{ inputLabel: { shrink: true } }}
                     onChange={(e) => update("port", clampPort(e.target.value))}
-                    sx={{ ...inputSx, width: 90 }}
+                    sx={{ ...inputSx, width: 120 }}
                   />
                 </Box>
                 <TextField
