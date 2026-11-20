@@ -12,6 +12,10 @@
     <true/>
     <key>com.apple.security.device.microphone</key>
     <true/>
+    <!-- Hardened Runtime resource access: without this, Contacts is refused
+         without a prompt and Aria never appears in System Settings. -->
+    <key>com.apple.security.personal-information.addressbook</key>
+    <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
