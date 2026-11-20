@@ -2,8 +2,13 @@ import type { ConnectionReport, ConnectionStep, RetryPlan, StepKind } from "../t
 import type { RegistrationState } from "../types/sip";
 import { isAuthFailure } from "./authFailure";
 
-/** The shape of i18next's `t` that these helpers need. */
-export type Translate = (key: string, options?: Record<string, unknown>) => string;
+/**
+ * The slice of i18next's `t` these helpers use. A union of argument tuples
+ * rather than an optional parameter: i18next types `t` as a set of
+ * overloads, and a signature with an optional parameter matches none of
+ * them, while each tuple here matches one.
+ */
+export type Translate = (...args: [key: string] | [key: string, options: Record<string, unknown>]) => string;
 
 /** The step that broke this attempt, if any. */
 export function failedStep(report: ConnectionReport): ConnectionStep | null {
