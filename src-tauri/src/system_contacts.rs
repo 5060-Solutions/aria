@@ -356,3 +356,30 @@ mod tests {
         assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"kind":"denied","message":"no"}"#);
     }
 }
+
+/// The macOS bundle must both explain the request (Info.plist) and be
+/// entitled to make it: with the Hardened Runtime on, TCC refuses a
+/// protected resource silently, without a prompt and without listing the
+/// app in System Settings, unless the matching entitlement is present.
+#[cfg(test)]
+mod bundle_declarations {
+    fn read(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    #[test]
+    fn info_plist_explains_why_aria_wants_contacts() {
+        let plist = read("Info.plist");
+        assert!(plist.contains("<key>NSContactsUsageDescription</key>"), "Info.plist lacks NSContactsUsageDescription");
+    }
+
+    #[test]
+    fn the_hardened_runtime_is_entitled_to_read_contacts() {
+        let entitlements = read("entitlements.plist");
+        let key = "<key>com.apple.security.personal-information.addressbook</key>";
+        let at = entitlements.find(key).unwrap_or_else(|| panic!("entitlements.plist lacks {key}"));
+        let after = &entitlements[at + key.len()..];
+        assert!(after.trim_start().starts_with("<true/>"), "the addressbook entitlement is not <true/>");
+    }
+}
