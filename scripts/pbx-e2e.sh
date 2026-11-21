@@ -27,7 +27,9 @@
 # 1. Bring your own. Set all six and the script just runs the tests:
 #
 #      ARIA_E2E_PBX_DOMAIN   SIP AOR domain       (test.ariaroute.com)
-#      ARIA_E2E_PBX_SERVER   registrar host[:port] (sip.ariaroute.com)
+#      ARIA_E2E_PBX_SERVER   registrar host[:port] (sip.ariaroute.com); with
+#                            no port DNS SRV chooses the servers, as it does
+#                            for a provisioned account
 #      ARIA_E2E_EXT_A / ARIA_E2E_PASS_A   the extension that is called
 #      ARIA_E2E_EXT_B / ARIA_E2E_PASS_B   the extension that calls
 #      ARIA_E2E_EXT_C / ARIA_E2E_PASS_C   optional: a third, the target of
@@ -59,6 +61,10 @@
 #
 # Optional knobs
 # --------------
+#   ARIA_E2E_TRANSPORT  udp (default), tcp, tls or auto — what both endpoints
+#                       register over; tls through a bare server name is the
+#                       path a provisioned Aria takes (_sips._tcp SRV, the
+#                       certificate checked against the SRV domain)
 #   ARIA_E2E_SRTP_A / ARIA_E2E_SRTP_B   `sdes` or `disabled` (default) — what
 #                       each endpoint offers. `sdes_offer_is_answered_by_the_pbx`
 #                       forces sdes on both regardless.
