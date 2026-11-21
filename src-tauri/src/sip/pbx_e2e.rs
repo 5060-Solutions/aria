@@ -15,6 +15,8 @@
 //! ```text
 //! ARIA_E2E_PBX_DOMAIN   SIP AOR domain, e.g. test.ariaroute.com
 //! ARIA_E2E_PBX_SERVER   registrar host or host:port, e.g. sip.ariaroute.com
+//!                       (no port: DNS SRV chooses the servers)
+//! ARIA_E2E_TRANSPORT    udp (default), tcp, tls or auto
 //! ARIA_E2E_EXT_A / ARIA_E2E_PASS_A   the extension that receives the call
 //! ARIA_E2E_EXT_B / ARIA_E2E_PASS_B   the extension that places it
 //! ARIA_E2E_EXT_C / ARIA_E2E_PASS_C   optional: a third, for the transfer test
@@ -96,17 +98,14 @@ impl Env {
     }
 
     fn account(&self, label: &str, ext: &str, pass: &str, srtp_mode: SrtpMode) -> AccountConfig {
-        let (host, port) = match self.server.rsplit_once(':') {
-            Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.parse().unwrap()),
-            _ => (self.server.clone(), 5060),
-        };
+        let (host, port) = parse_server(&self.server);
         AccountConfig {
             id: format!("e2e-{label}-{}", uuid::Uuid::new_v4()),
             display_name: format!("E2E harness {label}"),
             username: ext.to_string(),
             domain: self.domain.clone(),
             password: pass.to_string(),
-            transport: TransportType::Udp,
+            transport: transport_from(std::env::var("ARIA_E2E_TRANSPORT").ok().as_deref()),
             port,
             registrar: Some(host),
             outbound_proxy: None,
@@ -123,6 +122,26 @@ impl Env {
 
     fn uri(&self, user: &str) -> String {
         format!("sip:{user}@{}", self.domain)
+    }
+}
+
+/// `host` or `host:port` from `ARIA_E2E_PBX_SERVER`. A bare host leaves the
+/// port at 0, so DNS SRV picks the servers, exactly as a provisioned account
+/// does; a port pins the connection to it (RFC 3263 section 4.2).
+fn parse_server(server: &str) -> (String, u16) {
+    match server.rsplit_once(':') {
+        Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.parse().unwrap()),
+        _ => (server.to_string(), 0),
+    }
+}
+
+/// `ARIA_E2E_TRANSPORT`: `udp` (default), `tcp`, `tls` or `auto`.
+fn transport_from(value: Option<&str>) -> TransportType {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        Some("tcp") => TransportType::Tcp,
+        Some("tls") => TransportType::Tls,
+        Some("auto") => TransportType::Auto,
+        _ => TransportType::Udp,
     }
 }
 
@@ -674,4 +693,27 @@ async fn blind_transfer_through_the_pbx() {
         (a, b, outcome)
     })
     .await;
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_server_name_leaves_the_port_to_srv() {
+        assert_eq!(parse_server("sip.ariaroute.com"), ("sip.ariaroute.com".to_string(), 0));
+    }
+
+    #[test]
+    fn a_server_with_a_port_pins_that_port() {
+        assert_eq!(parse_server("sip.ariaroute.com:5080"), ("sip.ariaroute.com".to_string(), 5080));
+    }
+
+    #[test]
+    fn the_transport_knob_defaults_to_udp_and_reads_the_other_three() {
+        assert_eq!(transport_from(None), TransportType::Udp);
+        assert_eq!(transport_from(Some("TLS")), TransportType::Tls);
+        assert_eq!(transport_from(Some("tcp")), TransportType::Tcp);
+        assert_eq!(transport_from(Some("auto")), TransportType::Auto);
+    }
 }
