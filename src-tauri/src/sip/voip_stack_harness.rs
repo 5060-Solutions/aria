@@ -118,8 +118,72 @@ fn manager() -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEven
 
 fn manager_with(timing: super::Timing) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
     let (mgr, rx) = SipManager::new_with_timing(timing);
+    use_local_stun(&mgr);
     mgr.start_background_tasks();
     (mgr, rx)
+}
+
+/// Point `mgr`'s STUN lookups at the in-process stub. Every call the harness
+/// places builds an SDP, and with the public servers a lookup that timed out
+/// held the INVITE back three seconds per server and failed the tests that
+/// time dialling (the emergency-call and failover tests).
+fn use_local_stun(mgr: &SipManager) {
+    let addr = local_stun_server().to_string();
+    mgr.state.try_write().expect("a new manager is not shared yet").stun_servers = vec![addr].into();
+}
+
+/// A STUN server on loopback that answers every Binding Request with the
+/// sender's own address (RFC 5389 XOR-MAPPED-ADDRESS), started once for the
+/// whole test process. It runs on a plain thread, not a task, because every
+/// `#[tokio::test]` has a runtime of its own that dies with the test.
+fn local_stun_server() -> SocketAddr {
+    static ADDR: std::sync::OnceLock<SocketAddr> = std::sync::OnceLock::new();
+    *ADDR.get_or_init(|| {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind the STUN stub");
+        let addr = socket.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            while let Ok((len, from)) = socket.recv_from(&mut buf) {
+                if let Some(reply) = stun_binding_success(&buf[..len], from) {
+                    let _ = socket.send_to(&reply, from);
+                }
+            }
+        });
+        addr
+    })
+}
+
+/// The Binding Success Response to `request`, mapping it to `from`; `None`
+/// for anything that is not an IPv4-answerable Binding Request.
+fn stun_binding_success(request: &[u8], from: SocketAddr) -> Option<Vec<u8>> {
+    const MAGIC: [u8; 4] = 0x2112_A442u32.to_be_bytes();
+    if request.len() < 20 || request[0..2] != [0x00, 0x01] || request[4..8] != MAGIC {
+        return None;
+    }
+    let SocketAddr::V4(from) = from else { return None };
+    let port = from.port() ^ 0x2112;
+    let ip: Vec<u8> = from.ip().octets().iter().zip(MAGIC).map(|(b, m)| b ^ m).collect();
+    let mut reply = vec![0x01, 0x01, 0x00, 12];
+    reply.extend_from_slice(&request[4..20]); // magic cookie and transaction ID
+    reply.extend_from_slice(&[0x00, 0x20, 0x00, 8, 0x00, 0x01]); // XOR-MAPPED-ADDRESS, IPv4
+    reply.extend_from_slice(&port.to_be_bytes());
+    reply.extend_from_slice(&ip);
+    Some(reply)
+}
+
+/// The harness never asks a public STUN server, and the stub answers at once
+/// with the address the probe came from.
+#[tokio::test]
+async fn harness_managers_ask_only_the_local_stun_stub() {
+    let (mgr, _rx) = manager();
+    let servers = mgr.state.read().await.stun_servers.clone();
+    assert_eq!(&*servers, &[local_stun_server().to_string()]);
+
+    let started = tokio::time::Instant::now();
+    let (_port, public_ip, public_port) = super::media::allocate_port_with_stun(&servers).await.unwrap();
+    assert!(started.elapsed() < Duration::from_millis(500), "took {:?}", started.elapsed());
+    assert_eq!(public_ip, Some("127.0.0.1".parse().unwrap()));
+    assert!(public_port.is_some_and(|p| p != 0), "{public_port:?}");
 }
 
 /// Timers shrunk so a lost REGISTER, its deadline and the reconnect play out
@@ -1281,6 +1345,7 @@ fn manager_with_srv(targets: &[(u16, u16)]) -> (SipManager, tokio::sync::mpsc::U
         .collect();
     dns.srv.insert("_sip._udp.harness.lan".into(), records);
     let (mgr, rx) = SipManager::new_with_dns(fast_timing(), Arc::new(dns));
+    use_local_stun(&mgr);
     mgr.start_background_tasks();
     (mgr, rx)
 }

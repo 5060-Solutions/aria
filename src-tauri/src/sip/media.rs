@@ -3,7 +3,37 @@
 use std::net::IpAddr;
 use tokio::net::UdpSocket;
 
-pub use rtp_engine::{CodecType, MediaSession, discover_public_address};
+pub use rtp_engine::{CodecType, MediaSession};
+use rtp_engine::StunResult;
+
+/// How long each STUN server gets to answer before the next is tried.
+const STUN_TIMEOUT_MS: u64 = 3000;
+
+/// The STUN servers a manager asks by default: `rtp_engine`'s public list.
+pub(crate) fn default_stun_servers() -> Vec<String> {
+    rtp_engine::DEFAULT_STUN_SERVERS.iter().map(|s| s.to_string()).collect()
+}
+
+/// Ask each of `servers` in turn for `socket`'s public address.
+///
+/// The same walk as `rtp_engine::discover_public_address`, over a list the
+/// manager holds rather than the crate's constant, so the harness can point
+/// its managers at a local stub instead of the public servers — a lookup
+/// that timed out there cost a call three seconds and failed the tests that
+/// time dialling.
+async fn discover_public_address(socket: &UdpSocket, servers: &[String]) -> Result<StunResult, String> {
+    let mut last_error = None;
+    for server in servers {
+        match rtp_engine::stun::discover_with_socket(socket, server, STUN_TIMEOUT_MS).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("STUN server {} failed: {}", server, e);
+                last_error = Some(e.to_string());
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| "All STUN servers failed".to_owned()))
+}
 
 /// Point a freshly started session at the payload types the peer's SDP
 /// named, for both the audio codec and DTMF.
@@ -46,10 +76,12 @@ pub fn apply_negotiated_payload_types(session: &MediaSession, sdp: &str) {
 /// still rebinds the port when the call connects; that window is the
 /// engine's, and a failure there lands on a connected call's media, not on
 /// dialling.
-pub async fn allocate_port_with_stun() -> Result<(u16, Option<IpAddr>, Option<u16>), String> {
+pub async fn allocate_port_with_stun(
+    stun_servers: &[String],
+) -> Result<(u16, Option<IpAddr>, Option<u16>), String> {
     let (socket, rtp_port) = allocate_rtp_socket().await?;
 
-    match discover_public_address(&socket).await {
+    match discover_public_address(&socket, stun_servers).await {
         Ok(result) if !result.public_ip.is_unspecified() => {
             log::info!(
                 "STUN discovery: local {}:{} -> public {}:{}",
@@ -151,13 +183,13 @@ pub fn is_private_network(ip: IpAddr) -> bool {
 ///
 /// This is useful when you already have an RTP port allocated and just need the public IP.
 /// The public IP should be the same regardless of which port is used for STUN.
-pub async fn discover_public_ip() -> Result<IpAddr, String> {
+pub async fn discover_public_ip(stun_servers: &[String]) -> Result<IpAddr, String> {
     // Use a random ephemeral port for STUN discovery
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await
         .map_err(|e| format!("Failed to bind socket for STUN: {}", e))?;
     
-    match discover_public_address(&socket).await {
+    match discover_public_address(&socket, stun_servers).await {
         Ok(result) => {
             log::info!("STUN discovered public IP: {}", result.public_ip);
             Ok(result.public_ip)

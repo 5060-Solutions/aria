@@ -287,6 +287,10 @@ pub(crate) struct ManagerState {
     pub(crate) timing: Timing,
     /// How SIP server names are looked up.
     pub(crate) dns: Arc<dyn srv::DnsResolver>,
+    /// The STUN servers asked for our public address when a call's SDP is
+    /// built. Production uses `rtp_engine`'s public list; the harness points
+    /// it at a local stub so no test waits on the internet.
+    pub(crate) stun_servers: Arc<[String]>,
     /// Currently active/default account ID for backward-compatible single-account operations
     pub(crate) active_account_id: Option<String>,
 
@@ -576,6 +580,7 @@ impl SipManager {
                 accounts: HashMap::new(),
                 timing,
                 dns,
+                stun_servers: media::default_stun_servers().into(),
                 active_account_id: None,
                 last_latency_ms: None,
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
@@ -1532,7 +1537,8 @@ impl SipManager {
         let from_tag = builder::generate_tag();
 
         // Allocate RTP port and discover public IP via STUN for NAT traversal
-        let (rtp_port, stun_public_ip, _stun_public_port) = media::allocate_port_with_stun()
+        let stun_servers = self.state.read().await.stun_servers.clone();
+        let (rtp_port, stun_public_ip, _stun_public_port) = media::allocate_port_with_stun(&stun_servers)
             .await
             .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
 
@@ -1912,7 +1918,8 @@ impl SipManager {
         let stun_ip = if media::is_private_network(server_addr.ip()) {
             None
         } else {
-            match media::discover_public_ip().await {
+            let stun_servers = self.state.read().await.stun_servers.clone();
+            match media::discover_public_ip(&stun_servers).await {
                 Ok(ip) => Some(ip),
                 Err(e) => {
                     log::warn!("STUN discovery failed for answer: {}", e);
