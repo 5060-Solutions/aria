@@ -47,11 +47,14 @@ pub async fn handle_incoming_request(
                             c.is_incoming(),
                             c.is_established(),
                             c.to_tag.clone().unwrap_or_default(),
+                            c.pending_2xx.clone(),
                         )
                     })
                 };
 
-                if let Some((call_internal_id, rtp_port, answered_ip, ringing_here, established, our_tag)) = existing {
+                if let Some((call_internal_id, rtp_port, answered_ip, ringing_here, established, our_tag, pending_2xx)) =
+                    existing
+                {
                     let in_dialog = extract_header(text, "To").is_some_and(|to| to.contains("tag="));
                     let s = state.read().await;
                     let Some(account) = s.get_account(account_id) else { return };
@@ -64,6 +67,13 @@ pub async fn handle_incoming_request(
                         if ringing_here {
                             log::info!("Retransmitted INVITE for {}, re-sending 180", call_id);
                             build_ringing_response(text, &our_tag)
+                        } else if let Some(pending) =
+                            pending_2xx.filter(|p| crate::sip::cseq_number(text) == Some(p.cseq))
+                        {
+                            // Answered, and the caller has not seen it: the
+                            // INVITE it resends gets the same 200 again.
+                            log::info!("Retransmitted INVITE for {}, re-sending 200 OK", call_id);
+                            Some(pending.response)
                         } else {
                             None
                         }
@@ -400,8 +410,20 @@ pub async fn handle_incoming_request(
                 }
             }
         }
-        // ACK is the end of the INVITE transaction and has no response.
-        "ACK" => {}
+        // ACK has no response. The ACK for our 200 OK to an INVITE ends that
+        // 200's retransmission (RFC 3261 §13.3.1.4); any other ACK (for a
+        // 4xx-6xx, or a duplicate) needs nothing.
+        "ACK" => {
+            let call_id = extract_header(text, "Call-ID").unwrap_or_default();
+            let cseq = crate::sip::cseq_number(text);
+            let mut s = state.write().await;
+            if let Some((_, call)) = s.find_call_by_header_mut(&call_id) {
+                if call.pending_2xx.as_ref().is_some_and(|p| Some(p.cseq) == cseq) {
+                    log::info!("ACK received for the 200 OK to call {}", call.id);
+                    call.pending_2xx = None;
+                }
+            }
+        }
         // INFO is in our Allow list (DTMF relay). Nothing acts on it, but an
         // unanswered request is retransmitted for 32 s; it is answered so the
         // sender stops.

@@ -93,6 +93,11 @@ struct PbxOptions {
     register_503: Option<u32>,
     /// Never answer OPTIONS.
     ignore_options: bool,
+    /// ACK every 200 OK the client sends to an INVITE, as a PBX does.
+    ack_invite_200: bool,
+    /// Lose the first 200 OK the client sends to an INVITE on the wire: the
+    /// PBX never sees it (#69).
+    drop_first_invite_200: bool,
 }
 
 impl Default for PbxOptions {
@@ -105,6 +110,8 @@ impl Default for PbxOptions {
             subscribe_expires: 600,
             register_503: None,
             ignore_options: false,
+            ack_invite_200: false,
+            drop_first_invite_200: false,
         }
     }
 }
@@ -214,12 +221,24 @@ async fn start_pbx_with_options(
         let mut nonce_n = 0u32;
         // The CSeq of the REGISTER transaction being swallowed, if any.
         let mut dropping_cseq: Option<String> = None;
+        // Whether the 200 OK `drop_first_invite_200` loses has gone by.
+        let mut dropped_invite_200 = false;
         loop {
             let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
             let msg = String::from_utf8_lossy(&buf[..n]).into_owned();
             let method = msg.split_whitespace().next().unwrap_or("");
             if method == "SIP/2.0" {
+                let invite_200 = msg.starts_with("SIP/2.0 200")
+                    && header(&msg, "CSeq").is_some_and(|c| c.ends_with("INVITE"));
+                if invite_200 && opts.drop_first_invite_200 && !dropped_invite_200 {
+                    dropped_invite_200 = true;
+                    continue;
+                }
                 rec.lock().unwrap().responses.push(msg.clone());
+                if invite_200 && opts.ack_invite_200 {
+                    let ack = ack_for_200(&msg, addr, from);
+                    let _ = sock.send_to(ack.as_bytes(), from).await;
+                }
                 continue;
             }
             if method != "REGISTER" {
@@ -550,12 +569,38 @@ fn incoming_invite(pbx: SocketAddr, client: SocketAddr, call_id: &str, cseq_meth
     )
 }
 
+/// The ACK a PBX sends for a client's 200 OK to its INVITE (RFC 3261
+/// §13.2.2.4): a transaction of its own, in the dialog the 200 set up.
+fn ack_for_200(ok: &str, pbx: SocketAddr, client: SocketAddr) -> String {
+    let cseq = header(ok, "CSeq").and_then(|c| c.split_whitespace().next()).unwrap_or("1");
+    format!(
+        "ACK sip:{USER}@{client} SIP/2.0\r\n\
+         Via: SIP/2.0/UDP {pbx};branch=z9hG4bKack{cseq}\r\n\
+         From: {}\r\n\
+         To: {}\r\n\
+         Call-ID: {}\r\n\
+         CSeq: {cseq} ACK\r\n\
+         Content-Length: 0\r\n\r\n",
+        header(ok, "From").unwrap_or_default(),
+        header(ok, "To").unwrap_or_default(),
+        header(ok, "Call-ID").unwrap_or_default(),
+    )
+}
+
 /// Register, and return the manager, its events, and where the PBX can reach it.
 async fn registered_client(
     pbx: SocketAddr,
     seen: &Arc<Mutex<Seen>>,
 ) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, SocketAddr) {
-    let (mgr, rx) = manager();
+    registered_client_with(pbx, seen, super::Timing::default()).await
+}
+
+async fn registered_client_with(
+    pbx: SocketAddr,
+    seen: &Arc<Mutex<Seen>>,
+    timing: super::Timing,
+) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, SocketAddr) {
+    let (mgr, rx) = manager_with(timing);
     register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
     let client = seen.lock().unwrap().client.expect("client address");
     (mgr, rx, client)
@@ -625,6 +670,82 @@ async fn a_cancelled_incoming_call_stops_ringing_and_a_resent_invite_is_not_answ
         "the cancelled INVITE needs a 487: {invite_replies:?}"
     );
     assert!(status_lines(&seen, "CANCEL").iter().any(|l| l.contains(" 200 ")));
+}
+
+/// Answer an incoming call from a PBX started with `opts`, on fast timers
+/// (T1 = 50 ms, so Timer H is 3.2 s). Returns what the test needs to follow it.
+async fn answer_incoming(
+    opts: PbxOptions,
+    sip_call_id: &str,
+) -> (
+    SipManager,
+    tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+    Arc<Mutex<Seen>>,
+    String,
+) {
+    let (pbx, seen, sock) = start_pbx_with_options(opts).await;
+    let (mgr, mut rx, client) = registered_client_with(pbx, &seen, fast_timing()).await;
+    let invite = incoming_invite(pbx, client, sip_call_id, "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    mgr.answer(&call_id).await.expect("answered");
+    (mgr, rx, seen, call_id)
+}
+
+fn count_200s(seen: &Arc<Mutex<Seen>>) -> usize {
+    status_lines(seen, "INVITE").iter().filter(|l| l.contains(" 200 ")).count()
+}
+
+/// #69: the 200 OK to an incoming INVITE is lost on the wire. The caller has
+/// our 180 and has stopped resending its INVITE, so only we can recover it:
+/// the 200 must be retransmitted until the PBX ACKs it, the retransmission
+/// must stop at the ACK, and the call must stay up past Timer H. Before, the
+/// 200 went out once and the caller rang until it gave up.
+#[tokio::test]
+async fn a_lost_200_ok_is_retransmitted_until_acked_and_the_call_stays_up() {
+    let opts = PbxOptions { ack_invite_200: true, drop_first_invite_200: true, ..Default::default() };
+    let (mgr, mut rx, seen, call_id) = answer_incoming(opts, "harness-lost-200@pbx").await;
+
+    // The first retransmission is due at T1 (50 ms); the PBX ACKs it.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while seen.lock().unwrap().responses.iter().all(|r| !r.starts_with("SIP/2.0 200")) {
+        assert!(tokio::time::Instant::now() < deadline, "the lost 200 OK was never sent again");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let after_ack = count_200s(&seen);
+
+    // Well past Timer H (3.2 s): no more 200s, no BYE, still connected.
+    tokio::time::sleep(Duration::from_millis(4000)).await;
+    assert_eq!(count_200s(&seen), after_ack, "the 200 OK was retransmitted after its ACK");
+    let methods = seen.lock().unwrap().methods.clone();
+    assert!(!methods.iter().any(|m| m == "BYE"), "an ACKed call was hung up: {methods:?}");
+    while let Ok(event) = rx.try_recv() {
+        if let super::SipEvent::CallStateChanged(e) = event {
+            assert_ne!(e.state, "ended", "an ACKed call ended");
+        }
+    }
+    let established = mgr.state.read().await.find_call(&call_id).is_some_and(|(_, c)| c.is_established());
+    assert!(established, "the call should still be up");
+}
+
+/// When no ACK ever comes, the 200 is resent at T1 doubling to T2 and the call
+/// is given up with a BYE once 64*T1 has passed (RFC 3261 §13.3.1.4), rather
+/// than showing connected to a caller who never was.
+#[tokio::test]
+async fn an_unacknowledged_200_ok_is_retransmitted_then_ended_with_a_bye() {
+    let (_mgr, mut rx, seen, call_id) = answer_incoming(PbxOptions::default(), "harness-no-ack@pbx").await;
+
+    let ended = wait_for_call_state(&mut rx, "ended").await;
+    assert_eq!(ended, call_id);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // 50, 100, 200, 400, 800, 1600 (capped by T2 = 4 s) within 3.2 s: the
+    // original and about six retransmissions. Loopback is not lossy; more
+    // than that would mean the interval is not doubling.
+    let sent = count_200s(&seen);
+    assert!((5..=8).contains(&sent), "expected the 200 OK and ~6 retransmissions, got {sent}");
+    let methods = seen.lock().unwrap().methods.clone();
+    assert!(methods.iter().any(|m| m == "BYE"), "the unacknowledged call needs a BYE: {methods:?}");
 }
 
 /// Declining a ringing call is a final response to its INVITE, not a BYE: no

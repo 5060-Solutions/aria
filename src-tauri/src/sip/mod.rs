@@ -32,7 +32,7 @@ pub use transport::TransportType;
 
 use self::builder::{
     build_200_ok_invite_srtp, build_bye_with_routes, build_cancel, build_options, build_refer,
-    build_refer_with_replaces, build_register, build_subscribe, extract_via_branch, is_request,
+    build_refer_with_replaces, build_register, build_subscribe, extract_header, extract_via_branch, is_request,
     parse_sdp_connection,
 };
 use self::diagnostics::DiagnosticLog;
@@ -1936,6 +1936,7 @@ impl SipManager {
             answer_crypto,
         )
         .ok_or("Failed to build 200 OK")?;
+        let invite_cseq = cseq_number(&raw_invite).unwrap_or(1);
 
         // Built when auto-record starts. Emitted after the call-state event
         // below, so the frontend has the call in its list before it is told the
@@ -1951,6 +1952,7 @@ impl SipManager {
                 return Err("Call ended before it could be answered".into());
             }
             call.set_to_tag(to_tag.clone());
+            call.pending_2xx = Some(state::Pending2xx { cseq: invite_cseq, response: response.clone() });
             call.srtp_active = srtp_active;
             // Remember our key for the session, so a re-INVITE refresh answers
             // with the same crypto line instead of downgrading to plain RTP.
@@ -1969,6 +1971,28 @@ impl SipManager {
         };
 
         transport.send_to(response.as_bytes(), server_addr).await?;
+
+        // RFC 3261 §13.3.1.4: the 200 is ours to deliver. Once the caller has
+        // our 180 it stops resending its INVITE, so a 200 lost on the wire
+        // used to leave the caller ringing and this side "connected" (#69).
+        let timing = self.state.read().await.timing;
+        let mgr = self.clone();
+        let internal_id = call_id.to_string();
+        tokio::spawn(async move {
+            let acked = retransmit_2xx_until_ack(
+                &mgr.state, &internal_id, invite_cseq, &response, &transport, server_addr, timing,
+            )
+            .await;
+            if !acked {
+                log::warn!(
+                    "No ACK for the 200 OK to call {} within {} ms; ending the call",
+                    internal_id,
+                    (timing.t1 * 64).as_millis()
+                );
+                // The UAS core SHOULD end the dialog with a BYE (§13.3.1.4).
+                let _ = mgr.hangup(&internal_id).await;
+            }
+        });
 
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&account_id, call_id, "connected", &remote_uri, "inbound")
@@ -3798,6 +3822,61 @@ pub(crate) async fn send_register(
         }
     });
     Ok(())
+}
+
+/// The CSeq number of a SIP message.
+pub(crate) fn cseq_number(msg: &str) -> Option<u32> {
+    extract_header(msg, "CSeq")?.split_whitespace().next()?.parse().ok()
+}
+
+/// RFC 3261 T2: the longest interval between retransmissions.
+const T2: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// See a 2xx to an incoming INVITE through to its ACK (RFC 3261 §13.3.1.4).
+///
+/// Over UDP the response is resent at T1, doubling up to T2 (Timer G). Over
+/// a reliable transport the transport delivers it, so it is only waited on.
+/// Returns `true` once the ACK has cleared the call's pending 2xx, or the
+/// call has ended or moved on (nothing left to deliver); `false` when 64*T1
+/// (Timer H) passed with no ACK, which is the caller's to act on.
+pub(crate) async fn retransmit_2xx_until_ack(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id: &str,
+    cseq: u32,
+    response: &str,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    timing: Timing,
+) -> bool {
+    let reliable = !matches!(transport, SipTransport::Udp(_));
+    let timer_h = timing.t1 * 64;
+    let started = tokio::time::Instant::now();
+    let mut interval = timing.t1;
+    loop {
+        let remaining = timer_h.saturating_sub(started.elapsed());
+        let wait = if reliable { remaining } else { interval.min(remaining) };
+        tokio::time::sleep(wait).await;
+
+        let outstanding = {
+            let s = state.read().await;
+            s.find_call(call_id)
+                .is_some_and(|(_, c)| !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq))
+        };
+        if !outstanding {
+            return true;
+        }
+        if started.elapsed() >= timer_h {
+            if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
+                c.pending_2xx = None;
+            }
+            return false;
+        }
+        log::debug!("No ACK yet for call {}; retransmitting the 200 OK", call_id);
+        if let Err(e) = transport.send_to(response.as_bytes(), dest).await {
+            log::warn!("Could not retransmit the 200 OK for call {}: {}", call_id, e);
+        }
+        interval = (interval * 2).min(T2);
+    }
 }
 
 /// A REGISTER got no final response within Timer F.
