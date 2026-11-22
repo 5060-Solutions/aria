@@ -256,8 +256,24 @@ pub struct CallFSM {
     pub remote_contact: Option<String>,
     /// Our local SIP URI (e.g., sip:1001@lyonscomm.com)
     pub local_uri: String,
+    /// The 200 OK we answered an incoming INVITE with, until its ACK arrives.
+    ///
+    /// RFC 3261 §13.3.1.4: the UAS core retransmits its 2xx (Timer G) until
+    /// the ACK, and gives the call up after 64*T1 (Timer H). It is kept here
+    /// so the ACK handler can stop that, and a retransmitted INVITE can be
+    /// answered with the same 200.
+    pub pending_2xx: Option<Pending2xx>,
     /// Current state
     state: CallState,
+}
+
+/// A 2xx response to an INVITE that has not been ACKed yet.
+#[derive(Debug, Clone)]
+pub struct Pending2xx {
+    /// The CSeq number of the INVITE it answers; the ACK carries the same.
+    pub cseq: u32,
+    /// The response as sent, for retransmission.
+    pub response: String,
 }
 
 /// Parameters for creating an inbound call FSM.
@@ -303,6 +319,7 @@ impl CallFSM {
             srtp_active: false,
             remote_contact: None,
             local_uri,
+            pending_2xx: None,
             state: CallState::Dialing {
                 invite_branch,
                 auth_attempted: false,
@@ -332,6 +349,7 @@ impl CallFSM {
             srtp_active: false,
             remote_contact: None,
             local_uri: params.local_uri,
+            pending_2xx: None,
             state: CallState::Incoming { raw_invite: params.raw_invite },
         }
     }
@@ -824,6 +842,8 @@ impl CallFSM {
     /// Transition to ended state with cleanup
     pub fn end(&mut self, reason: EndReason) {
         self.stop_media();
+        // Nothing left to retransmit for a call that is over.
+        self.pending_2xx = None;
         self.state = CallState::Ended { reason };
         self.ended_at = Some(Instant::now());
     }
