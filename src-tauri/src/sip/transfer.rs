@@ -145,7 +145,7 @@ pub async fn handle_incoming_refer(
 
     // Attempt the transfer: make a new call to the Refer-To target
     let new_call_result = {
-        let (account_config, local_addr, server_addr, transport, public_addr) = {
+        let (account_config, local_addr, server_addr, transport, public_addr, stun_servers) = {
             let s = state.read().await;
             let account = match s.get_account(account_id) {
                 Some(a) => a,
@@ -164,13 +164,13 @@ pub async fn handle_incoming_refer(
                 None => return,
             };
             let public_addr = account.public_addr;
-            (account.config.clone(), local_addr, server_addr, transport, public_addr)
+            (account.config.clone(), local_addr, server_addr, transport, public_addr, s.stun_servers.clone())
         };
 
         let new_call_id = builder::generate_call_id();
         let new_from_tag = builder::generate_tag();
         // Allocate RTP port and discover public IP via STUN for NAT traversal
-        let (rtp_port, stun_public_ip) = match super::media::allocate_port_with_stun().await {
+        let (rtp_port, stun_public_ip) = match super::media::allocate_port_with_stun(&stun_servers).await {
             Ok((port, ip, _)) => (port, ip),
             Err(e) => {
                 log::error!("Failed to allocate RTP port with STUN: {}", e);
