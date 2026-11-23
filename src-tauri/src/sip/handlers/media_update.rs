@@ -15,7 +15,8 @@ use tokio::sync::{mpsc, RwLock};
 use crate::sip::account::SrtpMode;
 use crate::sip::builder;
 use crate::sip::media::{self, MediaPlan};
-use crate::sip::{ManagerState, SipEvent};
+use crate::sip::recording_parts;
+use crate::sip::{CallEvent, ManagerState, SipEvent};
 
 /// How long a session that must keep its local port waits for the old one
 /// to let go of it: rtp-engine's RTCP task only notices a stop on its next
@@ -53,13 +54,14 @@ pub(crate) async fn restart_media_on_offer_port(
         }
     };
     let mut s = state.write().await;
-    let account_id = match s.find_call_mut(&call_id) {
+    let (account_id, security_changed) = match s.find_call_mut(&call_id) {
         Some((account_id, call)) if call.is_established() && call.media().is_none() => {
+            let security_changed = security_update(call, started.srtp_active);
             call.srtp_active = started.srtp_active;
             call.set_remote_rtp(plan.remote.addr);
-            call.remote_media = Some(plan.remote);
+            call.remote_media = Some(plan.remote.for_session(started.srtp_active));
             call.set_media(started.session);
-            account_id.to_string()
+            (account_id.to_string(), security_changed)
         }
         _ => {
             started.session.stop();
@@ -71,9 +73,24 @@ pub(crate) async fn restart_media_on_offer_port(
         .and_then(|(_, call)| call.media())
         .and_then(|m| s.start_auto_record(&account_id, &call_id, m));
     drop(s);
+    if let Some(event) = security_changed {
+        let _ = event_tx.send(SipEvent::CallStateChanged(event));
+    }
     if let Some(event) = recording {
         let _ = event_tx.send(SipEvent::RecordingStateChanged(event));
     }
+}
+
+/// The call event that moves the call screen's padlock, when a new session
+/// changes whether `call`'s media is encrypted. It carries the call's state
+/// as it is, so it changes nothing else on screen; the event forwarder adds
+/// the signalling transport, as it does for every event with `srtp_active`.
+fn security_update(call: &crate::sip::state::CallFSM, srtp_active: bool) -> Option<CallEvent> {
+    (call.srtp_active != srtp_active).then(|| {
+        let mut event = CallEvent::from_fsm(call, None);
+        event.srtp_active = Some(srtp_active);
+        event
+    })
 }
 
 /// Answer a re-INVITE in an established call: the 200 OK (or a 488 when no
@@ -86,6 +103,7 @@ pub(crate) async fn restart_media_on_offer_port(
 /// dialog's `o=` session id.
 pub(crate) async fn answer_reinvite(
     state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
     call_id: &str,
     account_id: &str,
     text: &str,
@@ -211,27 +229,38 @@ pub(crate) async fn answer_reinvite(
     )?;
     let remote_hold = !builder::offer_direction(offer).mirror().sends();
 
-    let (answer, old) = {
+    let (answer, old, continued_in, security_changed) = {
         let mut s = state.write().await;
         let recordings_dir = s.recordings_dir.clone();
         let (_, call) = s.find_call_mut(call_id)?;
         let mut old = None;
+        let mut continued_in = None;
+        let mut security_changed = None;
         if let Some(started) = replaced {
             old = call.take_media();
             let was_recording = old.as_ref().is_some_and(|m| m.is_recording());
+            security_changed = security_update(call, started.srtp_active);
             call.local_rtp_port = local_port;
             call.srtp_active = started.srtp_active;
             call.set_remote_rtp(next.addr);
-            call.remote_media = Some(next.clone());
+            call.remote_media = Some(next.clone().for_session(started.srtp_active));
             if use_srtp {
                 call.local_srtp_key = our_key.clone();
             }
-            // The recording carries on, in a file of its own: the old
-            // session saves the first part when it is finished below.
+            // The recording carries on in the new session, and is joined
+            // onto the part the old session saves below. Registered before
+            // the lock goes, so a hangup that saves the new part first
+            // still waits for the old one.
             if let (true, Some(dir)) = (was_recording, recordings_dir) {
-                let path = rtp_engine::generate_recording_filename(call_id, &dir);
-                if let Err(e) = started.session.start_recording(path) {
-                    log::warn!("Could not keep recording call {} after its media moved: {}", call_id, e);
+                let path = recording_parts::continuation_path(call_id, &dir);
+                match started.session.start_recording(path.clone()) {
+                    Ok(()) => {
+                        recording_parts::expect(&path);
+                        continued_in = Some(path);
+                    }
+                    Err(e) => {
+                        log::warn!("Could not keep recording call {} after its media moved: {}", call_id, e);
+                    }
                 }
             }
             call.set_media(started.session);
@@ -239,11 +268,22 @@ pub(crate) async fn answer_reinvite(
             call.set_remote_rtp(next.addr);
         }
         call.set_remote_hold(remote_hold);
-        (call.stamp_local_sdp(&answer), old)
+        (call.stamp_local_sdp(&answer), old, continued_in, security_changed)
     };
+    if let Some(event) = security_changed {
+        let _ = event_tx.send(SipEvent::CallStateChanged(event));
+    }
     // Saving a recording writes it all to disk: not under the lock.
-    if old.is_some() {
-        crate::sip::finish_call_media(call_id, old).await;
+    match (old, continued_in) {
+        (Some(old), Some(path)) => crate::sip::finish_replaced_media(old, path).await,
+        // Not recording, or the recording could not carry on: the part so
+        // far is all there will be. History only links the recording on
+        // the call's "ended" event, so it is not reported here.
+        (old @ Some(_), None) => {
+            crate::sip::finish_call_media(call_id, old).await;
+        }
+        (None, Some(path)) => recording_parts::resolve(&path, None),
+        (None, None) => {}
     }
     builder::build_200_ok_invite_with_sdp(text, local_addr, tag, Some(username), &answer)
 }

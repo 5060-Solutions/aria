@@ -183,7 +183,7 @@ pub async fn handle_invite_response(
                         // early media is as encrypted as that session, and a
                         // later re-INVITE is answered in SRTP to match.
                         call.srtp_active = started.srtp_active;
-                        call.remote_media = Some(remote);
+                        call.remote_media = Some(remote.for_session(started.srtp_active));
                     }
                 }
 
@@ -472,7 +472,7 @@ pub async fn handle_invite_response(
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.srtp_active = started.srtp_active;
                             call.set_remote_rtp(plan.remote.addr);
-                            call.remote_media = Some(plan.remote.clone());
+                            call.remote_media = Some(plan.remote.clone().for_session(started.srtp_active));
                             call.set_media(started.session);
                         }
 

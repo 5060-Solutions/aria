@@ -12,6 +12,7 @@ mod instance;
 pub mod media;
 pub mod mwi;
 pub mod presence;
+pub(crate) mod recording_parts;
 mod signaling;
 #[allow(dead_code)]
 pub mod srtp;
@@ -342,7 +343,10 @@ pub(crate) fn save_recording(
 ) -> Result<Option<std::path::PathBuf>, String> {
     let path = media
         .stop_recording()
-        .map_err(|e| format!("Failed to stop recording: {}", e))?;
+        .map_err(|e| format!("Failed to stop recording: {}", e))?
+        // The rest of a recording a media restart split: joined onto the
+        // first part, which is then the call's recording.
+        .map(recording_parts::join);
     if let Some(p) = path.as_ref() {
         log::info!("Call recording saved: {}", p.display());
         // Runs on its own thread, so a slow transcription cannot hold up
@@ -382,6 +386,35 @@ pub(crate) async fn finish_call_media(
         log::error!("Media teardown task failed: {}", e);
         None
     })
+}
+
+/// Stop a session a media restart replaced, whose recording carries on in
+/// the new session at `continued_in`.
+///
+/// The part saved here is not the call's recording yet, so it is not
+/// transcribed or reported: when the part at `continued_in` is saved, it is
+/// appended to this one (see `recording_parts`). The caller has registered
+/// `continued_in` with `recording_parts::expect` before the new session
+/// could be stopped.
+pub(crate) async fn finish_replaced_media(old: media::MediaSession, continued_in: std::path::PathBuf) {
+    let saved = tokio::task::spawn_blocking(move || {
+        let path = old.stop_recording().map(|p| p.map(recording_parts::join));
+        old.stop();
+        path
+    })
+    .await;
+    let earlier = match saved {
+        Ok(Ok(path)) => path,
+        Ok(Err(e)) => {
+            log::warn!("Could not save the first part of a recording: {}", e);
+            None
+        }
+        Err(e) => {
+            log::error!("Media teardown task failed: {}", e);
+            None
+        }
+    };
+    recording_parts::resolve(&continued_in, earlier);
 }
 
 impl ManagerState {
@@ -1971,7 +2004,7 @@ impl SipManager {
             call.set_to_tag(to_tag.clone());
             call.pending_2xx = Some(state::Pending2xx { cseq: invite_cseq, response: response.clone() });
             call.srtp_active = srtp_active;
-            call.remote_media = Some(plan.remote.clone());
+            call.remote_media = Some(plan.remote.clone().for_session(srtp_active));
             call.set_remote_hold(remote_hold);
             // The session went in through the FSM, not set_media: a mute
             // pressed while the call rang applies now.

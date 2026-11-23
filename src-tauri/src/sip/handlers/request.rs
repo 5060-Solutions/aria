@@ -84,6 +84,7 @@ pub async fn handle_incoming_request(
                         drop(s);
                         let resp = super::media_update::answer_reinvite(
                             state,
+                            event_tx,
                             &call_internal_id,
                             account_id,
                             text,

@@ -299,6 +299,72 @@ async fn an_srtp_rekey_reinvite_restarts_and_stays_encrypted() {
     assert_eq!(srtp, Some(true));
 }
 
+/// Every `srtp_active` the call events for `call_id` carried, until none has
+/// arrived for a while.
+async fn srtp_updates(rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::sip::SipEvent>, call_id: &str) -> Vec<(String, bool)> {
+    let mut seen = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(300), rx.recv()).await {
+        if let crate::sip::SipEvent::CallStateChanged(e) = event {
+            if let (true, Some(srtp)) = (e.call_id == call_id, e.srtp_active) {
+                seen.push((e.state, srtp));
+            }
+        }
+    }
+    seen
+}
+
+/// FreeSWITCH-style optional SRTP: an `RTP/AVP` offer with a crypto line,
+/// answered in plain RTP. The offer's key was recorded as what the session
+/// ran against, so the first session refresh, with the very same SDP,
+/// looked like a re-key and restarted the media on a new port.
+#[tokio::test]
+async fn a_refresh_of_a_plain_answer_to_an_offer_with_crypto_keeps_the_session() {
+    let (mgr, mut rx, seen, sock, pbx, client) = client(SrtpMode::Sdes, InviteReply::Busy).await;
+    let offer = pbx_sdp(40000, "RTP/AVP", "0", &crypto(&srtp_key()));
+    let sip_call_id = "media-optional-srtp@pbx";
+    let (call_id, ok1) = answered(&mgr, &mut rx, &seen, &sock, (pbx, client), sip_call_id, &offer).await;
+    assert!(body(&ok1).contains("RTP/AVP") && !body(&ok1).contains("a=crypto"), "{ok1}");
+    let to_tag = header(&ok1, "To").and_then(|t| param(t, "tag")).unwrap();
+    let before = session(&mgr, &call_id).await.unwrap();
+
+    sock.send_to(invite(pbx, client, sip_call_id, 2, Some(&to_tag), &offer).as_bytes(), client).await.unwrap();
+    let ok2 = final_response(&seen, 2).await;
+    assert!(ok2.starts_with("SIP/2.0 200"), "{ok2}");
+    assert_eq!(m_line(body(&ok2)).0, m_line(body(&ok1)).0, "a refresh moved our port");
+    assert_eq!(origin(body(&ok2)), origin(body(&ok1)), "an unchanged answer keeps its o= version");
+    assert_eq!(session(&mgr, &call_id).await.unwrap(), before, "a refresh restarted the session");
+}
+
+/// A re-INVITE that turns encryption on, then off again, moves the call
+/// screen's padlock each time: the call event the padlock reads is sent
+/// with the new `srtp_active`, in the call's own state. It used to keep
+/// showing what the first answer reported. A refresh that changes nothing
+/// sends nothing.
+#[tokio::test]
+async fn a_reinvite_that_changes_encryption_updates_the_padlock() {
+    let (mgr, mut rx, seen, sock, pbx, client) = client(SrtpMode::Sdes, InviteReply::Busy).await;
+    let plain = pbx_sdp(40000, "RTP/AVP", "0", "");
+    let sip_call_id = "media-padlock@pbx";
+    let (call_id, ok1) = answered(&mgr, &mut rx, &seen, &sock, (pbx, client), sip_call_id, &plain).await;
+    let to_tag = header(&ok1, "To").and_then(|t| param(t, "tag")).unwrap();
+    // The "connected" event reports the answer's state.
+    assert_eq!(srtp_updates(&mut rx, &call_id).await, vec![("connected".to_owned(), false)]);
+
+    let encrypted = pbx_sdp(40000, "RTP/SAVP", "0", &crypto(&srtp_key()));
+    sock.send_to(invite(pbx, client, sip_call_id, 2, Some(&to_tag), &encrypted).as_bytes(), client).await.unwrap();
+    let ok2 = final_response(&seen, 2).await;
+    assert!(body(&ok2).contains("a=crypto"), "{ok2}");
+    assert_eq!(srtp_updates(&mut rx, &call_id).await, vec![("connected".to_owned(), true)]);
+
+    sock.send_to(invite(pbx, client, sip_call_id, 3, Some(&to_tag), &encrypted).as_bytes(), client).await.unwrap();
+    final_response(&seen, 3).await;
+    assert_eq!(srtp_updates(&mut rx, &call_id).await, vec![], "a refresh changed nothing");
+
+    sock.send_to(invite(pbx, client, sip_call_id, 4, Some(&to_tag), &plain).as_bytes(), client).await.unwrap();
+    final_response(&seen, 4).await;
+    assert_eq!(srtp_updates(&mut rx, &call_id).await, vec![("connected".to_owned(), false)]);
+}
+
 /// Place a call that the PBX rings (180) and leaves to the test; returns
 /// the call id and the INVITE it saw.
 async fn ringing_outbound(

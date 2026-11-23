@@ -75,6 +75,20 @@ impl RemoteMedia {
         let moved = next.addr != self.addr && !next.addr.ip().is_unspecified() && next.addr.port() != 0;
         moved || next.audio != self.audio || next.srtp_key != self.srtp_key
     }
+
+    /// This media as a session that came up with `srtp_active` uses it: the
+    /// far end's key only when the session is encrypted.
+    ///
+    /// What a call records as its `remote_media` goes through this, as a
+    /// re-INVITE's offer has its key cleared when it will not be answered in
+    /// SRTP. Recording an offer's key for a plain-RTP answer made the first,
+    /// identical, session refresh look like a new key and restart the media.
+    pub fn for_session(mut self, srtp_active: bool) -> Self {
+        if !srtp_active {
+            self.srtp_key = None;
+        }
+        self
+    }
 }
 
 /// Everything needed to start a call's media session.
