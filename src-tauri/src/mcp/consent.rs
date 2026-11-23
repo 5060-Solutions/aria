@@ -1,13 +1,14 @@
 //! Consent for call control requested over MCP.
 //!
-//! An assistant can only place a call after the user has said yes to that
-//! specific call in the app. The tool registers a request here, the frontend
+//! An assistant can only place, answer or transfer a call after the user has
+//! said yes to that specific action in the app, and can only send keypad
+//! tones on a call after the user has allowed tones on that call once. The tool registers a request here, the frontend
 //! shows a dialog and reports the decision through the `mcp_call_decision`
 //! command, and the tool is released. A request nobody answers is denied
 //! when its timeout runs out, so a tool call can never hang on a dialog the
 //! user did not see.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -20,7 +21,8 @@ pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Decision {
     pub allowed: bool,
-    /// The id of the call the frontend placed, when allowed.
+    /// When allowed: the call the frontend placed, or for an action on an
+    /// existing call, that call's id echoed back.
     pub call_id: Option<String>,
     /// Why it was not placed: "denied", "timeout", or the dial error.
     pub reason: Option<String>,
@@ -48,6 +50,8 @@ impl Decision {
 #[derive(Default)]
 pub struct ConsentRegistry {
     pending: Mutex<HashMap<String, oneshot::Sender<Decision>>>,
+    /// Calls the user has allowed keypad tones on.
+    dtmf_calls: Mutex<HashSet<String>>,
 }
 
 impl ConsentRegistry {
@@ -99,6 +103,30 @@ impl ConsentRegistry {
                 Decision::denied("timeout")
             }
         }
+    }
+
+    /// Whether the user has allowed keypad tones on `call_id`.
+    pub fn dtmf_allowed(&self, call_id: &str) -> bool {
+        self.dtmf_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(call_id)
+    }
+
+    /// Remember that the user allowed keypad tones on `call_id`.
+    pub fn allow_dtmf(&self, call_id: &str) {
+        self.dtmf_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(call_id.to_string());
+    }
+
+    /// Forget the approvals for calls `keep` rejects (calls that ended).
+    pub fn retain_dtmf(&self, keep: impl Fn(&str) -> bool) {
+        self.dtmf_calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|id| keep(id));
     }
 
     /// How many requests are waiting.
@@ -154,6 +182,17 @@ mod tests {
         let decision = registry.wait(&id, rx, Duration::from_secs(1)).await;
         assert!(!decision.allowed);
         assert_eq!(decision.reason.as_deref(), Some("denied"));
+    }
+
+    #[test]
+    fn dtmf_approval_is_per_call_and_forgotten_when_the_call_ends() {
+        let registry = ConsentRegistry::new();
+        assert!(!registry.dtmf_allowed("a"));
+        registry.allow_dtmf("a");
+        assert!(registry.dtmf_allowed("a"));
+        assert!(!registry.dtmf_allowed("b"));
+        registry.retain_dtmf(|id| id == "b");
+        assert!(!registry.dtmf_allowed("a"));
     }
 
     #[test]

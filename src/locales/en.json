@@ -384,7 +384,7 @@
     "intro": "A local MCP server lets an assistant on this computer (Claude Code, for example) read registration state, calls and the SIP trace. Nothing leaves this computer and passwords are never exposed.",
     "enableRead": "Allow local assistants to read status and traces",
     "enableControl": "Allow assistants to place and control calls",
-    "enableControlNote": "Each new call still asks you first.",
+    "enableControlNote": "You are asked first before an assistant places a call, answers a call, transfers a call, or sends keypad tones on a call (once per call). Hanging up and hold happen without asking.",
     "port": "Port",
     "portNote": "Served on 127.0.0.1 only.",
     "notRunning": "The server could not start: {{error}}",
@@ -400,7 +400,13 @@
     "callRequestExpires": "This request expires in {{seconds}} s.",
     "allow": "Allow",
     "deny": "Deny",
-    "noAccount": "No account is available to place this call."
+    "noAccount": "No account is available to place this call.",
+    "answerRequestTitle": "An assistant wants to answer a call",
+    "answerRequestBody": "An assistant wants to answer the incoming call from {{remote}} on {{account}}. Your microphone is live as soon as the call is answered.",
+    "transferRequestTitle": "An assistant wants to transfer a call",
+    "transferRequestBody": "An assistant wants to transfer your call with {{remote}} to {{number}}.",
+    "dtmfRequestTitle": "An assistant wants to press keys on a call",
+    "dtmfRequestBody": "An assistant wants to send keypad tones on your call with {{remote}}, starting with {{number}}. If you allow this, it can send more tones on this call without asking again."
   },
   "provision": {
     "title": "Add this phone line?",

@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
 use super::consent::{ConsentRegistry, Decision};
-use super::tools::{CallRequest, CallRequestSink, ToolContext, ToolSettings};
+use super::tools::{
+    CallControl, CallInfo, CallRequest, CallRequestSink, OpFuture, RequestKind, ToolContext,
+    ToolSettings,
+};
 use super::*;
 use crate::sip::diagnostics::{DiagnosticLog, MessageDirection};
 
@@ -146,6 +149,12 @@ struct Harness {
 
 impl Harness {
     async fn start() -> Self {
+        Self::start_with(None).await
+    }
+
+    /// Like `start`, with the control tools acting on `calls` instead of
+    /// the (call-less) manager.
+    async fn start_with(calls: Option<Arc<dyn CallControl>>) -> Self {
         let (manager, events) = SipManager::new_with_receiver();
         // As the app runs it: setup() starts the loops after construction.
         manager.start_background_tasks();
@@ -154,6 +163,7 @@ impl Harness {
         let sink = Arc::new(RecordingSink::default());
         let ctx = ToolContext {
             manager: manager.clone(),
+            calls: calls.unwrap_or_else(|| Arc::new(manager.clone())),
             consent: consent.clone(),
             settings: settings.clone(),
             requests: sink.clone(),
@@ -589,4 +599,319 @@ async fn stopping_the_server_frees_the_port() {
     // The port is free again: a second listener can take it.
     let listener = tokio::net::TcpListener::bind(addr).await;
     assert!(listener.is_ok(), "port {addr} still held after stop");
+}
+
+// ── Consent for actions on existing calls ───────────────────────────────────
+
+fn fake_call(id: &str, state: &str, remote: &str) -> CallInfo {
+    CallInfo {
+        call_id: id.to_string(),
+        account_id: "acct-1".into(),
+        remote: remote.to_string(),
+        direction: "inbound".into(),
+        state: state.to_string(),
+        duration_secs: None,
+        codec: None,
+        srtp_active: false,
+        sip_call_id: format!("sip-{id}"),
+        rtp_stats: None,
+    }
+}
+
+/// Calls that exist without a network, and a log of what was done to them.
+struct FakeCalls {
+    calls: Vec<(String, String, String)>,
+    done: Mutex<Vec<String>>,
+}
+
+impl FakeCalls {
+    fn new(calls: &[(&str, &str, &str)]) -> Arc<Self> {
+        Arc::new(Self {
+            calls: calls
+                .iter()
+                .map(|(id, state, remote)| (id.to_string(), state.to_string(), remote.to_string()))
+                .collect(),
+            done: Mutex::new(vec![]),
+        })
+    }
+
+    fn done(&self) -> Vec<String> {
+        self.done.lock().unwrap().clone()
+    }
+
+    fn record(&self, what: String) -> OpFuture<'_, Result<(), String>> {
+        self.done.lock().unwrap().push(what);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl CallControl for FakeCalls {
+    fn active_calls(&self) -> OpFuture<'_, Vec<CallInfo>> {
+        let calls = self
+            .calls
+            .iter()
+            .map(|(id, state, remote)| fake_call(id, state, remote))
+            .collect();
+        Box::pin(async move { calls })
+    }
+    fn account_domain<'a>(&'a self, _account_id: &'a str) -> OpFuture<'a, Option<String>> {
+        Box::pin(async { Some("pbx.example".to_string()) })
+    }
+    fn answer<'a>(&'a self, call_id: &'a str) -> OpFuture<'a, Result<(), String>> {
+        self.record(format!("answer {call_id}"))
+    }
+    fn hangup<'a>(&'a self, call_id: &'a str) -> OpFuture<'a, Result<(), String>> {
+        self.record(format!("hangup {call_id}"))
+    }
+    fn hold<'a>(&'a self, call_id: &'a str, held: bool) -> OpFuture<'a, Result<(), String>> {
+        self.record(format!("hold {call_id} {held}"))
+    }
+    fn transfer_blind<'a>(
+        &'a self,
+        call_id: &'a str,
+        target_uri: &'a str,
+    ) -> OpFuture<'a, Result<(), String>> {
+        self.record(format!("transfer {call_id} {target_uri}"))
+    }
+    fn send_dtmf<'a>(
+        &'a self,
+        call_id: &'a str,
+        digit: &'a str,
+    ) -> OpFuture<'a, Result<(), String>> {
+        self.record(format!("dtmf {call_id} {digit}"))
+    }
+}
+
+/// Answer every dialog the tools show with `decide(request)`, as the
+/// frontend would. Abort the handle when done.
+fn answer_dialogs(
+    h: &Harness,
+    decide: impl Fn(&CallRequest) -> Decision + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    let consent = h.consent.clone();
+    let sink = h.sink.clone();
+    tokio::spawn(async move {
+        let mut answered = 0;
+        loop {
+            let next = sink.requests.lock().unwrap().get(answered).cloned();
+            if let Some(req) = next {
+                answered += 1;
+                let _ = consent.decide(&req.request_id, decide(&req));
+            } else {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    })
+}
+
+/// Allow, the way the frontend does for an existing call: echo its id.
+fn allow(req: &CallRequest) -> Decision {
+    Decision::allowed(req.call_id.clone().expect("the request names the call"))
+}
+
+fn error_message(reply: &Value) -> String {
+    reply["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected an error: {reply}"))
+        .to_string()
+}
+
+fn requests(h: &Harness) -> Vec<CallRequest> {
+    h.sink.requests.lock().unwrap().clone()
+}
+
+#[tokio::test]
+async fn answer_call_is_not_answered_when_the_user_denies() {
+    let fake = FakeCalls::new(&[("c1", "incoming", "sip:attacker@evil.example")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+    let dialogs = answer_dialogs(&h, |_| Decision::denied("denied"));
+
+    let reply = h.call_tool(1, "answer_call", json!({})).await;
+    assert!(error_message(&reply).contains("denied"), "{reply}");
+    assert!(fake.done().is_empty(), "answered anyway: {:?}", fake.done());
+
+    // The dialog said what was being approved.
+    let req = requests(&h)[0].clone();
+    assert_eq!(req.kind, RequestKind::Answer);
+    assert_eq!(req.call_id.as_deref(), Some("c1"));
+    assert_eq!(req.account_id.as_deref(), Some("acct-1"));
+    assert_eq!(req.number, "sip:attacker@evil.example");
+    // And the refusal is in the trace.
+    assert!(h
+        .manager
+        .get_diagnostics()
+        .await
+        .iter()
+        .any(|l| matches!(l.direction, MessageDirection::App) && l.summary.contains("denied")));
+
+    dialogs.abort();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn answer_call_answers_once_the_user_allows() {
+    let fake = FakeCalls::new(&[("c1", "incoming", "sip:200@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+    let dialogs = answer_dialogs(&h, allow);
+
+    let reply = h.call_tool(1, "answer_call", json!({})).await;
+    assert_eq!(structured(&reply)["action"], json!("answer"));
+    assert_eq!(fake.done(), vec!["answer c1".to_string()]);
+    assert_eq!(requests(&h).len(), 1);
+
+    dialogs.abort();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_allow_for_another_call_does_not_count() {
+    let fake = FakeCalls::new(&[("c1", "incoming", "sip:200@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+    let dialogs = answer_dialogs(&h, |_| Decision::allowed("some-other-call"));
+
+    let reply = h.call_tool(1, "answer_call", json!({})).await;
+    assert!(error_message(&reply).contains("different call"), "{reply}");
+    assert!(fake.done().is_empty());
+
+    dialogs.abort();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn answer_call_refuses_a_call_that_is_not_ringing() {
+    let fake = FakeCalls::new(&[("c1", "connected", "sip:200@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+
+    let reply = h.call_tool(1, "answer_call", json!({ "call_id": "c1" })).await;
+    assert!(error_message(&reply).contains("not ringing"), "{reply}");
+    assert!(requests(&h).is_empty());
+    assert!(fake.done().is_empty());
+
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn transfer_call_is_not_sent_when_the_user_denies() {
+    let fake = FakeCalls::new(&[("c1", "connected", "sip:200@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+    let dialogs = answer_dialogs(&h, |_| Decision::denied("denied"));
+
+    let reply = h
+        .call_tool(
+            1,
+            "transfer_call",
+            json!({ "call_id": "c1", "target": "sip:premium@toll.example" }),
+        )
+        .await;
+    assert!(error_message(&reply).contains("denied"), "{reply}");
+    assert!(fake.done().is_empty(), "transferred anyway: {:?}", fake.done());
+    let req = requests(&h)[0].clone();
+    assert_eq!(req.kind, RequestKind::Transfer);
+    assert_eq!(req.number, "sip:premium@toll.example");
+    assert_eq!(req.remote.as_deref(), Some("sip:200@pbx"));
+
+    dialogs.abort();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn transfer_call_is_sent_once_the_user_allows() {
+    let fake = FakeCalls::new(&[("c1", "connected", "sip:200@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+    let dialogs = answer_dialogs(&h, allow);
+
+    let reply = h
+        .call_tool(1, "transfer_call", json!({ "call_id": "c1", "target": "300" }))
+        .await;
+    structured(&reply);
+    // A bare number is completed with the account's domain, and the dialog
+    // shows the full target that is sent.
+    assert_eq!(fake.done(), vec!["transfer c1 sip:300@pbx.example".to_string()]);
+    assert_eq!(requests(&h)[0].number, "sip:300@pbx.example");
+
+    dialogs.abort();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn send_dtmf_asks_once_per_call() {
+    let fake = FakeCalls::new(&[("c1", "connected", "sip:ivr@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+    let dialogs = answer_dialogs(&h, allow);
+
+    let reply = h.call_tool(1, "send_dtmf", json!({ "digits": "1 2" })).await;
+    structured(&reply);
+    let reply = h.call_tool(2, "send_dtmf", json!({ "digits": "#" })).await;
+    structured(&reply);
+    assert_eq!(fake.done(), vec!["dtmf c1 1", "dtmf c1 2", "dtmf c1 #"]);
+    // One dialog, for the first digits.
+    let shown = requests(&h);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    assert_eq!(shown[0].kind, RequestKind::Dtmf);
+    assert_eq!(shown[0].number, "12");
+
+    dialogs.abort();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn send_dtmf_sends_nothing_when_the_user_denies_and_asks_again_next_time() {
+    let fake = FakeCalls::new(&[("c1", "connected", "sip:ivr@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+    let dialogs = answer_dialogs(&h, |_| Decision::denied("denied"));
+
+    for id in 1..=2 {
+        let reply = h.call_tool(id, "send_dtmf", json!({ "digits": "1234" })).await;
+        assert!(error_message(&reply).contains("denied"), "{reply}");
+    }
+    assert!(fake.done().is_empty());
+    assert_eq!(requests(&h).len(), 2);
+
+    dialogs.abort();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn send_dtmf_rejects_digits_the_media_layer_would_drop() {
+    let fake = FakeCalls::new(&[("c1", "connected", "sip:ivr@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+
+    for (id, digits, expected) in [
+        (1, "12A", "not supported"),
+        (2, "d", "not supported"),
+        (3, "1x", "not a DTMF digit"),
+        (4, "1,2", "not a DTMF digit"),
+        (5, "   ", "must not be empty"),
+    ] {
+        let reply = h.call_tool(id, "send_dtmf", json!({ "digits": digits })).await;
+        assert!(error_message(&reply).contains(expected), "{digits}: {reply}");
+    }
+    // Refused before anyone was asked and before anything was sent.
+    assert!(requests(&h).is_empty());
+    assert!(fake.done().is_empty());
+
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn hangup_and_hold_do_not_ask() {
+    let fake = FakeCalls::new(&[("c1", "connected", "sip:200@pbx")]);
+    let h = Harness::start_with(Some(fake.clone())).await;
+    h.settings.write().await.allow_call_control = true;
+
+    structured(&h.call_tool(1, "hold_call", json!({ "call_id": "c1", "held": true })).await);
+    structured(&h.call_tool(2, "hangup_call", json!({})).await);
+    assert_eq!(fake.done(), vec!["hold c1 true", "hangup c1"]);
+    assert!(requests(&h).is_empty());
+
+    h.stop().await;
 }
