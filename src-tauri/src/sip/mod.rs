@@ -3075,7 +3075,7 @@ impl SipManager {
                         (msg, transport, server_addr, sub.target_uri.clone(), sub.cseq)
                     };
                     let (msg, transport, server_addr, target_uri, cseq) = sent;
-                    if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+                    if let Err(e) = send_subscribe(&state, &aid, &call_id, &transport, server_addr, msg).await {
                         log::error!("SUBSCRIBE refresh failed for {}: {}", target_uri, e);
                     } else {
                         log::debug!("Sent SUBSCRIBE refresh for {} (cseq={})", target_uri, cseq);
@@ -3994,6 +3994,46 @@ pub(crate) async fn send_non_invite(
     };
     transaction::send_request(&transactions, transport, dest, msg, transaction::Kind::NonInvite, timing, None)
         .await
+}
+
+/// Send a SUBSCRIBE for the subscription `sub_call_id` of `account_id` as a
+/// non-INVITE transaction: resent over UDP until answered.
+///
+/// A message-summary subscription the server never answered is dropped when
+/// the transaction times out. Left `Pending`, it counted as live, so no later
+/// registration subscribed again and voicemail counts never arrived; dropped,
+/// the next registration refresh subscribes afresh.
+pub(crate) async fn send_subscribe(
+    state: &Arc<RwLock<ManagerState>>,
+    account_id: &str,
+    sub_call_id: &str,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    msg: String,
+) -> Result<(), String> {
+    let handle = send_non_invite(state, transport, dest, msg).await?;
+    let state = state.clone();
+    let (account_id, sub_call_id) = (account_id.to_owned(), sub_call_id.to_owned());
+    tokio::spawn(async move {
+        if !matches!(handle.await, Ok(transaction::Outcome::TimedOut)) {
+            return;
+        }
+        let mut s = state.write().await;
+        let Some(account) = s.get_account_mut(&account_id) else { return };
+        let before = account.subscriptions.len();
+        account.subscriptions.retain(|sub| {
+            !(sub.call_id == sub_call_id
+                && sub.event_type == EventType::MessageSummary
+                && sub.state == SubscriptionState::Pending)
+        });
+        if account.subscriptions.len() != before {
+            log::warn!(
+                "message-summary SUBSCRIBE for {} went unanswered; subscribing again at the next registration",
+                account_id
+            );
+        }
+    });
+    Ok(())
 }
 
 /// The CSeq number of a SIP message.

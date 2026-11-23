@@ -97,6 +97,9 @@ enum InviteReply {
     Silent,
 }
 
+/// Responses queued for the fake PBX to send: a status and extra headers.
+type ScriptedReplies = Arc<Mutex<Vec<(u16, Vec<String>)>>>;
+
 /// How the fake PBX behaves beyond its defaults.
 #[derive(Clone)]
 struct PbxOptions {
@@ -130,6 +133,12 @@ struct PbxOptions {
     drop_once: Arc<Mutex<Vec<String>>>,
     /// Methods whose every transaction loses its first copy (by Via branch).
     drop_first_copy_of: Vec<&'static str>,
+    /// Answers for the next message-summary SUBSCRIBEs, one per request
+    /// copy, before the usual 200: a status and extra headers. Shared, so a
+    /// test can arm it mid-subscription.
+    mwi_replies: ScriptedReplies,
+    /// While set, message-summary SUBSCRIBEs are recorded and not answered.
+    ignore_mwi: Arc<AtomicBool>,
 }
 
 impl Default for PbxOptions {
@@ -148,6 +157,8 @@ impl Default for PbxOptions {
             ack_invite_final: false,
             drop_once: Arc::new(Mutex::new(Vec::new())),
             drop_first_copy_of: Vec::new(),
+            mwi_replies: Arc::new(Mutex::new(Vec::new())),
+            ignore_mwi: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -385,6 +396,18 @@ async fn start_pbx_with_options(
                 // once in an in-dialog NOTIFY.
                 "SUBSCRIBE" if is_mwi => {
                     rec.lock().unwrap().mwi_subscribes.push(msg.clone());
+                    if opts.ignore_mwi.load(Ordering::SeqCst) {
+                        continue;
+                    }
+                    let queued = {
+                        let mut replies = opts.mwi_replies.lock().unwrap();
+                        (!replies.is_empty()).then(|| replies.remove(0))
+                    };
+                    if let Some((code, extra)) = queued {
+                        let reply = respond(&msg, code, "Scripted", &extra);
+                        let _ = sock.send_to(reply.as_bytes(), from).await;
+                        continue;
+                    }
                     let ok = respond(&msg, 200, "OK", &[format!("Expires: {}", opts.subscribe_expires)]);
                     let _ = sock.send_to(ok.as_bytes(), from).await;
                     // Off unless asked for: the client's 200 to the NOTIFY
@@ -1346,6 +1369,146 @@ async fn registering_subscribes_to_the_accounts_message_summary_once() {
         s.mwi_subscribes.iter().filter_map(|m| header(m, "Call-ID")).collect();
     assert_eq!(dialogs.len(), 1, "refreshes must reuse the one subscription: {}", s.mwi_subscribes.len());
     assert!(s.subscribes.is_empty(), "no BLF subscription was asked for");
+}
+
+/// The account's message-summary subscriptions as (state, Call-ID), and
+/// whether MWI has been marked refused.
+async fn mwi_state(mgr: &SipManager, account_id: &str) -> (Vec<(super::presence::SubscriptionState, String)>, bool) {
+    let s = mgr.state.read().await;
+    let a = s.accounts.get(account_id).expect("the account");
+    let subs = a
+        .subscriptions
+        .iter()
+        .filter(|x| x.event_type == super::presence::EventType::MessageSummary)
+        .map(|x| (x.state, x.call_id.clone()))
+        .collect();
+    (subs, a.mwi_refused)
+}
+
+async fn wait_for_mwi(mgr: &SipManager, account_id: &str, what: &str, cond: impl Fn(&[(super::presence::SubscriptionState, String)]) -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    while !cond(&mwi_state(mgr, account_id).await.0) {
+        assert!(tokio::time::Instant::now() < deadline, "{what}: {:?}", mwi_state(mgr, account_id).await);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn is_active(subs: &[(super::presence::SubscriptionState, String)]) -> bool {
+    subs.len() == 1 && subs[0].0 == super::presence::SubscriptionState::Active
+}
+
+/// A 481 to an MWI refresh means the server lost the subscription (a
+/// restart, or the refresh reached the other cluster node). It used to mark
+/// MWI refused for the rest of the session; now a new subscription, in a new
+/// dialog, replaces it.
+#[tokio::test]
+async fn an_mwi_refresh_answered_481_subscribes_afresh() {
+    let opts = PbxOptions { subscribe_expires: 2, ..PbxOptions::default() };
+    let replies = opts.mwi_replies.clone();
+    let (pbx, seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(pbx, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    wait_for_mwi(&mgr, &cfg.id, "never subscribed", is_active).await;
+    let first_dialog = mwi_state(&mgr, &cfg.id).await.0[0].1.clone();
+
+    // The refresh (due at 1 s) gets a 481.
+    replies.lock().unwrap().push((481, vec![]));
+    wait_for_mwi(&mgr, &cfg.id, "never subscribed again", |subs| is_active(subs) && subs[0].1 != first_dialog).await;
+
+    let (_, refused) = mwi_state(&mgr, &cfg.id).await;
+    assert!(!refused, "a 481 is not a refusal");
+    let s = seen.lock().unwrap();
+    let fresh = s.mwi_subscribes.iter().find(|m| header(m, "Call-ID") != Some(first_dialog.as_str())).expect("a new SUBSCRIBE");
+    assert!(header(fresh, "To").is_some_and(|t| !t.contains("tag=")), "a new dialog: {fresh}");
+}
+
+/// A 423 says the Expires asked for is too short. The SUBSCRIBE is sent
+/// again with the server's Min-Expires, and MWI is not marked refused.
+#[tokio::test]
+async fn an_mwi_subscribe_answered_423_is_retried_with_min_expires() {
+    let opts = PbxOptions::default();
+    opts.mwi_replies.lock().unwrap().push((423, vec!["Min-Expires: 7200".into()]));
+    let (pbx, seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(pbx, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    wait_for_mwi(&mgr, &cfg.id, "never subscribed", is_active).await;
+
+    assert!(!mwi_state(&mgr, &cfg.id).await.1, "a 423 is not a refusal");
+    let s = seen.lock().unwrap();
+    assert_eq!(s.mwi_subscribes.len(), 2, "{:?}", s.mwi_subscribes);
+    let retry = &s.mwi_subscribes[1];
+    assert_eq!(header(retry, "Expires"), Some("7200"), "{retry}");
+    assert_eq!(header(retry, "CSeq"), Some("2 SUBSCRIBE"));
+    assert_eq!(header(retry, "Call-ID"), header(&s.mwi_subscribes[0], "Call-ID"));
+}
+
+/// A refusal that stands (403) still turns MWI off for the session.
+#[tokio::test]
+async fn an_mwi_subscribe_answered_403_is_not_asked_again() {
+    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    opts.mwi_replies.lock().unwrap().push((403, vec![]));
+    let (pbx, seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(pbx, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    // Past a registration refresh (every second here).
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    let (subs, refused) = mwi_state(&mgr, &cfg.id).await;
+    assert!(refused && subs.is_empty(), "{subs:?}");
+    assert!(seen.lock().unwrap().register_ok.len() >= 2, "no registration refresh happened");
+    assert_eq!(seen.lock().unwrap().mwi_subscribes.len(), 1);
+}
+
+/// The MWI SUBSCRIBE goes through the transaction layer: a lost first copy
+/// is resent, and the counts arrive. It used to go out once, and one lost
+/// datagram meant no voicemail count until the app reconnected.
+#[tokio::test]
+async fn a_lost_mwi_subscribe_is_retransmitted() {
+    let opts = PbxOptions { mwi_notify: true, drop_first_copy_of: vec!["SUBSCRIBE"], ..PbxOptions::default() };
+    let (pbx, seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, mut rx) = manager_with(fast_timing());
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+            panic!("no voicemail status: the lost SUBSCRIBE was never resent");
+        };
+        if matches!(event, super::SipEvent::VoicemailStatus(_)) {
+            break;
+        }
+    }
+    let s = seen.lock().unwrap();
+    assert_eq!(s.dropped.len(), 1);
+    assert_eq!(via_branch(&s.mwi_subscribes[0]), via_branch(&s.dropped[0]), "the copy is the same transaction");
+}
+
+/// An MWI SUBSCRIBE that is never answered times out (Timer F) and is
+/// dropped, so the next registration refresh subscribes again. Left
+/// pending, it counted as live and blocked every later attempt.
+#[tokio::test]
+async fn an_unanswered_mwi_subscribe_is_retried_at_the_next_registration() {
+    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let ignore = opts.ignore_mwi.clone();
+    ignore.store(true, Ordering::SeqCst);
+    let (pbx, seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, _rx) = manager_with(fast_timing());
+    let cfg = account(pbx, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+
+    // Timer F is 400 ms here; the registration refreshes at 1 s.
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    let (subs, refused) = mwi_state(&mgr, &cfg.id).await;
+    assert!(subs.is_empty() && !refused, "the unanswered subscription is still there: {subs:?}");
+    let first_dialog = {
+        let s = seen.lock().unwrap();
+        assert!(s.mwi_subscribes.len() >= 2, "never resent: {}", s.mwi_subscribes.len());
+        header(&s.mwi_subscribes[0], "Call-ID").unwrap().to_owned()
+    };
+
+    ignore.store(false, Ordering::SeqCst);
+    wait_for_mwi(&mgr, &cfg.id, "never subscribed again", |subs| is_active(subs) && subs[0].1 != first_dialog).await;
 }
 
 /// When an outbound proxy is configured, requests must be routed to that proxy

@@ -103,7 +103,9 @@ pub async fn subscribe_after_registration(
         sub.expires,
         None,
     );
-    if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+    // Resent until answered; dropped (so the next registration tries again)
+    // if never answered.
+    if let Err(e) = crate::sip::send_subscribe(state, account_id, &sub.call_id, &transport, server_addr, msg).await {
         let mut s = state.write().await;
         if let Some(account) = s.get_account_mut(account_id) {
             account.subscriptions.retain(|x| x.id != sub.id);

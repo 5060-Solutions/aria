@@ -166,9 +166,32 @@ pub async fn handle_subscribe_response(
                 Some(&auth_header),
             );
 
-            if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+            if let Err(e) =
+                crate::sip::send_subscribe(state, account_id, &sub_call_id, &transport, server_addr, msg).await
+            {
                 log::error!("Failed to send authenticated SUBSCRIBE: {}", e);
             }
+        }
+        481 => {
+            // The server has no such subscription: it restarted, or a
+            // refresh reached the other node of a cluster. Not a refusal:
+            // start over with a new dialog, which the refresh timer sends on
+            // its next tick. This used to turn MWI off until a restart.
+            log::info!("SUBSCRIBE answered 481; subscribing afresh");
+            let mut s = state.write().await;
+            if let Some(account) = s.get_account_mut(account_id) {
+                if let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == call_id_header) {
+                    if sub.expires != 0 {
+                        *sub = sub.renewed();
+                    }
+                }
+            }
+        }
+        423 => {
+            // Interval Too Brief: ask again for at least Min-Expires
+            // (RFC 6665 §4.1.2.1), in the same dialog if there is one.
+            let min = extract_header(text, "Min-Expires").and_then(|m| m.trim().parse::<u32>().ok());
+            retry_with_min_expires(state, account_id, &call_id_header, min).await;
         }
         489 => {
             log::warn!("SUBSCRIBE rejected: Bad Event (489)");
@@ -182,9 +205,10 @@ pub async fn handle_subscribe_response(
             log::warn!("SUBSCRIBE failed: {}", status);
             let mut s = state.write().await;
             if let Some(account) = s.get_account_mut(account_id) {
-                // 403/404/405 and the like are a standing answer; a 5xx or a
-                // timeout-ish 408 may not be, so the next registration retries.
-                if (400..500).contains(&status) && status != 408 {
+                // 403/404/405 and the like, or a 6xx, are a standing answer;
+                // a 5xx or a timeout-ish 408 may not be, so the next
+                // registration retries. (481 and 423 are handled above.)
+                if refuses_subscription(status) {
                     crate::sip::mwi::note_subscribe_failure(account, &call_id_header);
                 }
                 account.subscriptions.retain(|s| s.call_id != call_id_header);
@@ -192,6 +216,65 @@ pub async fn handle_subscribe_response(
         }
         _ => {
             log::debug!("SUBSCRIBE response: {}", status);
+        }
+    }
+}
+
+/// Whether a final failure for a SUBSCRIBE is a standing refusal, so a
+/// message-summary subscription is not asked for again this session.
+fn refuses_subscription(status: u16) -> bool {
+    matches!(status, 400..=499 | 600..=699) && !matches!(status, 408 | 423 | 481)
+}
+
+/// Resend the SUBSCRIBE `sub_call_id` asking for `min` seconds, after a 423.
+/// A 423 without a usable Min-Expires (none, or no longer than what was
+/// asked) cannot be satisfied: the subscription is dropped, not refused, so
+/// the next registration may try again.
+async fn retry_with_min_expires(
+    state: &Arc<RwLock<ManagerState>>,
+    account_id: &str,
+    sub_call_id: &str,
+    min: Option<u32>,
+) {
+    let send = {
+        let mut s = state.write().await;
+        let Some(account) = s.get_account_mut(account_id) else { return };
+        let (Some(local_addr), Some(server_addr), Some(transport)) =
+            (account.local_addr, account.server_addr, account.transport.clone())
+        else {
+            return;
+        };
+        let config = account.config.clone();
+        let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == sub_call_id) else { return };
+        match min {
+            Some(min) if sub.expires != 0 && min > sub.expires => {
+                log::info!("SUBSCRIBE for {} too brief; asking for {} s", sub.target_uri, min);
+                sub.expires = min;
+                sub.cseq += 1;
+                let msg = build_subscribe(
+                    &config,
+                    &sub.target_uri,
+                    local_addr,
+                    &sub.call_id,
+                    sub.cseq,
+                    &sub.from_tag,
+                    sub.to_tag.as_deref(),
+                    &sub.event_type,
+                    sub.expires,
+                    None,
+                );
+                Some((msg, transport, server_addr))
+            }
+            _ => {
+                log::warn!("SUBSCRIBE for {} answered 423 with no usable Min-Expires; dropping it", sub.target_uri);
+                account.subscriptions.retain(|s| s.call_id != sub_call_id);
+                None
+            }
+        }
+    };
+    if let Some((msg, transport, server_addr)) = send {
+        if let Err(e) = crate::sip::send_subscribe(state, account_id, sub_call_id, &transport, server_addr, msg).await {
+            log::error!("Failed to resend SUBSCRIBE after 423: {}", e);
         }
     }
 }
@@ -318,6 +401,22 @@ pub async fn handle_notify_presence(
             } else {
                 account.subscriptions.retain(|s| s.call_id != call_id_header);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refuses_subscription;
+
+    #[test]
+    fn only_standing_answers_refuse_a_subscription() {
+        for status in [400, 403, 404, 405, 489, 603] {
+            assert!(refuses_subscription(status), "{status}");
+        }
+        // Lost state, too brief, timed out, or a server error: try again.
+        for status in [408, 423, 481, 500, 503] {
+            assert!(!refuses_subscription(status), "{status}");
         }
     }
 }
