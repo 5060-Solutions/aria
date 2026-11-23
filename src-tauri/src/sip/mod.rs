@@ -1763,6 +1763,13 @@ impl SipManager {
             let Some((aid, call)) = s.find_call_mut(call_id) else {
                 return Ok(());
             };
+            // Something else ended the call while the CANCEL or BYE was going
+            // out: the 487 for the INVITE, a BYE from the far end, or Timer
+            // B. Whatever did has already sent "ended"; a second one would
+            // file the call in history twice.
+            if call.is_ended() {
+                return Ok(());
+            }
             let aid = aid.to_string();
             // The 200 OK may have arrived while the CANCEL was going out, and
             // the response handler will have ACKed it. That dialog is now

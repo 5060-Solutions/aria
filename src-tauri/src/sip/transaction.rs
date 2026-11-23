@@ -22,12 +22,13 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::watch;
 
-use super::builder::extract_via_branch;
+use super::builder::{extract_header, extract_via_branch};
 use super::transport::SipTransport;
 use super::Timing;
 
@@ -54,34 +55,72 @@ pub(crate) enum Outcome {
     TimedOut,
 }
 
-/// The client transactions in flight, by the Via branch of their request.
+/// The client transactions in flight, by the Via branch and method of their
+/// request.
 ///
-/// Each entry holds the highest status seen so far on that branch (0 before
-/// any response), which the retransmission task watches.
+/// The method is part of the key because a CANCEL carries the branch of the
+/// INVITE it cancels (RFC 3261 §9.1) and both are in flight together. Keyed
+/// by branch alone, the CANCEL's entry replaced the INVITE's, and the INVITE's
+/// task, ending, then removed the CANCEL's: neither was retransmitted.
+/// Responses name their request's method in CSeq (§17.1.3).
+///
+/// Each entry holds the highest status seen so far on that transaction (0
+/// before any response), which the retransmission task watches, and the id
+/// of the `begin` that made it, so `end` only ever removes its own entry.
 #[derive(Default)]
 pub(crate) struct Transactions {
-    inner: Mutex<HashMap<String, watch::Sender<u16>>>,
+    inner: Mutex<HashMap<Key, Entry>>,
+    next_id: AtomicU64,
+}
+
+/// A transaction's Via branch and method.
+type Key = (String, String);
+
+/// The id of the `begin` that made an entry, and where its responses go.
+type Entry = (u64, watch::Sender<u16>);
+
+/// The method of a request: its first token.
+fn request_method(msg: &str) -> String {
+    msg.split_whitespace().next().unwrap_or_default().to_owned()
+}
+
+/// The method a response answers: the last token of its CSeq.
+fn response_method(msg: &str) -> String {
+    extract_header(msg, "CSeq")
+        .and_then(|c| c.split_whitespace().last().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 impl Transactions {
-    fn begin(&self, branch: &str) -> watch::Receiver<u16> {
+    fn begin(&self, branch: &str, method: &str) -> (u64, watch::Receiver<u16>) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = watch::channel(0);
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).insert(branch.to_owned(), tx);
-        rx
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((branch.to_owned(), method.to_owned()), (id, tx));
+        (id, rx)
     }
 
-    fn end(&self, branch: &str) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).remove(branch);
+    /// Remove the entry `begin` returned `id` for, unless a later `begin` for
+    /// the same request has replaced it.
+    fn end(&self, branch: &str, method: &str, id: u64) {
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let key = (branch.to_owned(), method.to_owned());
+        if map.get(&key).is_some_and(|(current, _)| *current == id) {
+            map.remove(&key);
+        }
     }
 
-    /// Record a response to one of our requests. A response for a branch
-    /// with no transaction in flight (a retransmitted final response, one for
-    /// a request sent without `send_request`) is ignored here; its handler
+    /// Record a response to one of our requests. A response for a
+    /// transaction not in flight (a retransmitted final response, one for a
+    /// request sent without `send_request`) is ignored here; its handler
     /// still sees it.
     pub(crate) fn on_response(&self, response: &str, status: u16) {
         let Some(branch) = extract_via_branch(response) else { return };
+        let key = (branch, response_method(response));
         let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(tx) = map.get(&branch) {
+        if let Some((_, tx)) = map.get(&key) {
             tx.send_if_modified(|seen| {
                 let higher = status > *seen;
                 if higher {
@@ -92,10 +131,13 @@ impl Transactions {
         }
     }
 
-    /// Whether a transaction is in flight on `branch`. For tests.
+    /// Whether a `method` transaction is in flight on `branch`. For tests.
     #[cfg(test)]
-    pub(crate) fn in_flight(&self, branch: &str) -> bool {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).contains_key(branch)
+    pub(crate) fn in_flight(&self, branch: &str, method: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&(branch.to_owned(), method.to_owned()))
     }
 }
 
@@ -116,9 +158,10 @@ pub(crate) async fn send_request(
     deadline: Option<Duration>,
 ) -> Result<tokio::task::JoinHandle<Outcome>, String> {
     let branch = extract_via_branch(&msg).unwrap_or_default();
-    let seen = transactions.begin(&branch);
+    let method = request_method(&msg);
+    let (id, seen) = transactions.begin(&branch, &method);
     if let Err(e) = transport.send_to(msg.as_bytes(), dest).await {
-        transactions.end(&branch);
+        transactions.end(&branch, &method, id);
         return Err(e);
     }
     let deadline = deadline.unwrap_or(match kind {
@@ -129,7 +172,7 @@ pub(crate) async fn send_request(
     let transport = transport.clone();
     Ok(tokio::spawn(async move {
         let outcome = retransmit(&transport, dest, &msg, kind, timing.t1, deadline, seen).await;
-        transactions.end(&branch);
+        transactions.end(&branch, &method, id);
         outcome
     }))
 }
@@ -205,8 +248,8 @@ mod tests {
         )
     }
 
-    fn response(branch: &str, code: u16) -> String {
-        format!("SIP/2.0 {code} X\r\nVia: SIP/2.0/UDP 127.0.0.1:5060;branch={branch}\r\n\r\n")
+    fn response(branch: &str, code: u16, method: &str) -> String {
+        format!("SIP/2.0 {code} X\r\nVia: SIP/2.0/UDP 127.0.0.1:5060;branch={branch}\r\nCSeq: 1 {method}\r\n\r\n")
     }
 
     async fn pair() -> (SipTransport, UdpSocket, SocketAddr) {
@@ -243,7 +286,7 @@ mod tests {
         assert_eq!(handle.await.unwrap(), Outcome::TimedOut);
         // 0, 10, 30, 70, 150 (then 310 is past the 300 ms deadline).
         assert_eq!(sent, 5);
-        assert!(!txs.in_flight("z9hG4bKa"));
+        assert!(!txs.in_flight("z9hG4bKa", "BYE"));
     }
 
     #[tokio::test]
@@ -256,12 +299,12 @@ mod tests {
         let bye = send_request(&txs, &transport, dest, request("z9hG4bKb", "BYE"), Kind::NonInvite, timing(20), None)
             .await
             .unwrap();
-        txs.on_response(&response("z9hG4bKi", 100), 100);
-        txs.on_response(&response("z9hG4bKb", 100), 100);
+        txs.on_response(&response("z9hG4bKi", 100, "INVITE"), 100);
+        txs.on_response(&response("z9hG4bKb", 100, "BYE"), 100);
         assert_eq!(invite.await.unwrap(), Outcome::Answered(100));
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(!bye.is_finished(), "a 100 does not end a non-INVITE transaction");
-        txs.on_response(&response("z9hG4bKb", 200), 200);
+        txs.on_response(&response("z9hG4bKb", 200, "BYE"), 200);
         assert_eq!(bye.await.unwrap(), Outcome::Answered(200));
         drop(peer);
     }
@@ -278,5 +321,46 @@ mod tests {
         assert_eq!(handle.await.unwrap(), Outcome::TimedOut);
         // The last is 5 ms before the deadline; a loaded machine may miss it.
         assert!((6..=7).contains(&sent), "sent {sent} times");
+    }
+
+    /// A CANCEL shares its INVITE's branch. Each is its own transaction: the
+    /// CANCEL's 200 does not end the INVITE's, the INVITE's 487 does not end
+    /// the CANCEL's, and neither one ending removes the other's entry.
+    #[tokio::test]
+    async fn a_cancel_and_its_invite_are_separate_transactions_on_one_branch() {
+        let (transport, peer, dest) = pair().await;
+        let txs = Arc::new(Transactions::default());
+        let invite = send_request(&txs, &transport, dest, request("z9hG4bKc", "INVITE"), Kind::Invite, timing(20), None)
+            .await
+            .unwrap();
+        let cancel = send_request(&txs, &transport, dest, request("z9hG4bKc", "CANCEL"), Kind::NonInvite, timing(20), None)
+            .await
+            .unwrap();
+        assert!(txs.in_flight("z9hG4bKc", "INVITE"));
+        assert!(txs.in_flight("z9hG4bKc", "CANCEL"));
+
+        txs.on_response(&response("z9hG4bKc", 487, "INVITE"), 487);
+        assert_eq!(invite.await.unwrap(), Outcome::Answered(487));
+        assert!(!txs.in_flight("z9hG4bKc", "INVITE"));
+        assert!(txs.in_flight("z9hG4bKc", "CANCEL"), "the INVITE ending took the CANCEL's entry");
+        // Still resending the CANCEL.
+        assert!(count_received(&peer, Duration::from_millis(100)).await >= 1);
+        assert!(!cancel.is_finished());
+
+        txs.on_response(&response("z9hG4bKc", 200, "CANCEL"), 200);
+        assert_eq!(cancel.await.unwrap(), Outcome::Answered(200));
+        assert!(!txs.in_flight("z9hG4bKc", "CANCEL"));
+    }
+
+    /// `end` only removes the entry its own `begin` made.
+    #[test]
+    fn end_leaves_a_newer_entry_for_the_same_request_alone() {
+        let txs = Transactions::default();
+        let (old, _rx_old) = txs.begin("z9hG4bKr", "BYE");
+        let (_new, rx_new) = txs.begin("z9hG4bKr", "BYE");
+        txs.end("z9hG4bKr", "BYE", old);
+        assert!(txs.in_flight("z9hG4bKr", "BYE"));
+        txs.on_response(&response("z9hG4bKr", 200, "BYE"), 200);
+        assert_eq!(*rx_new.borrow(), 200);
     }
 }

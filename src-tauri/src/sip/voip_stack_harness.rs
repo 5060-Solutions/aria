@@ -87,6 +87,9 @@ enum InviteReply {
     TryingThenLateAnswer(Duration),
     /// 100 Trying and 180 Ringing; a CANCEL gets its 200 and the INVITE a 487.
     RingUntilCancelled,
+    /// No response to an INVITE until a CANCEL arrives; then the CANCEL gets
+    /// its 200 and the INVITE a 487.
+    SilentUntilCancelled,
     /// A 407 for an INVITE without credentials, but only after this long;
     /// 200 OK for the authenticated one.
     DelayedChallenge(Duration),
@@ -561,7 +564,13 @@ async fn start_pbx_with_options(
                     let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
                     respond(&msg, 180, "Ringing", &[])
                 }
-                "CANCEL" if invite_reply == InviteReply::RingUntilCancelled => {
+                "INVITE" if invite_reply == InviteReply::SilentUntilCancelled => {
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    continue;
+                }
+                "CANCEL"
+                    if matches!(invite_reply, InviteReply::RingUntilCancelled | InviteReply::SilentUntilCancelled) =>
+                {
                     let invite = rec.lock().unwrap().invites.last().cloned();
                     rec.lock().unwrap().cancels.push(msg.clone());
                     let _ = sock.send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from).await;
@@ -1991,6 +2000,39 @@ async fn a_lost_cancel_is_retransmitted() {
     assert_eq!(header(&s.cancels[0], "CSeq"), Some("1 CANCEL"));
     assert_eq!(header(&s.ack_msgs[0], "CSeq"), Some("1 ACK"), "the CANCEL must not move the ACK's CSeq");
     assert_eq!(via_branch(&s.ack_msgs[0]), via_branch(&s.invites[0]));
+}
+
+/// The user hangs up before any provisional response, and the CANCEL's first
+/// copy is lost. The CANCEL shares the INVITE's Via branch; with transactions
+/// keyed by branch alone it took over the INVITE's entry, the INVITE's task
+/// then removed it, and neither request was resent. The callee rang on, and
+/// Timer B could end the call a second time. Now the CANCEL is resent, the
+/// INVITE stops at the 487, which is ACKed, and the call ends exactly once.
+#[tokio::test]
+async fn a_cancel_before_any_provisional_is_retransmitted_and_ends_the_call_once() {
+    let opts = PbxOptions {
+        invite_reply: InviteReply::SilentUntilCancelled,
+        drop_once: drop_once(&["CANCEL"]),
+        ..PbxOptions::default()
+    };
+    let (mgr, mut rx, seen, call_id) = dial(opts).await;
+    mgr.hangup(&call_id).await.expect("cancelled");
+
+    wait_for_seen(&seen, Duration::from_secs(2), "the lost CANCEL was never resent", |s| !s.cancels.is_empty()).await;
+    wait_for_seen(&seen, Duration::from_secs(2), "the 487 was never ACKed", |s| s.acks >= 1).await;
+    let invites_at_487 = seen.lock().unwrap().invites.len();
+
+    // Past Timer B (64*T1 = 3.2 s): a second "ended" from it would show here.
+    let states = call_states_until(&mut rx, &call_id, "never", Duration::from_secs(4)).await;
+    assert_eq!(states.iter().filter(|s| *s == "ended").count(), 1, "{states:?}");
+
+    let s = seen.lock().unwrap();
+    assert_eq!(s.dropped.len(), 1);
+    assert_eq!(s.cancels.len(), 1, "answered, so not resent again");
+    assert_eq!(via_branch(&s.cancels[0]), via_branch(&s.dropped[0]));
+    assert_eq!(via_branch(&s.cancels[0]), via_branch(&s.invites[0]));
+    assert_eq!(header(&s.ack_msgs[0], "CSeq"), Some("1 ACK"));
+    assert_eq!(s.invites.len(), invites_at_487, "the INVITE was resent after its 487");
 }
 
 /// S2: the REFER is lost. It is resent until answered, and the transfer is
