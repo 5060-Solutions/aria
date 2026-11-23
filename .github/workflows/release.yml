@@ -21,7 +21,7 @@ jobs:
           - platform: macos-latest
             target: x86_64-apple-darwin
             name: macOS-x64
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             name: Linux-x64
           - platform: windows-latest
@@ -32,21 +32,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Checkout rtp-engine
-        uses: actions/checkout@v7
-        with:
-          repository: 5060-Solutions/rtp-engine
-          path: rtp-engine
-
-      - name: Link rtp-engine to expected path
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp -r "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
-          else
-            ln -s "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
-          fi
-        shell: bash
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -55,7 +40,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
@@ -103,7 +88,7 @@ jobs:
         run: pnpm install
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -237,21 +222,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Checkout rtp-engine
-        uses: actions/checkout@v7
-        with:
-          repository: 5060-Solutions/rtp-engine
-          path: rtp-engine
-
-      - name: Link rtp-engine to expected path
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp -r "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
-          else
-            ln -s "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
-          fi
-        shell: bash
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -260,7 +230,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6

@@ -15,26 +15,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-22.04, windows-latest]
+        platform: [macos-latest, ubuntu-24.04, windows-latest]
 
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v7
-
-      - name: Checkout rtp-engine
-        uses: actions/checkout@v7
-        with:
-          repository: 5060-Solutions/rtp-engine
-          path: rtp-engine
-
-      - name: Link rtp-engine to expected path
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp -r "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
-          else
-            ln -s "$GITHUB_WORKSPACE/rtp-engine" "$GITHUB_WORKSPACE/../rtp-engine"
-          fi
-        shell: bash
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -42,7 +27,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Install pnpm
         uses: pnpm/action-setup@v6
@@ -71,7 +56,7 @@ jobs:
         run: pnpm install
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
