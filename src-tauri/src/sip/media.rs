@@ -1,8 +1,9 @@
 //! Media session re-exports from rtp-engine with serialization support.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
 
+use crate::sip::builder::{self, NegotiatedAudio};
 pub use rtp_engine::{CodecType, MediaSession};
 use rtp_engine::StunResult;
 
@@ -44,17 +45,118 @@ async fn discover_public_address(socket: &UdpSocket, servers: &[String]) -> Resu
 /// codec's (RFC 4733 §2.1), with the engine told that clock so a digit's
 /// duration is scaled to it: paired with Opus, `telephone-event/48000`
 /// expects 960 units per 20 ms, not 160.
-pub fn apply_negotiated_payload_types(session: &MediaSession, sdp: &str) {
-    use crate::sip::{builder, codec};
-
-    if let Some((_, pt)) = codec::negotiate_codec_with_pt(sdp) {
-        session.set_audio_payload_type(pt);
-    }
+pub fn apply_negotiated_payload_types(session: &MediaSession, audio: NegotiatedAudio, sdp: &str) {
+    session.set_audio_payload_type(audio.pt);
     if let Some((pt, rate)) = builder::parse_telephone_event(sdp, session.codec().clock_rate()) {
         log::info!("DTMF on telephone-event payload type {} at {} Hz", pt, rate);
         session.set_dtmf_payload_type(pt);
         session.set_dtmf_clock_rate(rate);
     }
+}
+
+/// What a call's running media session was started against: the far end's
+/// address, the codec, and the far end's SRTP key. A later SDP from the far
+/// end that differs in any of these needs a new session — rtp-engine cannot
+/// change a running one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteMedia {
+    pub addr: SocketAddr,
+    pub audio: NegotiatedAudio,
+    pub srtp_key: Option<String>,
+}
+
+impl RemoteMedia {
+    /// Whether a session running against `self` must be restarted to carry
+    /// media described by `next`.
+    ///
+    /// An unspecified address (`c=0.0.0.0`, the old way to hold) is not a
+    /// new destination: the session stays where it is.
+    pub fn needs_restart_for(&self, next: &RemoteMedia) -> bool {
+        let moved = next.addr != self.addr && !next.addr.ip().is_unspecified() && next.addr.port() != 0;
+        moved || next.audio != self.audio || next.srtp_key != self.srtp_key
+    }
+}
+
+/// Everything needed to start a call's media session.
+pub struct MediaPlan {
+    pub local_port: u16,
+    pub remote: RemoteMedia,
+    /// Our SDES key. SRTP runs only when both this and the far end's are set.
+    pub local_srtp_key: Option<String>,
+    pub input_device: Option<String>,
+    pub output_device: Option<String>,
+}
+
+/// A started session, and whether it runs encrypted.
+pub struct StartedMedia {
+    pub session: MediaSession,
+    pub srtp_active: bool,
+}
+
+/// Start a call's media session: SRTP when both keys are there and both
+/// contexts build (plain RTP otherwise, with the outcome reported in
+/// `srtp_active`), audio on the negotiated payload type, and DTMF on the
+/// telephone-event type `sdp` (the far end's) named.
+///
+/// The one place sessions are started, so the codec and payload type always
+/// come from [`builder::negotiate_audio`] and the SRTP decision is the same
+/// for an answer, a 183, a 200 and a re-INVITE.
+pub async fn start_call_media(plan: &MediaPlan, sdp: &str) -> Result<StartedMedia, String> {
+    let RemoteMedia { addr, audio, srtp_key: ref remote_key } = plan.remote;
+    let contexts = match (&plan.local_srtp_key, remote_key) {
+        (Some(ours), Some(theirs)) => {
+            match (
+                rtp_engine::srtp::SrtpContext::from_base64(ours),
+                rtp_engine::srtp::SrtpContext::from_base64(theirs),
+            ) {
+                (Ok(tx), Ok(rx)) => Some((tx, rx)),
+                (Err(e), _) | (_, Err(e)) => {
+                    // Never log the keys themselves: they decrypt the call.
+                    log::error!("Could not build SRTP contexts ({:?}); this call is NOT encrypted", e);
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let srtp_active = contexts.is_some();
+    let (input, output) = (plan.input_device.clone(), plan.output_device.clone());
+    let session = match contexts {
+        Some((tx, rx)) => {
+            MediaSession::start_with_srtp_keys_and_devices(
+                plan.local_port, addr, audio.codec, tx, rx, input, output,
+            )
+            .await
+        }
+        None => MediaSession::start_with_devices(plan.local_port, addr, audio.codec, input, output).await,
+    }
+    .map_err(|e| e.to_string())?;
+    apply_negotiated_payload_types(&session, audio, sdp);
+    Ok(StartedMedia { session, srtp_active })
+}
+
+/// The far end's media for a call, read from its SDP: where to send, what
+/// codec on which payload type, and its SRTP key. `None` when the SDP has no
+/// usable address or no codec in common.
+///
+/// `prefs` are the account's codec preferences when `sdp` is an offer we
+/// answer, and `None` when it is the answer to our offer.
+pub fn remote_media(
+    sdp: &str,
+    prefs: Option<&[crate::sip::account::CodecPreference]>,
+) -> Option<RemoteMedia> {
+    let (ip, port) = builder::parse_sdp_connection(sdp)?;
+    let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
+    let audio = builder::negotiate_audio(sdp, prefs)?;
+    Some(RemoteMedia { addr, audio, srtp_key: builder::parse_sdp_crypto(sdp) })
+}
+
+/// An even RTP port with its RTCP neighbour free, released for the media
+/// session to bind. For a session that must move off the port the call's
+/// current one holds: rtp-engine's RTCP task keeps that bound for up to five
+/// seconds after the session stops.
+pub async fn allocate_free_rtp_port() -> Result<u16, String> {
+    allocate_rtp_socket().await.map(|(_, port)| port)
 }
 
 /// Allocate an RTP port and discover the public address via STUN.
@@ -240,6 +342,42 @@ impl MediaSessionExt for MediaSession {
 
     fn get_codec(&self) -> CodecType {
         self.codec()
+    }
+}
+
+#[cfg(test)]
+mod remote_media_tests {
+    use super::{remote_media, CodecType, NegotiatedAudio, RemoteMedia};
+
+    fn sdp(addr: &str, port: u16, pts: &str, extra: &str) -> String {
+        format!("v=0\r\nc=IN IP4 {addr}\r\nm=audio {port} RTP/AVP {pts}\r\n{extra}")
+    }
+
+    /// What decides a restart: the address or port, the codec or its
+    /// payload type, the far end's key. A hold to 0.0.0.0 is not a move.
+    #[test]
+    fn a_new_address_codec_or_key_needs_a_new_session_and_nothing_else_does() {
+        let current = remote_media(&sdp("10.0.0.1", 40000, "0 8", ""), None).unwrap();
+        assert_eq!(current.audio, NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 });
+        let same = remote_media(&sdp("10.0.0.1", 40000, "0 8", "a=sendonly\r\n"), None).unwrap();
+        assert!(!current.needs_restart_for(&same));
+        for moved in [sdp("10.0.0.1", 40002, "0 8", ""), sdp("10.0.0.9", 40000, "0 8", ""), sdp("10.0.0.1", 40000, "8 0", "")] {
+            assert!(current.needs_restart_for(&remote_media(&moved, None).unwrap()), "{moved}");
+        }
+        let held = remote_media(&sdp("0.0.0.0", 40000, "0 8", ""), None).unwrap();
+        assert!(!current.needs_restart_for(&held));
+        let rekeyed = RemoteMedia { srtp_key: Some("k".into()), ..current.clone() };
+        assert!(current.needs_restart_for(&rekeyed));
+    }
+
+    /// The far end's media from its SDP uses the same negotiation as the
+    /// answer: G.722 first runs PCMU, and nothing in common is `None`.
+    #[test]
+    fn remote_media_negotiates_like_the_answer() {
+        let yealink = sdp("10.0.0.1", 40000, "9 0 8 101", "a=rtpmap:9 G722/8000\r\n");
+        let got = remote_media(&yealink, Some(&crate::sip::account::default_codec_preferences())).unwrap();
+        assert_eq!(got.audio, NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 });
+        assert!(remote_media(&sdp("10.0.0.1", 40000, "9 18", ""), None).is_none());
     }
 }
 

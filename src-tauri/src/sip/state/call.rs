@@ -263,6 +263,24 @@ pub struct CallFSM {
     /// so the ACK handler can stop that, and a retransmitted INVITE can be
     /// answered with the same 200.
     pub pending_2xx: Option<Pending2xx>,
+    /// The user's Mute button. Kept apart from hold: the session's TX mute
+    /// is [`Self::tx_muted`], so resuming a held call (or merging it) can no
+    /// longer open a microphone the user had muted, and a mute pressed before
+    /// there is any media is applied when the session attaches.
+    pub user_muted: bool,
+    /// The far end asked us not to send: its offer was `sendonly` or
+    /// `inactive`, so our answer is `recvonly` or `inactive`.
+    pub remote_hold: bool,
+    /// What the running media session was started against, to tell whether
+    /// a later SDP from the far end needs a new session.
+    pub remote_media: Option<crate::sip::media::RemoteMedia>,
+    /// The `o=` session id of every SDP this side sends in the dialog.
+    pub sdp_session_id: u64,
+    /// The `o=` version of the last SDP this side sent.
+    pub sdp_version: u64,
+    /// The last SDP this side sent, without its `o=` line, so an unchanged
+    /// one keeps its version (RFC 3264 §8).
+    last_local_sdp: Option<String>,
     /// Current state
     state: CallState,
 }
@@ -299,6 +317,7 @@ impl CallFSM {
         invite_branch: String,
         local_uri: String,
     ) -> Self {
+        let sdp_session_id = crate::sip::builder::sdp_session_id(&call_id);
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             account_id: account_id.to_string(),
@@ -320,6 +339,13 @@ impl CallFSM {
             remote_contact: None,
             local_uri,
             pending_2xx: None,
+            user_muted: false,
+            remote_hold: false,
+            remote_media: None,
+            sdp_session_id,
+            // Our INVITE's offer went out as version 1.
+            sdp_version: 1,
+            last_local_sdp: None,
             state: CallState::Dialing {
                 invite_branch,
                 auth_attempted: false,
@@ -329,6 +355,7 @@ impl CallFSM {
 
     /// Create a new inbound call FSM
     pub fn new_inbound(params: InboundCallParams) -> Self {
+        let sdp_session_id = crate::sip::builder::sdp_session_id(&params.call_id);
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             account_id: params.account_id,
@@ -350,6 +377,12 @@ impl CallFSM {
             remote_contact: None,
             local_uri: params.local_uri,
             pending_2xx: None,
+            user_muted: false,
+            remote_hold: false,
+            remote_media: None,
+            sdp_session_id,
+            sdp_version: 0,
+            last_local_sdp: None,
             state: CallState::Incoming { raw_invite: params.raw_invite },
         }
     }
@@ -481,6 +514,7 @@ impl CallFSM {
 
     /// Set media session for a connected call
     pub fn set_media(&mut self, media: MediaSession) {
+        media.set_mute(self.tx_muted());
         match &mut self.state {
             CallState::Connected { media: m, .. } => *m = Some(media),
             CallState::Held { media: m, .. } => *m = Some(media),
@@ -490,9 +524,63 @@ impl CallFSM {
 
     /// Set early media session for a ringing call (183 with SDP)
     pub fn set_early_media(&mut self, media: MediaSession) {
+        media.set_mute(self.tx_muted());
         if let CallState::Ringing { early_media, .. } = &mut self.state {
             *early_media = Some(media);
         }
+    }
+
+    /// The session carrying this call's audio, including early media on a
+    /// call that is still ringing. Mute and DTMF go here: an IVR played in a
+    /// 183 has to hear the keypad, and a mute pressed while ringing has to
+    /// hold for the early-media session the 200 OK then carries on.
+    pub fn media_any(&self) -> Option<&MediaSession> {
+        match &self.state {
+            CallState::Ringing { early_media, .. } => early_media.as_ref(),
+            _ => self.media(),
+        }
+    }
+
+    /// Whether the microphone must be kept off the wire: the user muted, the
+    /// call is on hold here, or the far end asked us not to send.
+    pub fn tx_muted(&self) -> bool {
+        self.user_muted || self.is_held() || self.remote_hold
+    }
+
+    /// Push [`Self::tx_muted`] to the session, if there is one.
+    pub fn apply_mute(&self) {
+        if let Some(media) = self.media_any() {
+            media.set_mute(self.tx_muted());
+        }
+    }
+
+    /// The user pressed Mute or Unmute. Stored on the call whatever state it
+    /// is in, so it outlives hold and reaches a session that starts later.
+    pub fn set_user_mute(&mut self, muted: bool) {
+        self.user_muted = muted;
+        self.apply_mute();
+    }
+
+    /// The far end's offer asked us to stop sending, or to start again.
+    pub fn set_remote_hold(&mut self, held: bool) {
+        self.remote_hold = held;
+        self.apply_mute();
+    }
+
+    /// Give `sdp`, about to be sent in this dialog, the dialog's `o=` session
+    /// id and the right version: the last one again when nothing else
+    /// changed, the next one when something did (RFC 3264 §8).
+    pub fn stamp_local_sdp(&mut self, sdp: &str) -> String {
+        let body = crate::sip::builder::sdp_without_origin(sdp);
+        let unchanged = self.last_local_sdp.as_deref() == Some(body.as_str());
+        if !unchanged {
+            self.sdp_version += 1;
+        }
+        self.last_local_sdp = Some(body);
+        crate::sip::builder::with_sdp_origin(
+            sdp,
+            crate::sip::builder::SdpOrigin { id: self.sdp_session_id, version: self.sdp_version },
+        )
     }
 
     /// Check if early media is already established
@@ -757,15 +845,13 @@ impl CallFSM {
                 connected_at,
                 session_expires,
             } => {
-                if let Some(ref m) = media {
-                    m.set_mute(true);
-                }
                 self.state = CallState::Held {
                     media,
                     route_set,
                     connected_at,
                     session_expires,
                 };
+                self.apply_mute();
                 TransitionResult::Ok
             }
             other => {
@@ -787,15 +873,17 @@ impl CallFSM {
                 connected_at,
                 session_expires,
             } => {
-                if let Some(ref m) = media {
-                    m.set_mute(false);
-                }
                 self.state = CallState::Connected {
                     media,
                     route_set,
                     connected_at,
                     session_expires,
                 };
+                // Resuming opens the microphone only if the user had not
+                // muted it: hold and mute used to share one flag, so Mute,
+                // Hold, Resume put the user back on the air while the button
+                // still said "Unmute".
+                self.apply_mute();
                 TransitionResult::Ok
             }
             other => {
@@ -1269,5 +1357,136 @@ mod tests {
 
         assert_eq!(call.route_set(), &["<sip:proxy.example.com;lr>"]);
         assert_eq!(call.session_expires(), 900);
+    }
+
+    fn outbound() -> CallFSM {
+        CallFSM::new_outbound(
+            "test-account",
+            "sip:bob@example.com",
+            "call-mute".to_string(),
+            "from-tag".to_string(),
+            10000,
+            "branch-1".to_string(),
+            "sip:alice@example.com".to_string(),
+        )
+    }
+
+    fn answer(call: &mut CallFSM) {
+        let result = call.process(CallFSMEvent::Answered {
+            to_tag: "to-tag".to_string(),
+            remote_rtp: None,
+            route_set: vec![],
+            session_expires: 1800,
+        });
+        assert!(matches!(result, TransitionResult::Ok));
+    }
+
+    /// A real session to loopback; no device needs to open for the mute flag.
+    async fn session() -> MediaSession {
+        let port = crate::sip::media::allocate_free_rtp_port().await.expect("a port");
+        MediaSession::start(port, "127.0.0.1:9".parse().unwrap(), rtp_engine::CodecType::Pcmu)
+            .await
+            .expect("a session")
+    }
+
+    /// S5/M2: Mute, Hold, Resume used to open the microphone, because hold
+    /// and mute shared the session's one flag.
+    #[tokio::test]
+    async fn mute_then_hold_then_resume_stays_muted() {
+        let mut call = outbound();
+        answer(&mut call);
+        call.set_media(session().await);
+        call.set_user_mute(true);
+        assert!(call.media().unwrap().is_muted());
+        call.hold();
+        assert!(call.media().unwrap().is_muted());
+        call.unhold();
+        assert!(call.media().unwrap().is_muted(), "resume opened a muted microphone");
+        call.set_user_mute(false);
+        assert!(!call.media().unwrap().is_muted());
+    }
+
+    /// Unmuting a held call must not put the user on the air; resuming does.
+    #[tokio::test]
+    async fn unmute_while_held_keeps_the_microphone_off() {
+        let mut call = outbound();
+        answer(&mut call);
+        call.set_media(session().await);
+        call.hold();
+        call.set_user_mute(true);
+        call.set_user_mute(false);
+        assert!(call.media().unwrap().is_muted(), "unmuting a held call opened the microphone");
+        call.unhold();
+        assert!(!call.media().unwrap().is_muted());
+    }
+
+    /// M7: a mute pressed while the call rings reaches the early-media
+    /// session, and the session the call connects on.
+    #[tokio::test]
+    async fn mute_while_ringing_applies_to_early_media_and_on_connect() {
+        let mut call = outbound();
+        call.process(CallFSMEvent::RemoteRinging);
+        call.set_user_mute(true);
+        call.set_early_media(session().await);
+        assert!(call.media_any().unwrap().is_muted(), "early media started unmuted");
+
+        // Connects on the early session (the 200 handler takes and re-sets it).
+        let early = call.take_early_media().unwrap();
+        answer(&mut call);
+        early.set_mute(false); // whatever the session said, the call decides
+        call.set_media(early);
+        assert!(call.media().unwrap().is_muted(), "connect dropped the mute");
+
+        // And with no early media at all: muted while ringing, fresh session.
+        let mut call = outbound();
+        call.process(CallFSMEvent::RemoteRinging);
+        call.set_user_mute(true);
+        answer(&mut call);
+        call.set_media(session().await);
+        assert!(call.media().unwrap().is_muted());
+    }
+
+    /// The far end holding us (a sendonly offer) keeps us from sending, and
+    /// leaves the user's own mute alone.
+    #[tokio::test]
+    async fn remote_hold_mutes_without_touching_the_users_mute() {
+        let mut call = outbound();
+        answer(&mut call);
+        call.set_media(session().await);
+        call.set_remote_hold(true);
+        assert!(call.media().unwrap().is_muted());
+        assert!(!call.user_muted);
+        call.set_remote_hold(false);
+        assert!(!call.media().unwrap().is_muted());
+    }
+
+    /// RFC 3264 §8: one `o=` id per dialog, and the version moves only when
+    /// the SDP does. Our INVITE's offer was version 1.
+    #[test]
+    fn local_sdp_keeps_the_dialog_origin_and_bumps_the_version_on_change() {
+        let mut call = outbound();
+        let a = "v=0\r\no=aria 1 1 IN IP4 10.0.0.2\r\nm=audio 30000 RTP/AVP 0\r\n";
+        let b = "v=0\r\no=aria 5 5 IN IP4 10.0.0.2\r\nm=audio 30002 RTP/AVP 0\r\n";
+        let id = crate::sip::builder::sdp_session_id("call-mute");
+        let first = call.stamp_local_sdp(a);
+        assert!(first.contains(&format!("o=aria {id} 2 IN IP4 10.0.0.2\r\n")), "{first}");
+        let again = call.stamp_local_sdp(a);
+        assert_eq!(again, first, "an unchanged SDP keeps its version");
+        let moved = call.stamp_local_sdp(b);
+        assert!(moved.contains(&format!("o=aria {id} 3 IN IP4 10.0.0.2\r\n")), "{moved}");
+
+        // An inbound call's first answer is version 1.
+        let mut inbound = CallFSM::new_inbound(InboundCallParams {
+            account_id: "a".into(),
+            remote_uri: "sip:x@y".into(),
+            call_id: "in-1".into(),
+            from_tag: "f".into(),
+            to_tag: "t".into(),
+            local_rtp_port: 10000,
+            raw_invite: String::new(),
+            local_uri: "sip:me@y".into(),
+        });
+        let id = crate::sip::builder::sdp_session_id("in-1");
+        assert!(inbound.stamp_local_sdp(a).contains(&format!("o=aria {id} 1 IN")));
     }
 }

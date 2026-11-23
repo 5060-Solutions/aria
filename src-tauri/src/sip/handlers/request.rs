@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method, parse_sdp_connection};
+use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method};
 use crate::sip::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use crate::sip::transfer;
 use crate::sip::{CallEvent, ManagerState, SipEvent, VoicemailStatusEvent};
@@ -42,8 +42,6 @@ pub async fn handle_incoming_request(
                     s.find_call_by_header(&call_id).map(|(_, c)| {
                         (
                             c.id.clone(),
-                            c.local_rtp_port,
-                            c.sdp_public_ip,
                             c.is_incoming(),
                             c.is_established(),
                             c.to_tag.clone().unwrap_or_default(),
@@ -52,7 +50,7 @@ pub async fn handle_incoming_request(
                     })
                 };
 
-                if let Some((call_internal_id, rtp_port, answered_ip, ringing_here, established, our_tag, pending_2xx)) =
+                if let Some((call_internal_id, ringing_here, established, our_tag, pending_2xx)) =
                     existing
                 {
                     let in_dialog = extract_header(text, "To").is_some_and(|to| to.contains("tag="));
@@ -79,58 +77,17 @@ pub async fn handle_incoming_request(
                         }
                     } else if established {
                         // RFC 3261 §14: a re-INVITE within an established call,
-                        // e.g. a session refresh or the PBX moving media.
-                        let Some(la) = account.local_addr else { return };
-                        let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
-                        let new_target = if sdp.contains("m=audio") {
-                            parse_sdp_connection(sdp)
-                                .and_then(|(ip, port)| format!("{}:{}", ip, port).parse::<SocketAddr>().ok())
-                        } else {
-                            None
-                        };
-                        if let Some(target) = new_target {
-                            // Recorded on the call only. The running media
-                            // session keeps sending to the address it started
-                            // with; redirecting it needs support in rtp-engine.
-                            log::info!("re-INVITE offers RTP target {} for call {}", target, call_internal_id);
-                        }
-                        // The address the call's own offer/answer carried, so
-                        // the refresh keeps media where it already flows. The
-                        // registration-time fallback is for a call that was
-                        // set up before the address was recorded; recomputing
-                        // from it alone could move `c=` to the LAN address.
-                        let media_ip = answered_ip
-                            .unwrap_or_else(|| {
-                                crate::sip::media::sdp_address(
-                                    la.ip(),
-                                    account.public_addr.map(|a| a.ip()),
-                                    account.server_addr.map(|a| a.ip()),
-                                )
-                            })
-                            .to_string();
-                        // Keep the call's crypto on a session refresh: an SRTP
-                        // call answered RTP/AVP here would be torn down by the
-                        // PBX (media_encryption=sdes) or lose audio. Reuse the
-                        // key the call already negotiated.
-                        let srtp_key = s
-                            .find_call(&call_internal_id)
-                            .and_then(|(_, c)| if c.srtp_active { c.local_srtp_key.clone() } else { None });
-                        let resp = builder::build_200_ok_invite_srtp(
-                            text,
-                            la,
-                            rtp_port,
-                            &our_tag,
-                            Some(&account.config.username),
-                            Some(&media_ip),
-                            srtp_key.as_deref(),
-                        );
+                        // e.g. a session refresh or the PBX moving media (an
+                        // attended transfer to this phone moves it to another
+                        // relay port, with a new SRTP key on an SRTP call).
                         drop(s);
-                        if let Some(target) = new_target {
-                            let mut s = state.write().await;
-                            if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
-                                call.set_remote_rtp(target);
-                            }
-                        }
+                        let resp = super::media_update::answer_reinvite(
+                            state,
+                            &call_internal_id,
+                            account_id,
+                            text,
+                        )
+                        .await;
                         let s = state.read().await;
                         if let (Some(resp), Some(transport)) = (
                             resp,

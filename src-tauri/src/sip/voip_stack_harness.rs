@@ -23,6 +23,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
+/// Codec negotiation, mute and hold, and media that moves mid-call.
+mod media_tests;
+
 const REALM: &str = "voip_stack";
 const USER: &str = "ghostbook";
 const PASSWORD: &str = "correct-horse";

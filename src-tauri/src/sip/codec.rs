@@ -1,6 +1,8 @@
 //! Audio codec re-exports from rtp-engine.
 
-pub use rtp_engine::codec::{negotiate_codec, negotiate_codec_with_pt};
+// No `negotiate_codec` here: its pick ignores what the softphone carries.
+// Calls negotiate with `builder::negotiate_audio`, the list the SDP answer is
+// built from.
 
 // Re-export additional types that may be needed
 #[allow(unused_imports)]
