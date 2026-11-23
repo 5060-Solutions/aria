@@ -263,6 +263,11 @@ pub struct CallFSM {
     /// so the ACK handler can stop that, and a retransmitted INVITE can be
     /// answered with the same 200.
     pub pending_2xx: Option<Pending2xx>,
+    /// The 4xx-6xx we answered an incoming INVITE with (a decline, a 487
+    /// after CANCEL), until its ACK arrives or Timer H passes. Resent on
+    /// Timer G meanwhile, and sent again for a retransmitted INVITE. It
+    /// outlives the call, which ended when the response was sent.
+    pub pending_final: Option<Pending2xx>,
     /// Whether we have sent a BYE for this dialog. A 2xx retransmitted after
     /// it is ACKed again but must not bring another BYE.
     pub bye_sent: bool,
@@ -323,6 +328,7 @@ impl CallFSM {
             remote_contact: None,
             local_uri,
             pending_2xx: None,
+            pending_final: None,
             bye_sent: false,
             state: CallState::Dialing {
                 invite_branch,
@@ -354,6 +360,7 @@ impl CallFSM {
             remote_contact: None,
             local_uri: params.local_uri,
             pending_2xx: None,
+            pending_final: None,
             bye_sent: false,
             state: CallState::Incoming { raw_invite: params.raw_invite },
         }

@@ -1749,8 +1749,8 @@ impl SipManager {
 
         if let Some(msg) = action_msg {
             if is_incoming {
-                // A response to their INVITE, not a request of ours.
-                transport.send_to(msg.as_bytes(), server_addr).await?;
+                // A response to their INVITE, resent until it is ACKed.
+                send_invite_final_response(&self.state, call_id, msg, &transport, server_addr).await?;
             } else {
                 // A CANCEL or BYE, resent over UDP until it is answered.
                 send_non_invite(&self.state, &transport, server_addr, msg).await?;
@@ -2056,7 +2056,7 @@ impl SipManager {
         if let (Some(transport), Some(server_addr), Some(resp)) =
             (transport, server_addr, builder::build_final_response(raw_invite, code, reason, to_tag))
         {
-            let _ = transport.send_to(resp.as_bytes(), server_addr).await;
+            let _ = send_invite_final_response(&self.state, call_id, resp, &transport, server_addr).await;
         }
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&aid, call_id, "ended", &remote_uri, "inbound"),
@@ -3987,6 +3987,70 @@ pub(crate) async fn retransmit_2xx_until_ack(
     dest: SocketAddr,
     timing: Timing,
 ) -> bool {
+    let acked = retransmit_response_until_ack(state, call_id, response, transport, dest, timing, |c| {
+        !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq)
+    })
+    .await;
+    if !acked {
+        if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
+            c.pending_2xx = None;
+        }
+    }
+    acked
+}
+
+/// Answer an incoming INVITE with a 4xx-6xx and see it to its ACK (RFC 3261
+/// §17.2.1): over UDP it is resent at T1 doubling to T2 (Timer G) until the
+/// ACK or 64*T1 (Timer H), and a retransmitted INVITE meanwhile gets it again.
+///
+/// A decline used to go out once. The PBX's INVITE transaction already had
+/// our 180 and waits for a final response as long as it takes, so a lost 486
+/// left the caller hearing ringback until the PBX's no-answer timer.
+pub(crate) async fn send_invite_final_response(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id: &str,
+    response: String,
+    transport: &SipTransport,
+    dest: SocketAddr,
+) -> Result<(), String> {
+    let cseq = cseq_number(&response).unwrap_or(1);
+    let timing = {
+        let mut s = state.write().await;
+        if let Some((_, call)) = s.find_call_mut(call_id) {
+            call.pending_final = Some(state::Pending2xx { cseq, response: response.clone() });
+        }
+        s.timing
+    };
+    transport.send_to(response.as_bytes(), dest).await?;
+    let state = state.clone();
+    let transport = transport.clone();
+    let call_id = call_id.to_string();
+    tokio::spawn(async move {
+        let acked = retransmit_response_until_ack(&state, &call_id, &response, &transport, dest, timing, |c| {
+            c.pending_final.as_ref().is_some_and(|p| p.cseq == cseq)
+        })
+        .await;
+        if !acked {
+            log::warn!("No ACK for the final response to call {}", call_id);
+            if let Some((_, c)) = state.write().await.find_call_mut(&call_id) {
+                c.pending_final = None;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Resend `response` over UDP at T1 doubling to T2 while `outstanding` holds
+/// for the call; `false` when 64*T1 (Timer H) passed and it still did.
+async fn retransmit_response_until_ack(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id: &str,
+    response: &str,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    timing: Timing,
+    outstanding: impl Fn(&CallFSM) -> bool,
+) -> bool {
     let reliable = !matches!(transport, SipTransport::Udp(_));
     let timer_h = timing.t1 * 64;
     let started = tokio::time::Instant::now();
@@ -3996,23 +4060,16 @@ pub(crate) async fn retransmit_2xx_until_ack(
         let wait = if reliable { remaining } else { interval.min(remaining) };
         tokio::time::sleep(wait).await;
 
-        let outstanding = {
-            let s = state.read().await;
-            s.find_call(call_id)
-                .is_some_and(|(_, c)| !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq))
-        };
-        if !outstanding {
+        let still = state.read().await.find_call(call_id).is_some_and(|(_, c)| outstanding(c));
+        if !still {
             return true;
         }
         if started.elapsed() >= timer_h {
-            if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
-                c.pending_2xx = None;
-            }
             return false;
         }
-        log::debug!("No ACK yet for call {}; retransmitting the 200 OK", call_id);
+        log::debug!("No ACK yet for call {}; retransmitting its final response", call_id);
         if let Err(e) = transport.send_to(response.as_bytes(), dest).await {
-            log::warn!("Could not retransmit the 200 OK for call {}: {}", call_id, e);
+            log::warn!("Could not retransmit the final response for call {}: {}", call_id, e);
         }
         interval = (interval * 2).min(T2);
     }

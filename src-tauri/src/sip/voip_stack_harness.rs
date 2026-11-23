@@ -111,6 +111,8 @@ struct PbxOptions {
     /// Lose the first 200 OK the client sends to an INVITE on the wire: the
     /// PBX never sees it (#69).
     drop_first_invite_200: bool,
+    /// ACK every 4xx-6xx the client sends to an INVITE, as a PBX does.
+    ack_invite_final: bool,
     /// Requests to lose on the wire, one copy per entry: a method name, or
     /// `INVITE+auth` for an INVITE carrying credentials. Shared, so a test can
     /// arm it mid-call.
@@ -131,6 +133,7 @@ impl Default for PbxOptions {
             ignore_options: false,
             ack_invite_200: false,
             drop_first_invite_200: false,
+            ack_invite_final: false,
             drop_once: Arc::new(Mutex::new(Vec::new())),
             drop_first_copy_of: Vec::new(),
         }
@@ -324,6 +327,12 @@ async fn start_pbx_with_options(
                 }
                 rec.lock().unwrap().responses.push(msg.clone());
                 if invite_200 && opts.ack_invite_200 {
+                    let ack = ack_for_200(&msg, addr, from);
+                    let _ = sock.send_to(ack.as_bytes(), from).await;
+                }
+                let invite_final = header(&msg, "CSeq").is_some_and(|c| c.ends_with("INVITE"))
+                    && msg.split_whitespace().nth(1).and_then(|c| c.parse::<u16>().ok()).is_some_and(|c| c >= 300);
+                if invite_final && opts.ack_invite_final {
                     let ack = ack_for_200(&msg, addr, from);
                     let _ = sock.send_to(ack.as_bytes(), from).await;
                 }
@@ -1990,4 +1999,65 @@ async fn a_lost_options_keepalive_does_not_fail_over() {
     let delivered = s.methods.iter().filter(|m| *m == "OPTIONS").count();
     assert!(lost >= 3, "only {lost} keepalives went out");
     assert!(delivered >= lost - 1, "{delivered} resent of {lost} lost");
+}
+
+fn count_finals(seen: &Arc<Mutex<Seen>>, code: &str) -> usize {
+    status_lines(seen, "INVITE").iter().filter(|l| l.contains(code)).count()
+}
+
+/// S6: a decline is a final response, and over UDP it is ours to deliver:
+/// the 486 is resent (Timer G) until the PBX ACKs it, and not after. It used
+/// to go out once; the PBX, which already had our 180, then waited for it
+/// as long as it took, and the caller heard ringback.
+#[tokio::test]
+async fn a_decline_is_retransmitted_until_acked() {
+    // No ACK: resent at T1 (50 ms) doubling to T2.
+    let (pbx, seen, sock) = start_pbx_with_socket(InviteReply::Busy).await;
+    let (mgr, mut rx, client) = registered_client_with(pbx, &seen, fast_timing()).await;
+    let invite = incoming_invite(pbx, client, "harness-decline-lost@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    mgr.hangup(&call_id).await.expect("declined");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let sent = count_finals(&seen, " 486 ");
+    assert!(sent >= 4, "the unacknowledged 486 was sent {sent} times");
+
+    // ACKed: sent once.
+    let (pbx, seen, sock) =
+        start_pbx_with_options(PbxOptions { ack_invite_final: true, ..PbxOptions::default() }).await;
+    let (mgr, mut rx, client) = registered_client_with(pbx, &seen, fast_timing()).await;
+    let invite = incoming_invite(pbx, client, "harness-decline-acked@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    mgr.hangup(&call_id).await.expect("declined");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(count_finals(&seen, " 486 "), 1, "the 486 was resent after its ACK");
+}
+
+/// S6: the caller resends its INVITE because our 486 was lost. The copy is
+/// answered with the same 486; it used to get nothing at all.
+#[tokio::test]
+async fn a_retransmitted_invite_for_a_declined_call_gets_the_decline_again() {
+    let (pbx, seen, sock) = start_pbx_with_socket(InviteReply::Busy).await;
+    // T1 of 500 ms: nothing is resent on its own within the test's window.
+    let (mgr, mut rx, client) = registered_client(pbx, &seen).await;
+    let invite = incoming_invite(pbx, client, "harness-decline-resent@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    mgr.hangup(&call_id).await.expect("declined");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(count_finals(&seen, " 486 "), 1);
+
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(count_finals(&seen, " 486 "), 2, "the resent INVITE should get the 486 again");
+    let to_tags: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .responses
+        .iter()
+        .filter(|r| r.starts_with("SIP/2.0 486"))
+        .map(|r| header(r, "To").and_then(|t| param(t, "tag")))
+        .collect();
+    assert_eq!(to_tags[0], to_tags[1], "the same response, To tag included");
 }
