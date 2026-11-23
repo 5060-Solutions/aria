@@ -53,11 +53,46 @@ fn surface_for_incoming_call(app: &tauri::AppHandle) {
     }
 }
 
+/// Whether a read from the default credential store says the store itself is
+/// unreachable, as opposed to the entry being missing.
+#[cfg(any(target_os = "linux", test))]
+fn credential_store_unavailable(probe: &keyring::Result<String>) -> bool {
+    matches!(probe, Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_)))
+}
+
+/// Fall back to the kernel keyring alone when there is no Secret Service.
+///
+/// The Linux store (`linux-native-sync-persistent`) writes keyutils and then
+/// the Secret Service, and undoes the keyutils write when the second fails;
+/// a read that misses keyutils asks the Secret Service. A session with no
+/// Secret Service provider (i3 or sway without gnome-keyring, WSLg,
+/// containers) could therefore neither save the SIP password nor give the
+/// MCP server a token. There the store is switched to keyutils only, which
+/// keeps credentials for the login session but not across a reboot — what
+/// those sessions had before the persistent store.
+///
+/// Must run before anything creates a keyring entry.
+#[cfg(target_os = "linux")]
+fn use_session_keyring_without_secret_service() {
+    let probe = keyring::Entry::new("aria-softphone", "keyring-probe").and_then(|e| e.get_password());
+    if credential_store_unavailable(&probe) {
+        log::warn!(
+            "No Secret Service is available ({}); saved credentials are kept in the kernel keyring \
+             and will not survive a reboot",
+            probe.err().map(|e| e.to_string()).unwrap_or_default()
+        );
+        keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
+
+    #[cfg(target_os = "linux")]
+    use_session_keyring_without_secret_service();
 
     // Create manager and take receiver before moving into Tauri. This runs on
     // the bare main thread with no Tokio runtime: construction spawns nothing,
@@ -411,5 +446,16 @@ mod tests {
             root.file_name().and_then(|n| n.to_str()),
             Some(BUNDLE_IDENTIFIER)
         );
+    }
+
+    /// A missing probe entry is a working store; only a store that cannot be
+    /// reached sends Linux to the session keyring.
+    #[test]
+    fn only_an_unreachable_store_counts_as_unavailable() {
+        let failure = || -> Box<dyn std::error::Error + Send + Sync> { "no secret service".into() };
+        assert!(!credential_store_unavailable(&Ok("x".into())));
+        assert!(!credential_store_unavailable(&Err(keyring::Error::NoEntry)));
+        assert!(credential_store_unavailable(&Err(keyring::Error::PlatformFailure(failure()))));
+        assert!(credential_store_unavailable(&Err(keyring::Error::NoStorageAccess(failure()))));
     }
 }
