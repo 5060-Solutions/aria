@@ -10,6 +10,7 @@ pub mod ice;
 mod emergency;
 mod instance;
 pub mod media;
+pub mod mwi;
 pub mod presence;
 #[allow(dead_code)]
 pub mod srtp;
@@ -2835,6 +2836,7 @@ impl SipManager {
         s.active_account().and_then(|a| {
             a.subscriptions
                 .iter()
+                .filter(|sub| sub.event_type != EventType::MessageSummary)
                 .find(|sub| presence::extract_extension_from_uri(&sub.target_uri) == extension)
                 .map(|sub| sub.id.clone())
         })

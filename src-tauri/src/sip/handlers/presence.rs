@@ -174,6 +174,7 @@ pub async fn handle_subscribe_response(
             log::warn!("SUBSCRIBE rejected: Bad Event (489)");
             let mut s = state.write().await;
             if let Some(account) = s.get_account_mut(account_id) {
+                crate::sip::mwi::note_subscribe_failure(account, &call_id_header);
                 account.subscriptions.retain(|s| s.call_id != call_id_header);
             }
         }
@@ -181,6 +182,11 @@ pub async fn handle_subscribe_response(
             log::warn!("SUBSCRIBE failed: {}", status);
             let mut s = state.write().await;
             if let Some(account) = s.get_account_mut(account_id) {
+                // 403/404/405 and the like are a standing answer; a 5xx or a
+                // timeout-ish 408 may not be, so the next registration retries.
+                if (400..500).contains(&status) && status != 408 {
+                    crate::sip::mwi::note_subscribe_failure(account, &call_id_header);
+                }
                 account.subscriptions.retain(|s| s.call_id != call_id_header);
             }
         }

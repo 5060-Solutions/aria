@@ -40,8 +40,10 @@ struct Seen {
     register_unauth: usize,
     /// The Contact header of every REGISTER.
     register_contacts: Vec<String>,
-    /// Every SUBSCRIBE, raw.
+    /// Every SUBSCRIBE, raw, except message-summary ones.
     subscribes: Vec<String>,
+    /// Every message-summary (MWI) SUBSCRIBE, raw.
+    mwi_subscribes: Vec<String>,
     /// Every INVITE, raw.
     invites: Vec<String>,
     /// How many ACKs arrived.
@@ -98,6 +100,9 @@ struct PbxOptions {
     /// Lose the first 200 OK the client sends to an INVITE on the wire: the
     /// PBX never sees it (#69).
     drop_first_invite_200: bool,
+    /// Answer a message-summary SUBSCRIBE with a NOTIFY carrying counts, as
+    /// the Aria PBX does.
+    mwi_notify: bool,
 }
 
 impl Default for PbxOptions {
@@ -112,6 +117,7 @@ impl Default for PbxOptions {
             ignore_options: false,
             ack_invite_200: false,
             drop_first_invite_200: false,
+            mwi_notify: false,
         }
     }
 }
@@ -321,7 +327,42 @@ async fn start_pbx_with_options(
             if method == "OPTIONS" && opts.ignore_options {
                 continue;
             }
+            let is_mwi = method == "SUBSCRIBE" && header(&msg, "Event") == Some("message-summary");
             let reply = match method {
+                // As the Aria PBX does: accept, and send the current counts at
+                // once in an in-dialog NOTIFY.
+                "SUBSCRIBE" if is_mwi => {
+                    rec.lock().unwrap().mwi_subscribes.push(msg.clone());
+                    let ok = respond(&msg, 200, "OK", &[format!("Expires: {}", opts.subscribe_expires)]);
+                    let _ = sock.send_to(ok.as_bytes(), from).await;
+                    // Off unless asked for: the client's 200 to the NOTIFY
+                    // would land in `responses`, which other tests count.
+                    if !opts.mwi_notify {
+                        continue;
+                    }
+                    let body = "Messages-Waiting: yes\r\nVoice-Message: 2/1 (0/0)\r\n";
+                    let to = header(&msg, "To").unwrap_or_default();
+                    let to = if to.contains("tag=") { to.to_owned() } else { format!("{to};tag=pbx1") };
+                    let notify = format!(
+                        "NOTIFY sip:{USER}@{from} SIP/2.0\r\n\
+                         Via: SIP/2.0/UDP {addr};branch=z9hG4bK-mwi-{n}\r\n\
+                         From: {to}\r\n\
+                         To: {from_hdr}\r\n\
+                         Call-ID: {call_id}\r\n\
+                         CSeq: {n} NOTIFY\r\n\
+                         Event: message-summary\r\n\
+                         Subscription-State: active;expires={expires}\r\n\
+                         Content-Type: application/simple-message-summary\r\n\
+                         Content-Length: {len}\r\n\r\n{body}",
+                        n = nonce_n + 1,
+                        from_hdr = header(&msg, "From").unwrap_or_default(),
+                        call_id = header(&msg, "Call-ID").unwrap_or_default(),
+                        expires = opts.subscribe_expires,
+                        len = body.len(),
+                    );
+                    let _ = sock.send_to(notify.as_bytes(), from).await;
+                    continue;
+                }
                 "SUBSCRIBE" if opts.reject_subscribe_auth => {
                     rec.lock().unwrap().subscribes.push(msg.clone());
                     nonce_n += 1;
@@ -1142,6 +1183,45 @@ async fn a_subscribe_that_is_always_challenged_is_abandoned() {
         mgr.find_subscription_by_extension("1003").await.is_none(),
         "a subscription the server will not accept must be dropped"
     );
+}
+
+/// After registering, the client subscribes to its own message summary, so a
+/// voicemail left while it was offline shows at once (the PBX pushes MWI
+/// unsolicited only on change). Registration refreshes do not pile up more
+/// subscriptions, and the counts reach the frontend.
+#[tokio::test]
+async fn registering_subscribes_to_the_accounts_message_summary_once() {
+    let (pbx, seen, _) =
+        start_pbx_with_options(PbxOptions { register_expires: 2, mwi_notify: true, ..PbxOptions::default() }).await;
+    let (mgr, mut rx) = manager_with(fast_timing());
+    let cfg = account(pbx, None, PASSWORD);
+    let id = cfg.id.clone();
+    register(&mgr, cfg).await.expect("registered");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+            panic!("no voicemail status after registering");
+        };
+        if let super::SipEvent::VoicemailStatus(v) = event {
+            break v;
+        }
+    };
+    assert_eq!(status.account_id, id);
+    assert!(status.messages_waiting);
+    assert_eq!((status.new_messages, status.old_messages), (2, 1));
+
+    // Granted 2 s → the registration refreshes every second; give it a few.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    let s = seen.lock().unwrap();
+    assert!(s.register_ok.len() >= 2, "no registration refresh happened");
+    let first = s.mwi_subscribes.first().expect("an MWI SUBSCRIBE");
+    assert!(first.starts_with(&format!("SUBSCRIBE sip:{USER}@harness.lan ")), "{first}");
+    assert!(header(first, "Accept") == Some("application/simple-message-summary"));
+    let dialogs: std::collections::HashSet<_> =
+        s.mwi_subscribes.iter().filter_map(|m| header(m, "Call-ID")).collect();
+    assert_eq!(dialogs.len(), 1, "refreshes must reuse the one subscription: {}", s.mwi_subscribes.len());
+    assert!(s.subscribes.is_empty(), "no BLF subscription was asked for");
 }
 
 /// When an outbound proxy is configured, requests must be routed to that proxy

@@ -316,6 +316,7 @@ pub async fn handle_incoming_request(
                 handle_notify_presence(state, event_tx, text, remote, &event_trimmed, account_id).await;
             } else if event_trimmed == "message-summary" {
                 // RFC 3842 MWI NOTIFY — parse the body for voicemail status
+                crate::sip::mwi::track_notify_state(state, account_id, text).await;
                 let mwi = parse_mwi_body(text);
                 log::info!(
                     "MWI NOTIFY from {}: waiting={}, new={}, old={}",

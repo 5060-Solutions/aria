@@ -185,6 +185,13 @@ pub async fn handle_register_response(
                 error: None,
             }));
 
+            // Ask for the current voicemail counts: the server pushes them
+            // unsolicited only when they change. A no-op when the account is
+            // already subscribed (registration refreshes come through here).
+            if let Err(e) = crate::sip::mwi::subscribe_after_registration(state, account_id).await {
+                log::warn!("MWI SUBSCRIBE for {} not sent: {}", account_id, e);
+            }
+
             // Re-subscribe to BLF/presence if we have pending resubscriptions
             // (saved when transport died, before subscriptions were cleared).
             let resub_targets: Vec<(String, crate::sip::state::EventType)> = {
