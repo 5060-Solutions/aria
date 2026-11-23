@@ -218,8 +218,10 @@ jobs:
         shell: pwsh
         run: |
           $release = "$env:CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release"
-          $files = @(Get-Item "$release/aria.exe") +
-                   @(Get-ChildItem "$release/bundle/nsis/*.exe") +
+          # The installers are what ships (and what the updater downloads).
+          # tauri signs the aria.exe it stages into them, not the copy left
+          # in the target directory, so that one is reported but not gated.
+          $files = @(Get-ChildItem "$release/bundle/nsis/*.exe") +
                    @(Get-ChildItem "$release/bundle/msi/*.msi")
           $bad = 0
           foreach ($f in $files) {
@@ -227,7 +229,8 @@ jobs:
             Write-Host "$($sig.Status) $($f.Name) $($sig.SignerCertificate.Subject)"
             if ($sig.Status -ne 'Valid') { $bad++ }
           }
-          if ($files.Count -lt 3 -or $bad -gt 0) { exit 1 }
+          Write-Host "(info) $((Get-AuthenticodeSignature "$release/aria.exe").Status) target-dir aria.exe"
+          if ($files.Count -lt 2 -or $bad -gt 0) { exit 1 }
 
   build-macos-universal:
     runs-on: macos-latest
