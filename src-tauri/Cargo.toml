@@ -56,7 +56,7 @@ tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std"] }
 rustls-pki-types = "1"
 
-# RTP media engine (local path for development, switch to git for release)
+# RTP media engine
 rtp-engine = { git = "https://github.com/5060-Solutions/rtp-engine.git", features = ["device", "srtp", "opus", "audio-proc"] }
 
 # Filesystem utilities (for recordings directory)
