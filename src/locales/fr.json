@@ -371,7 +371,7 @@
     "intro": "Un serveur MCP local permet à un assistant sur cet ordinateur (Claude Code, par exemple) de lire l'état d'enregistrement, les appels et la trace SIP. Rien ne quitte cet ordinateur et les mots de passe ne sont jamais exposés.",
     "enableRead": "Autoriser les assistants locaux à lire l'état et les traces",
     "enableControl": "Autoriser les assistants à passer et contrôler des appels",
-    "enableControlNote": "Chaque nouvel appel vous demande toujours confirmation.",
+    "enableControlNote": "Votre accord est demandé avant qu'un assistant passe un appel, réponde à un appel, transfère un appel ou envoie des tonalités de clavier pendant un appel (une fois par appel). Raccrocher et mettre en attente se font sans demande.",
     "port": "Port",
     "portNote": "Servi uniquement sur 127.0.0.1.",
     "notRunning": "Le serveur n'a pas pu démarrer : {{error}}",
@@ -387,7 +387,13 @@
     "callRequestExpires": "Cette demande expire dans {{seconds}} s.",
     "allow": "Autoriser",
     "deny": "Refuser",
-    "noAccount": "Aucun compte disponible pour passer cet appel."
+    "noAccount": "Aucun compte disponible pour passer cet appel.",
+    "answerRequestTitle": "Un assistant souhaite répondre à un appel",
+    "answerRequestBody": "Un assistant souhaite répondre à l'appel entrant de {{remote}} sur {{account}}. Votre micro est actif dès que l'appel est décroché.",
+    "transferRequestTitle": "Un assistant souhaite transférer un appel",
+    "transferRequestBody": "Un assistant souhaite transférer votre appel avec {{remote}} vers {{number}}.",
+    "dtmfRequestTitle": "Un assistant souhaite appuyer sur des touches pendant un appel",
+    "dtmfRequestBody": "Un assistant souhaite envoyer des tonalités de clavier pendant votre appel avec {{remote}}, en commençant par {{number}}. Si vous l'autorisez, il pourra envoyer d'autres tonalités pendant cet appel sans redemander."
   },
   "provision": {
     "title": "Ajouter cette ligne téléphonique ?",

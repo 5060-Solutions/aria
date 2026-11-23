@@ -371,7 +371,7 @@
     "intro": "Ein lokaler MCP-Server lässt einen Assistenten auf diesem Computer (z. B. Claude Code) Registrierungsstatus, Anrufe und den SIP-Trace lesen. Nichts verlässt diesen Computer, Passwörter werden nie preisgegeben.",
     "enableRead": "Lokalen Assistenten das Lesen von Status und Traces erlauben",
     "enableControl": "Assistenten erlauben, Anrufe zu tätigen und zu steuern",
-    "enableControlNote": "Bei jedem neuen Anruf werden Sie weiterhin zuerst gefragt.",
+    "enableControlNote": "Sie werden zuerst gefragt, bevor ein Assistent einen Anruf tätigt, annimmt, weiterleitet oder Tastentöne in einem Anruf sendet (einmal pro Anruf). Auflegen und Halten erfolgen ohne Rückfrage.",
     "port": "Port",
     "portNote": "Nur auf 127.0.0.1 erreichbar.",
     "notRunning": "Der Server konnte nicht gestartet werden: {{error}}",
@@ -387,7 +387,13 @@
     "callRequestExpires": "Diese Anfrage läuft in {{seconds}} s ab.",
     "allow": "Erlauben",
     "deny": "Ablehnen",
-    "noAccount": "Kein Konto verfügbar, um diesen Anruf zu tätigen."
+    "noAccount": "Kein Konto verfügbar, um diesen Anruf zu tätigen.",
+    "answerRequestTitle": "Ein Assistent möchte einen Anruf annehmen",
+    "answerRequestBody": "Ein Assistent möchte den eingehenden Anruf von {{remote}} über {{account}} annehmen. Sobald der Anruf angenommen ist, ist Ihr Mikrofon aktiv.",
+    "transferRequestTitle": "Ein Assistent möchte einen Anruf weiterleiten",
+    "transferRequestBody": "Ein Assistent möchte Ihren Anruf mit {{remote}} an {{number}} weiterleiten.",
+    "dtmfRequestTitle": "Ein Assistent möchte in einem Anruf Tasten drücken",
+    "dtmfRequestBody": "Ein Assistent möchte in Ihrem Anruf mit {{remote}} Tastentöne senden, beginnend mit {{number}}. Wenn Sie das erlauben, kann er in diesem Anruf weitere Töne senden, ohne erneut zu fragen."
   },
   "provision": {
     "title": "Diese Telefonleitung hinzufügen?",

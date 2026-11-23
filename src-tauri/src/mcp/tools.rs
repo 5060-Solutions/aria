@@ -1,14 +1,19 @@
 //! The MCP tools: what an assistant can see and do.
 //!
 //! Read-only tools work whenever the server is enabled. Call-control tools
-//! also need "allow assistants to place and control calls" in Settings, and
-//! `place_call` still asks the user for each call. Every control action,
-//! allowed or not, is written to the diagnostics trace.
+//! also need "allow assistants to place and control calls" in Settings. On
+//! top of that, the user is asked before an assistant places a call
+//! (`place_call`), answers one (`answer_call`, which opens the microphone),
+//! transfers one (`transfer_call`), or sends the first keypad tones on a
+//! call (`send_dtmf`, once per call). Hanging up and hold/resume do not ask.
+//! Every control action, allowed or not, is written to the diagnostics trace.
 //!
 //! Nothing here returns a credential: the SIP trace goes through
 //! `diagnostics::redact_sip`, and accounts are listed from `AccountSummary`,
 //! which has no password field to leak.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use rmcp::handler::server::tool::ToolRouter;
@@ -23,13 +28,107 @@ use super::consent::{ConsentRegistry, Decision, CONSENT_TIMEOUT};
 use crate::sip::diagnostics::{self, DiagnosticLog, MessageDirection};
 use crate::sip::{CallStatusInfo, SipManager};
 
-/// A call an assistant wants placed. Shown to the user before anything is
-/// dialled.
+/// What an assistant is asking the user to allow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestKind {
+    /// Dial `number`. The frontend places the call itself.
+    Place,
+    /// Answer the incoming call from `remote`.
+    Answer,
+    /// Blind-transfer the call with `remote` to `number`.
+    Transfer,
+    /// Send keypad tones on the call with `remote`, starting with `number`.
+    /// Allowed once per call.
+    Dtmf,
+}
+
+impl RequestKind {
+    /// The `kind` field of the `mcp-call-request` event.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Place => "place",
+            Self::Answer => "answer",
+            Self::Transfer => "transfer",
+            Self::Dtmf => "dtmf",
+        }
+    }
+}
+
+/// An action an assistant wants taken. Shown to the user before anything
+/// happens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRequest {
     pub request_id: String,
+    pub kind: RequestKind,
+    /// What the dialog shows in its box: the number to call, the caller to
+    /// answer, the transfer target, or the first digits to send.
     pub number: String,
     pub account_id: Option<String>,
+    /// The existing call acted on (everything but `Place`). The frontend
+    /// echoes it back on allow, and the tool refuses a decision for any
+    /// other call.
+    pub call_id: Option<String>,
+    /// The other party of that call.
+    pub remote: Option<String>,
+}
+
+/// A boxed, sendable future, so `CallControl` can be a trait object.
+pub type OpFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The calls the control tools see and act on. In the app this is the
+/// `SipManager`; tests substitute calls that exist without a network.
+pub trait CallControl: Send + Sync {
+    fn active_calls(&self) -> OpFuture<'_, Vec<CallInfo>>;
+    /// The SIP domain of an account, to complete a bare transfer target.
+    fn account_domain<'a>(&'a self, account_id: &'a str) -> OpFuture<'a, Option<String>>;
+    fn answer<'a>(&'a self, call_id: &'a str) -> OpFuture<'a, Result<(), String>>;
+    fn hangup<'a>(&'a self, call_id: &'a str) -> OpFuture<'a, Result<(), String>>;
+    fn hold<'a>(&'a self, call_id: &'a str, held: bool) -> OpFuture<'a, Result<(), String>>;
+    fn transfer_blind<'a>(
+        &'a self,
+        call_id: &'a str,
+        target_uri: &'a str,
+    ) -> OpFuture<'a, Result<(), String>>;
+    fn send_dtmf<'a>(&'a self, call_id: &'a str, digit: &'a str)
+        -> OpFuture<'a, Result<(), String>>;
+}
+
+impl CallControl for SipManager {
+    fn active_calls(&self) -> OpFuture<'_, Vec<CallInfo>> {
+        Box::pin(active_calls(self))
+    }
+    fn account_domain<'a>(&'a self, account_id: &'a str) -> OpFuture<'a, Option<String>> {
+        Box::pin(async move {
+            self.account_summaries()
+                .await
+                .into_iter()
+                .find(|a| a.account_id == account_id)
+                .map(|a| a.domain)
+        })
+    }
+    fn answer<'a>(&'a self, call_id: &'a str) -> OpFuture<'a, Result<(), String>> {
+        Box::pin(SipManager::answer(self, call_id))
+    }
+    fn hangup<'a>(&'a self, call_id: &'a str) -> OpFuture<'a, Result<(), String>> {
+        Box::pin(SipManager::hangup(self, call_id))
+    }
+    fn hold<'a>(&'a self, call_id: &'a str, held: bool) -> OpFuture<'a, Result<(), String>> {
+        Box::pin(SipManager::hold(self, call_id, held))
+    }
+    fn transfer_blind<'a>(
+        &'a self,
+        call_id: &'a str,
+        target_uri: &'a str,
+    ) -> OpFuture<'a, Result<(), String>> {
+        Box::pin(SipManager::transfer_blind(self, call_id, target_uri))
+    }
+    fn send_dtmf<'a>(
+        &'a self,
+        call_id: &'a str,
+        digit: &'a str,
+    ) -> OpFuture<'a, Result<(), String>> {
+        Box::pin(SipManager::send_dtmf(self, call_id, digit))
+    }
 }
 
 /// Where a `CallRequest` goes to be shown to the user. In the app this emits
@@ -50,6 +149,8 @@ pub struct ToolSettings {
 #[derive(Clone)]
 pub struct ToolContext {
     pub manager: SipManager,
+    /// What the control tools act on; the `manager` in the app.
+    pub calls: Arc<dyn CallControl>,
     pub consent: Arc<ConsentRegistry>,
     pub settings: Arc<RwLock<ToolSettings>>,
     pub requests: Arc<dyn CallRequestSink>,
@@ -103,7 +204,7 @@ pub struct DtmfParams {
     /// The call. Defaults to the only connected call.
     #[serde(default)]
     pub call_id: Option<String>,
-    /// Digits to send in order: 0-9, *, #, A-D.
+    /// Digits to send in order: 0-9, * and #. A-D are not supported.
     pub digits: String,
 }
 
@@ -444,6 +545,30 @@ fn tool_error(message: impl Into<String>) -> ErrorData {
     ErrorData::new(ErrorCode::INVALID_PARAMS, message.into(), None)
 }
 
+/// The digits `send_dtmf` will send, without whitespace, or why not.
+///
+/// Only 0-9, * and # are accepted: Aria's media session sends RFC 4733
+/// events for those alone and silently drops A-D, so reporting success
+/// for them would be a lie.
+pub(crate) fn checked_dtmf(digits: &str) -> Result<String, String> {
+    let digits: String = digits.chars().filter(|c| !c.is_whitespace()).collect();
+    if digits.is_empty() {
+        return Err("digits must not be empty".to_string());
+    }
+    for c in digits.chars() {
+        match c {
+            '0'..='9' | '*' | '#' => {}
+            'A'..='D' | 'a'..='d' => {
+                return Err(format!(
+                    "'{c}' is not supported: Aria sends only 0-9, * and #"
+                ))
+            }
+            _ => return Err(format!("'{c}' is not a DTMF digit")),
+        }
+    }
+    Ok(digits)
+}
+
 /// Pick the call a control tool should act on when the caller named none.
 fn pick_call(
     calls: &[CallInfo],
@@ -507,6 +632,49 @@ impl AriaMcp {
         } else {
             Err(control_disabled())
         }
+    }
+
+    /// Ask the user to allow `kind` on an existing call, and wait for the
+    /// answer. `what` is the action as the error and trace name it ("answer
+    /// the call"). Only an allow that names this very call counts.
+    async fn ask_for_call(
+        &self,
+        kind: RequestKind,
+        call: &CallInfo,
+        number: &str,
+        what: &str,
+    ) -> Result<(), ErrorData> {
+        let (request_id, rx) = self.ctx.consent.begin();
+        self.ctx.requests.request(CallRequest {
+            request_id: request_id.clone(),
+            kind,
+            number: number.to_string(),
+            account_id: Some(call.account_id.clone()),
+            call_id: Some(call.call_id.clone()),
+            remote: Some(call.remote.clone()),
+        });
+        let decision = self.ctx.consent.wait(&request_id, rx, CONSENT_TIMEOUT).await;
+        if decision.allowed && decision.call_id.as_deref() == Some(call.call_id.as_str()) {
+            return Ok(());
+        }
+        let reason = match decision {
+            Decision { allowed: true, .. } => "allowed for a different call".to_string(),
+            Decision { reason, .. } => reason.unwrap_or_else(|| "denied".to_string()),
+        };
+        self.audit(
+            &call.account_id,
+            &format!("{what} {} {reason}", call.remote),
+            &format!(
+                "An assistant asked to {what} {} ({}): {reason}",
+                call.call_id, call.remote
+            ),
+        )
+        .await;
+        Err(tool_error(match reason.as_str() {
+            "timeout" => format!("The user did not answer the request to {what} in time"),
+            "denied" => format!("The user denied the request to {what}"),
+            other => format!("Could not {what}: {other}"),
+        }))
     }
 
     /// Record a control action in the diagnostics trace.
@@ -795,8 +963,11 @@ impl AriaMcp {
         let (request_id, rx) = self.ctx.consent.begin();
         self.ctx.requests.request(CallRequest {
             request_id: request_id.clone(),
+            kind: RequestKind::Place,
             number: number.clone(),
             account_id: params.account_id.clone(),
+            call_id: None,
+            remote: None,
         });
         let decision: Decision = self.ctx.consent.wait(&request_id, rx, CONSENT_TIMEOUT).await;
 
@@ -835,21 +1006,30 @@ impl AriaMcp {
         }
     }
 
-    /// Answer an incoming call. Defaults to the one ringing call.
+    /// Answer an incoming call. Defaults to the one ringing call. Aria asks
+    /// the user to allow it first, since answering opens the microphone.
     #[tool(name = "answer_call")]
     async fn answer_call(
         &self,
         Parameters(params): Parameters<CallParams>,
     ) -> Result<Json<ActionResult>, ErrorData> {
         self.require_call_control().await?;
-        let calls = active_calls(&self.ctx.manager).await;
+        let calls = self.ctx.calls.active_calls().await;
         let call = pick_call(
             &calls,
             params.call_id.as_deref(),
             |c| c.state == "incoming",
             "answer",
         )?;
-        let result = self.ctx.manager.answer(&call.call_id).await;
+        if call.state != "incoming" {
+            return Err(tool_error(format!(
+                "Call {} is not ringing (it is {})",
+                call.call_id, call.state
+            )));
+        }
+        self.ask_for_call(RequestKind::Answer, &call, &call.remote, "answer the call from")
+            .await?;
+        let result = self.ctx.calls.answer(&call.call_id).await;
         self.run_action(&call, "answer", result).await
     }
 
@@ -860,48 +1040,46 @@ impl AriaMcp {
         Parameters(params): Parameters<CallParams>,
     ) -> Result<Json<ActionResult>, ErrorData> {
         self.require_call_control().await?;
-        let calls = active_calls(&self.ctx.manager).await;
+        let calls = self.ctx.calls.active_calls().await;
         let call = pick_call(
             &calls,
             params.call_id.as_deref(),
             |c| c.state != "ended",
             "hang up",
         )?;
-        let result = self.ctx.manager.hangup(&call.call_id).await;
+        let result = self.ctx.calls.hangup(&call.call_id).await;
         self.run_action(&call, "hangup", result).await
     }
 
-    /// Send DTMF digits (0-9, *, #, A-D) on a connected call, in order.
+    /// Send DTMF digits (0-9, * and #; A-D are not supported) on a connected
+    /// call, in order. The first time on each call, Aria asks the user to
+    /// allow keypad tones on that call; later digits on it do not ask again.
     #[tool(name = "send_dtmf")]
     async fn send_dtmf(
         &self,
         Parameters(params): Parameters<DtmfParams>,
     ) -> Result<Json<ActionResult>, ErrorData> {
         self.require_call_control().await?;
-        let digits: String = params.digits.chars().filter(|c| !c.is_whitespace()).collect();
-        if digits.is_empty() {
-            return Err(tool_error("digits must not be empty"));
-        }
-        if let Some(bad) = digits
-            .chars()
-            .find(|c| !matches!(c, '0'..='9' | '*' | '#' | 'A'..='D' | 'a'..='d'))
-        {
-            return Err(tool_error(format!("'{bad}' is not a DTMF digit")));
-        }
-        let calls = active_calls(&self.ctx.manager).await;
+        let digits = checked_dtmf(&params.digits).map_err(tool_error)?;
+        let calls = self.ctx.calls.active_calls().await;
+        // Approvals for calls that have ended are of no further use.
+        self.ctx
+            .consent
+            .retain_dtmf(|id| calls.iter().any(|c| c.call_id == id));
         let call = pick_call(
             &calls,
             params.call_id.as_deref(),
             |c| c.state == "connected",
             "send digits to",
         )?;
+        if !self.ctx.consent.dtmf_allowed(&call.call_id) {
+            self.ask_for_call(RequestKind::Dtmf, &call, &digits, "send keypad tones to the call with")
+                .await?;
+            self.ctx.consent.allow_dtmf(&call.call_id);
+        }
         let mut result = Ok(());
         for d in digits.chars() {
-            result = self
-                .ctx
-                .manager
-                .send_dtmf(&call.call_id, &d.to_ascii_uppercase().to_string())
-                .await;
+            result = self.ctx.calls.send_dtmf(&call.call_id, &d.to_string()).await;
             if result.is_err() {
                 break;
             }
@@ -918,14 +1096,15 @@ impl AriaMcp {
         Parameters(params): Parameters<HoldParams>,
     ) -> Result<Json<ActionResult>, ErrorData> {
         self.require_call_control().await?;
-        let calls = active_calls(&self.ctx.manager).await;
+        let calls = self.ctx.calls.active_calls().await;
         let call = pick_call(&calls, Some(&params.call_id), |_| true, "hold")?;
-        let result = self.ctx.manager.hold(&call.call_id, params.held).await;
+        let result = self.ctx.calls.hold(&call.call_id, params.held).await;
         let action = if params.held { "hold" } else { "resume" };
         self.run_action(&call, action, result).await
     }
 
-    /// Blind-transfer a call to a number or SIP address.
+    /// Blind-transfer a call to a number or SIP address. Aria asks the user
+    /// to allow the transfer, showing the target, before it is sent.
     #[tool(name = "transfer_call")]
     async fn transfer_call(
         &self,
@@ -933,7 +1112,7 @@ impl AriaMcp {
     ) -> Result<Json<ActionResult>, ErrorData> {
         self.require_call_control().await?;
         let target = crate::commands::checked_target(&params.target).map_err(tool_error)?;
-        let calls = active_calls(&self.ctx.manager).await;
+        let calls = self.ctx.calls.active_calls().await;
         let call = pick_call(&calls, Some(&params.call_id), |_| true, "transfer")?;
         let target_uri = if target.contains('@') {
             if target.starts_with("sip:") || target.starts_with("sips:") {
@@ -944,16 +1123,15 @@ impl AriaMcp {
         } else {
             let domain = self
                 .ctx
-                .manager
-                .account_summaries()
+                .calls
+                .account_domain(&call.account_id)
                 .await
-                .into_iter()
-                .find(|a| a.account_id == call.account_id)
-                .map(|a| a.domain)
                 .ok_or_else(|| tool_error("The call's account is no longer configured"))?;
             format!("sip:{target}@{domain}")
         };
-        let result = self.ctx.manager.transfer_blind(&call.call_id, &target_uri).await;
+        self.ask_for_call(RequestKind::Transfer, &call, &target_uri, "transfer the call with")
+            .await?;
+        let result = self.ctx.calls.transfer_blind(&call.call_id, &target_uri).await;
         self.run_action(&call, &format!("transfer to {target_uri}"), result)
             .await
     }
@@ -972,7 +1150,9 @@ impl ServerHandler for AriaMcp {
                  get_sip_trace and explain_last_failure answer \"why won't it register\" \
                  and \"why did the call fail\" from the live SIP trace (credentials are \
                  redacted). Call-control tools only work when the user has enabled them \
-                 in Settings, and place_call always asks the user to allow each call.",
+                 in Settings. Even then, the user is asked to allow each place_call, \
+                 answer_call and transfer_call, and the first send_dtmf on each call; \
+                 a denial or no answer within 30 seconds is an error.",
             )
     }
 }

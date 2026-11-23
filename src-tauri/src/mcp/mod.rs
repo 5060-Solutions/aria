@@ -311,8 +311,11 @@ impl CallRequestSink for TauriRequestSink {
     fn request(&self, request: CallRequest) {
         let payload = serde_json::json!({
             "requestId": request.request_id,
+            "kind": request.kind.as_str(),
             "number": request.number,
             "accountId": request.account_id,
+            "callId": request.call_id,
+            "remote": request.remote,
         });
         if let Err(e) = self.app.emit("mcp-call-request", payload) {
             log::error!("Could not show the MCP call request: {e}");
@@ -356,6 +359,7 @@ impl McpState {
     fn tool_context(&self) -> ToolContext {
         ToolContext {
             manager: self.manager.clone(),
+            calls: Arc::new(self.manager.clone()),
             consent: self.consent.clone(),
             settings: self.settings.clone(),
             requests: Arc::new(TauriRequestSink {
@@ -498,7 +502,9 @@ pub async fn mcp_rotate_token(state: TauriState<'_, McpState>) -> Result<String,
 }
 
 /// The user's answer to an `mcp-call-request`. On allow, `call_id` is the
-/// call the frontend placed; on failure to dial, `error` says why.
+/// call the frontend placed, or for a request about an existing call
+/// (answer, transfer, keypad tones) that call's id echoed back; on failure
+/// to dial, `error` says why.
 #[tauri::command]
 pub async fn mcp_call_decision(
     request_id: String,
