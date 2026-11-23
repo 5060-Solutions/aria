@@ -75,6 +75,7 @@
     "keypad": "Keypad",
     "speaker": "Speaker",
     "audio": "Audio",
+    "devicesNextCall": "Changes apply from your next call.",
     "recording": "REC",
     "recordingInProgress": "Recording in progress",
     "encrypted": "Encrypted",

@@ -11,6 +11,7 @@ import { DiagnosticPanel } from "./components/diagnostics/DiagnosticPanel";
 import { useSipEvents, useAutoRegister } from "./hooks/useSip";
 import { useNetworkMonitor } from "./hooks/useNetworkMonitor";
 import { log } from "./utils/log";
+import { pushAudioDevices } from "./utils/audioDevices";
 import { deepLinkTarget } from "./utils/deepLink";
 import { allowLocalSetupLinks, isProvisionLink, parseProvisionLink } from "./utils/provisionLink";
 import { ProvisionLinkDialog } from "./components/provision/ProvisionLinkDialog";
@@ -54,9 +55,15 @@ function MainApp() {
   // Read imperatively rather than subscribing: later changes are pushed by the
   // Settings screen itself, and subscribing here would send each one twice.
   useEffect(() => {
-    const settings = useAppStore.getState().voiceProcessing;
+    const { voiceProcessing: settings, selectedInputDevice, selectedOutputDevice } = useAppStore.getState();
     invoke("set_voice_processing", { settings }).catch((e) => {
       log.warn("[Audio] Could not apply voice processing settings:", e);
+    });
+    // The device choice is in memory in the backend too: without this, calls
+    // after a restart used the system default while Settings showed the
+    // saved headset as selected.
+    pushAudioDevices(invoke, selectedInputDevice, selectedOutputDevice).catch((e) => {
+      log.warn("[Audio] Could not apply the saved audio devices:", e);
     });
   }, []);
 

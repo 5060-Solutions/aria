@@ -28,6 +28,7 @@ import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
 import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
+import { pushAudioDevices } from "../../utils/audioDevices";
 
 interface AudioDevice {
   name: string;
@@ -336,11 +337,13 @@ export function CallControls() {
     } else {
       setSelectedOutputDevice(name);
     }
-    // Push to backend
-    invoke("set_audio_devices", {
-      inputDevice: type === "input" ? name : selectedInputDevice,
-      outputDevice: type === "output" ? name : selectedOutputDevice,
-    }).catch(() => {});
+    // Push to backend. The call in progress keeps its devices (the engine
+    // cannot move a running stream); the menu says so.
+    pushAudioDevices(
+      invoke,
+      type === "input" ? name : selectedInputDevice,
+      type === "output" ? name : selectedOutputDevice,
+    ).catch(() => {});
   };
 
   const hasNonDefaultDevice = audioDevices && (
@@ -548,6 +551,12 @@ export function CallControls() {
       >
         {audioDevices && (
           <Box sx={{ py: 1 }}>
+            <Typography
+              variant="caption"
+              sx={{ px: 2, pb: 0.5, display: "block", color: "text.secondary" }}
+            >
+              {t("call.devicesNextCall")}
+            </Typography>
             {/* Microphone section */}
             <Typography
               variant="overline"
