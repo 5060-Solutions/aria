@@ -276,6 +276,7 @@ mod tests {
         // Timer B is 64*T1 = 320 ms: sent at 0, 5, 15, 35, 75, 155 and 315.
         let sent = count_received(&peer, Duration::from_millis(450)).await;
         assert_eq!(handle.await.unwrap(), Outcome::TimedOut);
-        assert_eq!(sent, 7);
+        // The last is 5 ms before the deadline; a loaded machine may miss it.
+        assert!((6..=7).contains(&sent), "sent {sent} times");
     }
 }

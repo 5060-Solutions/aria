@@ -104,8 +104,6 @@ pub struct AccountState {
     /// The transport the user configured. `config.transport` is the one in
     /// use, which differs only when this is `Auto`.
     pub configured_transport: TransportType,
-    /// When the last response to an OPTIONS keepalive arrived.
-    pub options_last_response: Option<Instant>,
     /// When anything last arrived from the account's server: a response, a
     /// NOTIFY, an incoming call. The keepalive counts all of it as a sign the
     /// server is there.
@@ -147,7 +145,6 @@ impl AccountState {
             configured_transport: config.transport.clone(),
             failover: Failover::default(),
             target: None,
-            options_last_response: None,
             last_heard: None,
             flow_timer: None,
             config,
