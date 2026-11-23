@@ -49,6 +49,11 @@ async fn is_stale_final_response(
 /// dialog, and the only thing that ends a confirmed dialog is a BYE (RFC 3261
 /// §9.1, §15). Without it the callee stayed connected to silence until their
 /// PBX gave up on its own.
+///
+/// Once per dialog: the 200 is retransmitted until our ACK gets through, and
+/// each copy is ACKed again, but one BYE (itself retransmitted until
+/// answered) is all the dialog needs. Every copy used to send another BYE
+/// with a fresh CSeq, as did a 200 resent after our own BYE.
 async fn bye_crossed_dialog(
     state: &Arc<RwLock<ManagerState>>,
     call_id_header: &str,
@@ -59,6 +64,10 @@ async fn bye_crossed_dialog(
     let bye = {
         let mut s = state.write().await;
         let Some((_, call)) = s.find_call_by_header_mut(call_id_header) else { return };
+        if call.bye_sent {
+            return;
+        }
+        call.bye_sent = true;
         let cseq = call.next_cseq();
         let remote_uri = call.remote_uri.clone();
         let local_uri = call.local_uri.clone();
@@ -86,7 +95,9 @@ async fn bye_crossed_dialog(
     };
     let (msg, transport, server_addr) = bye;
     log::info!("200 OK crossed our CANCEL for {}; sending BYE", call_id_header);
-    let _ = transport.send_to(msg.as_bytes(), server_addr).await;
+    if let Err(e) = crate::sip::send_non_invite(state, &transport, server_addr, msg).await {
+        log::warn!("Could not send the BYE for {}: {}", call_id_header, e);
+    }
 }
 
 /// Handle INVITE response (100 Trying, 180 Ringing, 200 OK, auth challenges, errors).
@@ -105,7 +116,9 @@ pub async fn handle_invite_response(
         100 => {
             log::info!("Call trying (100)");
         }
-        180 | 181 | 183 => {
+        // 182 Queued is as much a sign of progress as 180; the call shows
+        // ringing for it too.
+        180..=183 => {
             log::info!("Call ringing/progress ({})", status);
 
             // Check for SDP in provisional response (early media)
@@ -262,7 +275,10 @@ pub async fn handle_invite_response(
                         transport_param,
                         call.remote_uri.clone(),
                         call.call_id_header.clone(),
-                        call.cseq,
+                        // The ACK for a 2xx carries the INVITE's CSeq number
+                        // (RFC 3261 §13.2.2.4), not the dialog's latest: a
+                        // CANCEL or BYE sent since must not change it.
+                        call.invite_cseq,
                         call.from_tag.clone(),
                         call.id.clone(),
                         call.local_rtp_port,
@@ -582,6 +598,13 @@ pub async fn handle_invite_response(
                 let mut s = state.write().await;
                 if let Some((account_id, call)) = s.find_call_by_header_mut(&call_id_header) {
                     let account_id = account_id.to_string();
+                    // Hung up before the challenge arrived: the ACK above
+                    // closes the INVITE, and answering the challenge would
+                    // ring the callee for a call the caller has abandoned.
+                    if call.is_ended() {
+                        log::info!("INVITE challenged ({}) after the call ended; not retrying", status);
+                        return;
+                    }
                     if call.auth_attempted() {
                         log::error!("INVITE auth already attempted, giving up (loop guard)");
                         let call_id = call.id.clone();
@@ -709,19 +732,25 @@ pub async fn handle_invite_response(
             );
 
             let branch = extract_via_branch(&invite);
-            {
+            let call_id = {
                 let mut s = state.write().await;
-                if let Some((_, call)) = s.find_call_by_header_mut(&sip_call_id) {
-                    call.last_invite_branch = branch;
-                    call.invite_cseq = new_cseq;
-                    // Update SRTP key (new key for auth retry SDP)
-                    if new_srtp_key.is_some() {
-                        call.local_srtp_key = new_srtp_key;
-                    }
+                let Some((_, call)) = s.find_call_by_header_mut(&sip_call_id) else { return };
+                // Hung up while the credentials were being worked out.
+                if call.is_ended() {
+                    return;
                 }
-            }
+                call.last_invite_branch = branch;
+                call.invite_cseq = new_cseq;
+                // Update SRTP key (new key for auth retry SDP)
+                if new_srtp_key.is_some() {
+                    call.local_srtp_key = new_srtp_key;
+                }
+                call.id.clone()
+            };
 
-            if let Err(e) = transport.send_to(invite.as_bytes(), server_addr).await {
+            if let Err(e) =
+                crate::sip::send_invite(state, event_tx, &call_id, &transport, server_addr, invite).await
+            {
                 log::error!("Failed to send authenticated INVITE: {}", e);
             }
         }
@@ -771,7 +800,8 @@ async fn send_non_2xx_ack(
                 transport_param,
                 call.remote_uri.clone(),
                 call.call_id_header.clone(),
-                call.cseq,
+                // The INVITE's CSeq, as its branch is (RFC 3261 §17.1.1.3).
+                call.invite_cseq,
                 call.from_tag.clone(),
                 call.local_uri.clone(),
                 via_branch,

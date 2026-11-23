@@ -60,6 +60,8 @@ struct Seen {
     responses: Vec<String>,
     /// The method of every other request the client sent.
     methods: Vec<String>,
+    /// Every request the PBX lost on purpose (see `PbxOptions::drop_once`).
+    dropped: Vec<String>,
 }
 
 /// How the fake PBX answers an INVITE.
@@ -73,9 +75,20 @@ enum InviteReply {
     /// 407 for an INVITE without credentials — retransmitted twice, as a UAS
     /// does until it sees the ACK — then 200 OK for the authenticated one.
     ChallengeThenAnswer,
-    /// 180 Ringing, and a 200 OK sent the moment the caller's CANCEL arrives:
-    /// the callee picked up as the caller gave up.
+    /// 180 Ringing, and a 200 OK sent the moment the caller's CANCEL arrives
+    /// (and resent once, as the ACK has not reached it yet): the callee
+    /// picked up as the caller gave up.
     AnswerOnCancel,
+    /// 100 Trying, then nothing for this long, then 180 and 200 OK: a PSTN
+    /// call whose carrier takes its time.
+    TryingThenLateAnswer(Duration),
+    /// 100 Trying and 180 Ringing; a CANCEL gets its 200 and the INVITE a 487.
+    RingUntilCancelled,
+    /// A 407 for an INVITE without credentials, but only after this long;
+    /// 200 OK for the authenticated one.
+    DelayedChallenge(Duration),
+    /// No response to an INVITE at all.
+    Silent,
 }
 
 /// How the fake PBX behaves beyond its defaults.
@@ -103,6 +116,14 @@ struct PbxOptions {
     /// Answer a message-summary SUBSCRIBE with a NOTIFY carrying counts, as
     /// the Aria PBX does.
     mwi_notify: bool,
+    /// ACK every 4xx-6xx the client sends to an INVITE, as a PBX does.
+    ack_invite_final: bool,
+    /// Requests to lose on the wire, one copy per entry: a method name, or
+    /// `INVITE+auth` for an INVITE carrying credentials. Shared, so a test can
+    /// arm it mid-call.
+    drop_once: Arc<Mutex<Vec<String>>>,
+    /// Methods whose every transaction loses its first copy (by Via branch).
+    drop_first_copy_of: Vec<&'static str>,
 }
 
 impl Default for PbxOptions {
@@ -118,6 +139,9 @@ impl Default for PbxOptions {
             ack_invite_200: false,
             drop_first_invite_200: false,
             mwi_notify: false,
+            ack_invite_final: false,
+            drop_once: Arc::new(Mutex::new(Vec::new())),
+            drop_first_copy_of: Vec::new(),
         }
     }
 }
@@ -211,6 +235,7 @@ fn fast_timing() -> super::Timing {
         options_interval: Duration::from_secs(15),
         options_wait: Duration::from_secs(5),
         max_wait: Duration::from_secs(2),
+        no_answer: Duration::from_secs(30),
     }
 }
 
@@ -293,6 +318,8 @@ async fn start_pbx_with_options(
         let mut dropping_cseq: Option<String> = None;
         // Whether the 200 OK `drop_first_invite_200` loses has gone by.
         let mut dropped_invite_200 = false;
+        // The branches `drop_first_copy_of` has already lost a copy of.
+        let mut lost_branches = std::collections::HashSet::new();
         loop {
             let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
             let msg = String::from_utf8_lossy(&buf[..n]).into_owned();
@@ -309,6 +336,25 @@ async fn start_pbx_with_options(
                     let ack = ack_for_200(&msg, addr, from);
                     let _ = sock.send_to(ack.as_bytes(), from).await;
                 }
+                let invite_final = header(&msg, "CSeq").is_some_and(|c| c.ends_with("INVITE"))
+                    && msg.split_whitespace().nth(1).and_then(|c| c.parse::<u16>().ok()).is_some_and(|c| c >= 300);
+                if invite_final && opts.ack_invite_final {
+                    let ack = ack_for_200(&msg, addr, from);
+                    let _ = sock.send_to(ack.as_bytes(), from).await;
+                }
+                continue;
+            }
+            let key = if method == "INVITE" && header(&msg, "Proxy-Authorization").is_some() {
+                "INVITE+auth"
+            } else {
+                method
+            };
+            let lose_once = {
+                let mut once = opts.drop_once.lock().unwrap();
+                once.iter().position(|k| k == key).map(|i| once.remove(i)).is_some()
+            };
+            if lose_once || (opts.drop_first_copy_of.contains(&method) && lost_branches.insert(via_branch(&msg))) {
+                rec.lock().unwrap().dropped.push(msg.clone());
                 continue;
             }
             if method != "REGISTER" {
@@ -479,11 +525,69 @@ async fn start_pbx_with_options(
                     rec.lock().unwrap().cancels.push(msg.clone());
                     let _ = sock.send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from).await;
                     // The callee answered at the same moment: the 200 for the
-                    // INVITE goes out after the 200 for the CANCEL.
+                    // INVITE goes out after the 200 for the CANCEL, and again
+                    // as a retransmission before the ACK can have arrived.
+                    let Some(invite) = invite else { continue };
+                    let ok = respond(&invite, 200, "OK", &[format!("Contact: <sip:11@{addr}>")]);
+                    let sock = sock.clone();
+                    tokio::spawn(async move {
+                        for _ in 0..2 {
+                            let _ = sock.send_to(ok.as_bytes(), from).await;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    });
+                    continue;
+                }
+                "INVITE" if matches!(invite_reply, InviteReply::TryingThenLateAnswer(_)) => {
+                    let InviteReply::TryingThenLateAnswer(delay) = invite_reply else { unreachable!() };
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    let ringing = respond(&msg, 180, "Ringing", &[]);
+                    let ok = respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")]);
+                    let sock = sock.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        let _ = sock.send_to(ringing.as_bytes(), from).await;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        let _ = sock.send_to(ok.as_bytes(), from).await;
+                    });
+                    continue;
+                }
+                "INVITE" if invite_reply == InviteReply::RingUntilCancelled => {
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    respond(&msg, 180, "Ringing", &[])
+                }
+                "CANCEL" if invite_reply == InviteReply::RingUntilCancelled => {
+                    let invite = rec.lock().unwrap().invites.last().cloned();
+                    rec.lock().unwrap().cancels.push(msg.clone());
+                    let _ = sock.send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from).await;
                     match invite {
-                        Some(invite) => respond(&invite, 200, "OK", &[format!("Contact: <sip:11@{addr}>")]),
+                        Some(invite) => respond(&invite, 487, "Request Terminated", &[]),
                         None => continue,
                     }
+                }
+                "INVITE" if matches!(invite_reply, InviteReply::DelayedChallenge(_)) => {
+                    let InviteReply::DelayedChallenge(delay) = invite_reply else { unreachable!() };
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    if header(&msg, "Proxy-Authorization").is_some() {
+                        let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                        respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")])
+                    } else {
+                        let challenge = respond(&msg, 407, "Proxy Authentication Required", &[format!(
+                            "Proxy-Authenticate: Digest realm=\"{REALM}\", nonce=\"inv1\", algorithm=MD5, qop=\"auth\""
+                        )]);
+                        let sock = sock.clone();
+                        tokio::spawn(async move {
+                            tokio::time::sleep(delay).await;
+                            let _ = sock.send_to(challenge.as_bytes(), from).await;
+                        });
+                        continue;
+                    }
+                }
+                "INVITE" if invite_reply == InviteReply::Silent => {
+                    rec.lock().unwrap().invites.push(msg.clone());
+                    continue;
                 }
                 "INVITE" => {
                     rec.lock().unwrap().invites.push(msg.clone());
@@ -992,6 +1096,10 @@ async fn an_authenticated_invite_offers_the_same_media_address_as_the_first() {
 /// cross: the 200 confirms a dialog the CANCEL cannot touch, so after the ACK
 /// a BYE must follow (RFC 3261 §9.1, §15). Before, the 200 was ACKed and left
 /// alone, and the callee stayed connected to silence.
+///
+/// The 200 comes twice. Each copy is ACKed, with the INVITE's CSeq (the
+/// CANCEL used to move the dialog's CSeq on, so the ACK said 2), and the
+/// dialog gets one BYE, not one per copy.
 #[tokio::test]
 async fn a_200_that_crosses_our_cancel_is_acked_and_then_byed() {
     let (pbx, seen) = start_pbx_with(InviteReply::AnswerOnCancel).await;
@@ -1010,7 +1118,11 @@ async fn a_200_that_crosses_our_cancel_is_acked_and_then_byed() {
     let cancel = s.cancels.first().expect("a ringing call is cancelled");
     assert_eq!(header(cancel, "CSeq"), Some("1 CANCEL"), "CANCEL carries the INVITE's CSeq");
     assert_eq!(via_branch(cancel), via_branch(&s.invites[0]), "CANCEL carries the INVITE's branch");
-    assert_eq!(s.acks, 1, "the crossed 200 is ACKed");
+    assert_eq!(s.acks, 2, "each copy of the crossed 200 is ACKed");
+    for ack in &s.ack_msgs {
+        assert_eq!(header(ack, "CSeq"), Some("1 ACK"), "the ACK carries the INVITE's CSeq: {ack}");
+    }
+    assert_eq!(s.byes.len(), 1, "one BYE per dialog, however often the 200 comes");
     let bye = s.byes.first().expect("the confirmed dialog is ended with BYE");
     assert!(bye.starts_with(&format!("BYE sip:11@{pbx} ")), "BYE goes to the 200's Contact: {bye}");
     let invite_from_tag = header(&s.invites[0], "From").and_then(|f| param(f, "tag")).unwrap();
@@ -1704,4 +1816,330 @@ async fn an_emergency_call_stays_up_while_the_reconnect_loop_fires() {
     mgr.hangup(&call_id).await.expect("hung up");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(seen.lock().unwrap().byes.len() == 1, "BYE went to the same server");
+}
+
+/// Place a call on fast timers (T1 = 50 ms, Timer B 3.2 s) against a PBX
+/// started with `opts`.
+async fn dial(
+    opts: PbxOptions,
+) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, Arc<Mutex<Seen>>, String) {
+    let (pbx, seen, _) = start_pbx_with_options(opts).await;
+    let (mgr, rx) = manager_with(fast_timing());
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
+    (mgr, rx, seen, call_id)
+}
+
+/// Wait until `cond` holds for what the PBX saw, or fail with `what`.
+async fn wait_for_seen(seen: &Arc<Mutex<Seen>>, within: Duration, what: &str, cond: impl Fn(&Seen) -> bool) {
+    let deadline = tokio::time::Instant::now() + within;
+    while !cond(&seen.lock().unwrap()) {
+        assert!(tokio::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+fn drop_once(methods: &[&str]) -> Arc<Mutex<Vec<String>>> {
+    Arc::new(Mutex::new(methods.iter().map(|m| m.to_string()).collect()))
+}
+
+/// S1: the first INVITE is lost on the wire. It is resent at T1 (Timer A),
+/// the PBX challenges the copy, and the call connects. It used to go out
+/// once, and the user heard nothing for 32 s and then "Request timeout".
+#[tokio::test]
+async fn a_lost_invite_is_retransmitted_and_the_call_connects() {
+    let opts = PbxOptions {
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        drop_once: drop_once(&["INVITE"]),
+        ..PbxOptions::default()
+    };
+    let (mgr, mut rx, seen, call_id) = dial(opts).await;
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    {
+        let s = seen.lock().unwrap();
+        assert_eq!(s.dropped.len(), 1);
+        assert_eq!(via_branch(&s.dropped[0]), via_branch(&s.invites[0]), "the copy is the same transaction");
+        assert_eq!(header(&s.invites[0], "CSeq"), Some("1 INVITE"));
+    }
+    mgr.hangup(&call_id).await.expect("hung up");
+}
+
+/// S1: the authenticated INVITE is lost. It is resent the same way.
+#[tokio::test]
+async fn a_lost_authenticated_invite_is_retransmitted_and_the_call_connects() {
+    let opts = PbxOptions {
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        drop_once: drop_once(&["INVITE+auth"]),
+        ..PbxOptions::default()
+    };
+    let (mgr, mut rx, seen, call_id) = dial(opts).await;
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    {
+        let s = seen.lock().unwrap();
+        assert_eq!(s.dropped.len(), 1);
+        assert!(header(&s.dropped[0], "Proxy-Authorization").is_some());
+        let retry = s.invites.iter().find(|i| header(i, "Proxy-Authorization").is_some()).expect("retry arrived");
+        assert_eq!(header(retry, "CSeq"), Some("2 INVITE"));
+        assert_eq!(via_branch(retry), via_branch(&s.dropped[0]));
+    }
+    mgr.hangup(&call_id).await.expect("hung up");
+}
+
+/// S7: a 100 Trying puts the INVITE in Proceeding. Neither Timer B (3.2 s
+/// here) nor anything else may end the call while it waits for the far end,
+/// and the INVITE is not resent after the 100. The 32 s limit used to end a
+/// call like this (scaled here to 4 s of silence on T1 = 50 ms) locally,
+/// with no CANCEL.
+#[tokio::test]
+async fn a_call_that_has_had_100_trying_survives_a_long_silence() {
+    let opts = PbxOptions {
+        invite_reply: InviteReply::TryingThenLateAnswer(Duration::from_secs(4)),
+        ..PbxOptions::default()
+    };
+    let (mgr, mut rx, seen, call_id) = dial(opts).await;
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(8)).await;
+    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    assert!(!states.contains(&"ended".to_owned()), "{states:?}");
+    assert_eq!(seen.lock().unwrap().invites.len(), 1, "no retransmission after the 100");
+    mgr.hangup(&call_id).await.expect("hung up");
+}
+
+/// Timer B: an INVITE that gets no response at all is resent at T1 doubling
+/// and the call fails at 64*T1.
+#[tokio::test]
+async fn an_invite_with_no_response_fails_at_timer_b() {
+    let opts = PbxOptions { invite_reply: InviteReply::Silent, ..PbxOptions::default() };
+    let started = tokio::time::Instant::now();
+    let (_mgr, mut rx, seen, call_id) = dial(opts).await;
+    let states = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(8)).await;
+    assert!(states.contains(&"ended".to_owned()), "never gave up: {states:?}");
+    assert!(started.elapsed() >= Duration::from_millis(3200), "gave up early: {:?}", started.elapsed());
+    // Sent at 0, 50, 150, 350, 750, 1550 and 3150 ms.
+    // The last lands 50 ms before Timer B; a loaded machine may miss it.
+    let sent = seen.lock().unwrap().invites.len();
+    assert!((6..=7).contains(&sent), "sent {sent} INVITEs");
+}
+
+/// S8: the user hangs up before the challenge arrives. The 407 is ACKed and
+/// nothing more: answering it rang the callee for an abandoned call.
+#[tokio::test]
+async fn hanging_up_before_the_challenge_sends_no_authenticated_invite() {
+    let (pbx, seen) = start_pbx_with(InviteReply::DelayedChallenge(Duration::from_millis(300))).await;
+    let (mgr, mut rx) = manager();
+    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    mgr.hangup(&call_id).await.expect("hung up");
+    let states = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(2)).await;
+    assert!(states.contains(&"ended".to_owned()), "{states:?}");
+
+    wait_for_seen(&seen, Duration::from_secs(2), "the late 407 was never ACKed", |s| s.acks >= 1).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let s = seen.lock().unwrap();
+    assert!(
+        s.invites.iter().all(|i| header(i, "Proxy-Authorization").is_none()),
+        "an authenticated INVITE went out for a call already hung up"
+    );
+    assert_eq!(header(&s.ack_msgs[0], "CSeq"), Some("1 ACK"));
+}
+
+/// S2: the BYE is lost. It is resent until the PBX answers; it used to go
+/// out once, leaving the far party connected to silence.
+#[tokio::test]
+async fn a_lost_bye_is_retransmitted() {
+    let drop = drop_once(&[]);
+    let opts = PbxOptions {
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        drop_once: drop.clone(),
+        ..PbxOptions::default()
+    };
+    let (mgr, mut rx, seen, call_id) = dial(opts).await;
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "{states:?}");
+
+    drop.lock().unwrap().push("BYE".into());
+    mgr.hangup(&call_id).await.expect("hung up");
+    wait_for_seen(&seen, Duration::from_secs(2), "the lost BYE was never resent", |s| !s.byes.is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let s = seen.lock().unwrap();
+    assert_eq!(s.dropped.len(), 1);
+    assert_eq!(s.byes.len(), 1, "answered, so not resent again");
+    assert_eq!(via_branch(&s.byes[0]), via_branch(&s.dropped[0]));
+}
+
+/// S2: the CANCEL is lost. It is resent until answered, so the callee stops
+/// ringing, and the 487 that follows is ACKed with the INVITE's CSeq.
+#[tokio::test]
+async fn a_lost_cancel_is_retransmitted() {
+    let opts = PbxOptions {
+        invite_reply: InviteReply::RingUntilCancelled,
+        drop_once: drop_once(&["CANCEL"]),
+        ..PbxOptions::default()
+    };
+    let (_mgr, mut rx, seen, call_id) = dial(opts).await;
+    call_states_until(&mut rx, &call_id, "ringing", Duration::from_secs(5)).await;
+    _mgr.hangup(&call_id).await.expect("cancelled");
+
+    wait_for_seen(&seen, Duration::from_secs(2), "the 487 was never ACKed", |s| s.acks >= 1).await;
+    let s = seen.lock().unwrap();
+    assert_eq!(s.dropped.len(), 1);
+    assert_eq!(s.cancels.len(), 1);
+    assert_eq!(header(&s.cancels[0], "CSeq"), Some("1 CANCEL"));
+    assert_eq!(header(&s.ack_msgs[0], "CSeq"), Some("1 ACK"), "the CANCEL must not move the ACK's CSeq");
+    assert_eq!(via_branch(&s.ack_msgs[0]), via_branch(&s.invites[0]));
+}
+
+/// S2: the REFER is lost. It is resent until answered, and the transfer is
+/// not reported as failed.
+#[tokio::test]
+async fn a_lost_refer_is_retransmitted() {
+    let drop = drop_once(&[]);
+    let opts = PbxOptions {
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        drop_once: drop.clone(),
+        ..PbxOptions::default()
+    };
+    let (mgr, mut rx, seen, call_id) = dial(opts).await;
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "{states:?}");
+
+    drop.lock().unwrap().push("REFER".into());
+    mgr.transfer_blind(&call_id, "sip:12@harness.lan").await.expect("transfer sent");
+    wait_for_seen(&seen, Duration::from_secs(2), "the lost REFER was never resent", |s| {
+        s.methods.iter().any(|m| m == "REFER")
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(seen.lock().unwrap().methods.iter().filter(|m| *m == "REFER").count(), 1);
+    while let Ok(event) = rx.try_recv() {
+        if let super::SipEvent::TransferProgress(t) = event {
+            assert!(t.status < 400, "an answered REFER was reported failed: {}", t.message);
+        }
+    }
+    mgr.hangup(&call_id).await.expect("hung up");
+}
+
+/// S2: a REFER that is never answered ends at Timer F, and the UI is told
+/// the transfer failed instead of showing "Transfer initiated" for good.
+#[tokio::test]
+async fn an_unanswered_refer_is_reported_as_a_failed_transfer() {
+    let drop = drop_once(&[]);
+    let opts = PbxOptions {
+        invite_reply: InviteReply::ChallengeThenAnswer,
+        drop_once: drop.clone(),
+        ..PbxOptions::default()
+    };
+    let (mgr, mut rx, _seen, call_id) = dial(opts).await;
+    let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
+    assert!(states.contains(&"connected".to_owned()), "{states:?}");
+
+    drop.lock().unwrap().extend(std::iter::repeat_n("REFER".to_string(), 50));
+    mgr.transfer_blind(&call_id, "sip:12@harness.lan").await.expect("transfer sent");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let event = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .expect("no transfer failure reported within 3 s")
+            .expect("event channel open");
+        if let super::SipEvent::TransferProgress(t) = event {
+            if t.status >= 400 {
+                assert_eq!(t.call_id, call_id);
+                assert_eq!(t.status, 408);
+                break;
+            }
+        }
+    }
+    mgr.hangup(&call_id).await.expect("hung up");
+}
+
+/// S4: every keepalive OPTIONS loses its first copy. Each is resent within
+/// the wait and answered, so the account stays registered. Each loss used to
+/// count as a miss, and two in a row failed a healthy server over.
+#[tokio::test]
+async fn a_lost_options_keepalive_does_not_fail_over() {
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions {
+        drop_first_copy_of: vec!["OPTIONS"],
+        ..PbxOptions::default()
+    })
+    .await;
+    let mut timing = fast_timing();
+    timing.options_interval = Duration::from_millis(100);
+    timing.options_wait = Duration::from_millis(300);
+    let (mgr, _rx) = manager_with(timing);
+    let cfg = account(pbx, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while tokio::time::Instant::now() < deadline {
+        let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
+        assert_eq!(state, super::RegistrationState::Registered, "a lost OPTIONS failed the server over");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let s = seen.lock().unwrap();
+    let lost = s.dropped.iter().filter(|m| m.starts_with("OPTIONS")).count();
+    let delivered = s.methods.iter().filter(|m| *m == "OPTIONS").count();
+    assert!(lost >= 3, "only {lost} keepalives went out");
+    assert!(delivered >= lost - 1, "{delivered} resent of {lost} lost");
+}
+
+fn count_finals(seen: &Arc<Mutex<Seen>>, code: &str) -> usize {
+    status_lines(seen, "INVITE").iter().filter(|l| l.contains(code)).count()
+}
+
+/// S6: a decline is a final response, and over UDP it is ours to deliver:
+/// the 486 is resent (Timer G) until the PBX ACKs it, and not after. It used
+/// to go out once; the PBX, which already had our 180, then waited for it
+/// as long as it took, and the caller heard ringback.
+#[tokio::test]
+async fn a_decline_is_retransmitted_until_acked() {
+    // No ACK: resent at T1 (50 ms) doubling to T2.
+    let (pbx, seen, sock) = start_pbx_with_socket(InviteReply::Busy).await;
+    let (mgr, mut rx, client) = registered_client_with(pbx, &seen, fast_timing()).await;
+    let invite = incoming_invite(pbx, client, "harness-decline-lost@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    mgr.hangup(&call_id).await.expect("declined");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let sent = count_finals(&seen, " 486 ");
+    assert!(sent >= 4, "the unacknowledged 486 was sent {sent} times");
+
+    // ACKed: sent once.
+    let (pbx, seen, sock) =
+        start_pbx_with_options(PbxOptions { ack_invite_final: true, ..PbxOptions::default() }).await;
+    let (mgr, mut rx, client) = registered_client_with(pbx, &seen, fast_timing()).await;
+    let invite = incoming_invite(pbx, client, "harness-decline-acked@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    mgr.hangup(&call_id).await.expect("declined");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(count_finals(&seen, " 486 "), 1, "the 486 was resent after its ACK");
+}
+
+/// S6: the caller resends its INVITE because our 486 was lost. The copy is
+/// answered with the same 486; it used to get nothing at all.
+#[tokio::test]
+async fn a_retransmitted_invite_for_a_declined_call_gets_the_decline_again() {
+    let (pbx, seen, sock) = start_pbx_with_socket(InviteReply::Busy).await;
+    // T1 of 500 ms: nothing is resent on its own within the test's window.
+    let (mgr, mut rx, client) = registered_client(pbx, &seen).await;
+    let invite = incoming_invite(pbx, client, "harness-decline-resent@pbx", "INVITE");
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    mgr.hangup(&call_id).await.expect("declined");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(count_finals(&seen, " 486 "), 1);
+
+    sock.send_to(invite.as_bytes(), client).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(count_finals(&seen, " 486 "), 2, "the resent INVITE should get the 486 again");
+    let to_tags: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .responses
+        .iter()
+        .filter(|r| r.starts_with("SIP/2.0 486"))
+        .map(|r| header(r, "To").and_then(|t| param(t, "tag")))
+        .collect();
+    assert_eq!(to_tags[0], to_tags[1], "the same response, To tag included");
 }

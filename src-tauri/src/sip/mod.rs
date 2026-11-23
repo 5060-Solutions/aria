@@ -18,6 +18,7 @@ pub mod srtp;
 pub mod srv;
 pub mod state;
 pub mod transfer;
+pub(crate) mod transaction;
 pub mod transport;
 #[cfg(test)]
 mod voip_stack_harness;
@@ -193,6 +194,9 @@ pub(crate) struct Timing {
     /// The longest a reconnect waits between rounds, whatever a `Retry-After`
     /// asked for.
     pub max_wait: std::time::Duration,
+    /// How long an outbound call that has had a provisional response may go
+    /// unanswered before it is cancelled.
+    pub no_answer: std::time::Duration,
 }
 
 impl Default for Timing {
@@ -206,6 +210,7 @@ impl Default for Timing {
             options_interval: std::time::Duration::from_secs(15),
             options_wait: std::time::Duration::from_secs(5),
             max_wait: srv::MAX_WAIT,
+            no_answer: std::time::Duration::from_secs(180),
         }
     }
 }
@@ -301,6 +306,8 @@ pub(crate) struct ManagerState {
     pub(crate) last_latency_ms: Option<f64>,
     /// Shared diagnostic store
     pub(crate) diagnostic_store: Arc<diagnostics::DiagnosticStore>,
+    /// Client transactions in flight, for retransmission (RFC 3261 §17.1).
+    pub(crate) transactions: Arc<transaction::Transactions>,
     /// What the status chip's panel shows, per account. Kept outside
     /// `AccountState` so a failure before the account exists (DNS, a refused
     /// connect) and the attempt after an unregister both have somewhere to go.
@@ -586,6 +593,7 @@ impl SipManager {
                 active_account_id: None,
                 last_latency_ms: None,
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
+                transactions: Arc::new(transaction::Transactions::default()),
                 connection_reports: HashMap::new(),
                 preferred_input_device: None,
                 preferred_output_device: None,
@@ -1065,7 +1073,8 @@ impl SipManager {
             (name, local)
         };
         let probe_config = with_transport(&config, &candidate.transport);
-        if probe_target(&probe_config, &candidate, &tls_name, local_addr).await {
+        let t1 = state.read().await.timing.t1;
+        if probe_target(&probe_config, &candidate, &tls_name, local_addr, t1).await {
             log::info!("Higher-priority server {} ({}) answers again; moving back to it", candidate.addr, candidate.host);
             {
                 let mut s = state.write().await;
@@ -1088,9 +1097,16 @@ impl SipManager {
     }
 
     /// Keep the NAT pinhole open with an OPTIONS, and notice when nothing
-    /// answers: a send that fails, or two OPTIONS in a row with no response of
-    /// any kind, means the server is gone. Over UDP a send never fails, so the
-    /// missing response is the only way a dead server is ever seen.
+    /// answers: a send that fails, or two keepalive rounds in a row in which
+    /// nothing at all came from the server, means the server is gone. Over UDP
+    /// a send never fails, so the silence is the only way a dead server is
+    /// ever seen.
+    ///
+    /// Within a round the OPTIONS is resent at T1, doubling (Timer E), until
+    /// the wait is up, and anything the server sent since the last round
+    /// counts as an answer. A single lost OPTIONS or response used to count
+    /// as a miss, and two in a row failed a healthy server over: at the 5.7%
+    /// loss users see, about every half hour on an idle client.
     async fn options_keepalive_loop(
         state: Arc<RwLock<ManagerState>>,
         event_tx: mpsc::UnboundedSender<SipEvent>,
@@ -1098,10 +1114,12 @@ impl SipManager {
         generation: u64,
     ) {
         let mut misses = 0u32;
+        // The end of the previous round: whatever arrives after it counts.
+        let mut round_ended: Option<std::time::Instant> = None;
         loop {
-            let (interval, wait) = {
+            let (interval, wait, timing, transactions) = {
                 let s = state.read().await;
-                (s.timing.options_interval, s.timing.options_wait)
+                (s.timing.options_interval, s.timing.options_wait, s.timing, s.transactions.clone())
             };
             tokio::time::sleep(interval).await;
 
@@ -1138,21 +1156,33 @@ impl SipManager {
                 account_config.transport.param(),
             );
 
-            let sent_at = std::time::Instant::now();
-            let answered = if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
-                log::warn!("OPTIONS keepalive could not be sent for {}: {}", aid, e);
-                false
-            } else {
-                tokio::time::sleep(wait).await;
-                let s = state.read().await;
-                if !Self::account_current(&s, &aid, generation) {
-                    return;
+            let since = round_ended.unwrap_or_else(std::time::Instant::now);
+            let sent = transaction::send_request(
+                &transactions,
+                &transport,
+                server_addr,
+                msg,
+                transaction::Kind::NonInvite,
+                timing,
+                Some(wait),
+            )
+            .await;
+            let answered = match sent {
+                Err(e) => {
+                    log::warn!("OPTIONS keepalive could not be sent for {}: {}", aid, e);
+                    false
                 }
-                s.accounts
-                    .get(&aid)
-                    .and_then(|a| a.options_last_response)
-                    .is_some_and(|at| at >= sent_at)
+                Ok(handle) => {
+                    let outcome = handle.await;
+                    let s = state.read().await;
+                    if !Self::account_current(&s, &aid, generation) {
+                        return;
+                    }
+                    matches!(outcome, Ok(transaction::Outcome::Answered(_)))
+                        || s.accounts.get(&aid).and_then(|a| a.last_heard).is_some_and(|at| at >= since)
+                }
             };
+            round_ended = Some(std::time::Instant::now());
 
             if answered {
                 misses = 0;
@@ -1570,81 +1600,56 @@ impl SipManager {
             call.id = id;
         }
         let id = call.id.clone();
-
-        transport.send_to(invite.as_bytes(), server_addr).await?;
-
-        log::info!("Sending INVITE to {}", uri);
-
         let sip_call_id_header = call.call_id_header.clone();
-        self.emit(SipEvent::CallStateChanged(CallEvent::new(
-            &aid, &id, "dialing", uri, "outbound"
-        ).with_sip_call_id(&sip_call_id_header)));
 
+        // In the list, and announced, before the INVITE goes out: a fast
+        // response has to find the call, and the UI has to have heard of it
+        // before it hears that it rings.
         {
             let mut s = self.state.write().await;
             if let Some(account) = s.get_account_mut(&aid) {
                 account.calls.push(call);
             }
         }
+        self.emit(SipEvent::CallStateChanged(CallEvent::new(
+            &aid, &id, "dialing", uri, "outbound"
+        ).with_sip_call_id(&sip_call_id_header)));
 
-        // Start INVITE timeout timer (32 seconds per RFC 3261)
-        self.start_invite_timeout(&id, &aid);
+        log::info!("Sending INVITE to {}", uri);
+        if let Err(e) = send_invite(&self.state, &self.event_tx, &id, &transport, server_addr, invite).await {
+            if let Some(account) = self.state.write().await.get_account_mut(&aid) {
+                account.calls.retain(|c| c.id != id);
+            }
+            self.emit(SipEvent::CallStateChanged(CallEvent::new(&aid, &id, "ended", uri, "outbound")));
+            return Err(e);
+        }
+
+        self.start_no_answer_timeout(&id);
 
         Ok(id)
     }
 
-    /// Start a timer that ends the call if it stays in pre-connected states too long
-    fn start_invite_timeout(&self, call_id: &str, account_id: &str) {
-        let state = self.state.clone();
-        let event_tx = self.event_tx.clone();
+    /// Cancel an outbound call that is still unanswered after `no_answer`.
+    ///
+    /// A call with no response at all is Timer B's (see `send_invite`). This
+    /// one has had a provisional response, so the far end is working on it:
+    /// a PSTN call can sit on 100 Trying for well over 32 s before anything
+    /// rings. It used to be ended at 32 s whatever had come back, and ended
+    /// locally, with no CANCEL, so the callee kept ringing.
+    fn start_no_answer_timeout(&self, call_id: &str) {
         let manager = self.clone();
         let call_id = call_id.to_string();
-        let account_id = account_id.to_string();
-
         tokio::spawn(async move {
-            // First check: 32 seconds for initial response (RFC 3261 INVITE transaction timeout)
-            tokio::time::sleep(tokio::time::Duration::from_secs(32)).await;
-
-            {
-                let s = state.read().await;
-                if let Some((_, call)) = s.find_call(&call_id) {
-                    // If still dialing with no response at all, timeout immediately
-                    if call.is_dialing() {
-                        drop(s);
-                        let mut s = state.write().await;
-                        if let Some((_, call)) = s.find_call_mut(&call_id) {
-                            if call.is_dialing() {
-                                log::warn!("INVITE timeout (no response) for call {}", call_id);
-                                let remote_uri = call.remote_uri.clone();
-                                call.end(EndReason::Failed("Request timeout".to_string()));
-                                let _ = event_tx.send(SipEvent::CallStateChanged(
-                                    CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                                ));
-                            }
-                        }
-                        return;
-                    }
-                    // If ringing, let it continue - we'll check again later
-                    if !call.is_ringing() {
-                        return; // Already connected or ended
-                    }
-                } else {
-                    return; // Call no longer exists
-                }
-            }
-
-            // Second check: additional 60 seconds for ringing to be answered
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-
-            let still_ringing = state
+            let wait = manager.state.read().await.timing.no_answer;
+            tokio::time::sleep(wait).await;
+            let unanswered = manager
+                .state
                 .read()
                 .await
                 .find_call(&call_id)
-                .is_some_and(|(_, call)| call.is_ringing());
-            if still_ringing {
-                // Give up the same way the user would: with a CANCEL. Ending
-                // the call locally left the far end ringing until its own
-                // timer expired.
+                .is_some_and(|(_, call)| call.is_dialing() || call.is_ringing());
+            if unanswered {
+                // Give up the same way the user would: with a CANCEL.
                 log::warn!("Call timeout (unanswered) for call {}", call_id);
                 if let Err(e) = manager.hangup(&call_id).await {
                     log::warn!("Could not cancel unanswered call {}: {}", call_id, e);
@@ -1654,12 +1659,22 @@ impl SipManager {
     }
 
     pub async fn hangup(&self, call_id: &str) -> Result<(), String> {
-        let (action_msg, server_addr, transport, account_id, remote_uri, direction, sent_cancel) = {
+        let (action_msg, server_addr, transport, account_id, remote_uri, direction, sent_cancel, is_incoming) = {
             let mut s = self.state.write().await;
             let (aid, cseq, remote_uri, direction, our_tag, their_tag, call_id_header, last_invite_branch, invite_cseq, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact) = {
                 let (aid, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
                 let aid = aid.to_string();
-                let cseq = call.next_cseq();
+                // Only a BYE is a new request in the dialog. A CANCEL reuses
+                // the INVITE's CSeq and a 486 is a response, so neither may
+                // move the dialog's CSeq on: the ACK for the INVITE's final
+                // response is built from it.
+                let sends_bye = !call.is_incoming() && !call.is_dialing() && !call.is_ringing();
+                let cseq = if sends_bye {
+                    call.bye_sent = true;
+                    call.next_cseq()
+                } else {
+                    call.cseq
+                };
                 let remote_uri = call.remote_uri.clone();
                 let direction = call.direction_str().to_string();
                 let (our_tag, their_tag) = call.dialog_tags();
@@ -1731,11 +1746,17 @@ impl SipManager {
                 Some(bye)
             };
 
-            (msg, sa, transport, aid, remote_uri, direction, is_dialing_or_ringing)
+            (msg, sa, transport, aid, remote_uri, direction, is_dialing_or_ringing, is_incoming)
         };
 
         if let Some(msg) = action_msg {
-            transport.send_to(msg.as_bytes(), server_addr).await?;
+            if is_incoming {
+                // A response to their INVITE, resent until it is ACKed.
+                send_invite_final_response(&self.state, call_id, msg, &transport, server_addr).await?;
+            } else {
+                // A CANCEL or BYE, resent over UDP until it is answered.
+                send_non_invite(&self.state, &transport, server_addr, msg).await?;
+            }
         }
 
         let (media, late_bye) = {
@@ -1747,7 +1768,8 @@ impl SipManager {
             // The 200 OK may have arrived while the CANCEL was going out, and
             // the response handler will have ACKed it. That dialog is now
             // confirmed and the CANCEL does nothing to it: only a BYE ends it.
-            let late_bye = if sent_cancel && call.is_established() {
+            let late_bye = if sent_cancel && call.is_established() && !call.bye_sent {
+                call.bye_sent = true;
                 let cseq = call.next_cseq();
                 let (our_tag, their_tag) = call.dialog_tags();
                 let target = call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone());
@@ -1778,7 +1800,7 @@ impl SipManager {
         };
         if let Some(bye) = late_bye {
             log::info!("Call {} was answered as it was cancelled; sending BYE", call_id);
-            let _ = transport.send_to(bye.as_bytes(), server_addr).await;
+            let _ = send_non_invite(&self.state, &transport, server_addr, bye).await;
         }
         let recording_path = finish_call_media(call_id, media).await;
 
@@ -2036,7 +2058,7 @@ impl SipManager {
         if let (Some(transport), Some(server_addr), Some(resp)) =
             (transport, server_addr, builder::build_final_response(raw_invite, code, reason, to_tag))
         {
-            let _ = transport.send_to(resp.as_bytes(), server_addr).await;
+            let _ = send_invite_final_response(&self.state, call_id, resp, &transport, server_addr).await;
         }
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&aid, call_id, "ended", &remote_uri, "inbound"),
@@ -2201,8 +2223,7 @@ impl SipManager {
             &remote_uri,
         );
 
-        transport.send_to(refer.as_bytes(), server_addr).await?;
-
+        self.send_refer(&account_id, call_id, &transport, server_addr, refer).await?;
 
         log::info!(
             "Sent blind REFER to transfer call {} -> {}",
@@ -2287,8 +2308,7 @@ impl SipManager {
             &a_remote_uri,
         );
 
-        transport.send_to(refer.as_bytes(), server_addr).await?;
-
+        self.send_refer(&account_id, call_id_a, &transport, server_addr, refer).await?;
 
         log::info!(
             "Sent attended REFER to transfer call {} (with Replaces for call {})",
@@ -2303,6 +2323,34 @@ impl SipManager {
             message: "Attended transfer initiated".into(),
         }));
 
+        Ok(())
+    }
+
+    /// Send a REFER and resend it over UDP until it is answered. If it never
+    /// is, the UI hears so through the transfer status: a lost REFER used to
+    /// leave "Transfer initiated" on screen for good.
+    async fn send_refer(
+        &self,
+        account_id: &str,
+        call_id: &str,
+        transport: &SipTransport,
+        server_addr: SocketAddr,
+        refer: String,
+    ) -> Result<(), String> {
+        let handle = send_non_invite(&self.state, transport, server_addr, refer).await?;
+        let event_tx = self.event_tx.clone();
+        let (account_id, call_id) = (account_id.to_string(), call_id.to_string());
+        tokio::spawn(async move {
+            if matches!(handle.await, Ok(transaction::Outcome::TimedOut)) {
+                log::warn!("REFER for call {} was never answered", call_id);
+                let _ = event_tx.send(SipEvent::TransferProgress(TransferEvent {
+                    account_id,
+                    call_id,
+                    status: 408,
+                    message: "Transfer failed: no response from the server".into(),
+                }));
+            }
+        });
         Ok(())
     }
 
@@ -3344,6 +3392,10 @@ impl SipManager {
                 continue;
             }
 
+            if let Some(a) = state.write().await.accounts.get_mut(&account_id) {
+                a.last_heard = Some(std::time::Instant::now());
+            }
+
             let text = match String::from_utf8(msg.data) {
                 Ok(t) => t,
                 Err(_) => continue,
@@ -3834,6 +3886,86 @@ pub(crate) async fn send_register(
     Ok(())
 }
 
+/// Send an INVITE for `call_id` (our id) and run its client transaction.
+///
+/// Over UDP the INVITE is resent at T1, doubling (Timer A), until anything
+/// comes back on its branch. When nothing does within 64*T1 (Timer B), the
+/// call fails. The first INVITE and the authenticated retry both come through
+/// here; each used to go out once, so a lost one left the user listening to
+/// nothing for 32 s and then "Request timeout" (about one call in nine at the
+/// 5.7% loss users see).
+pub(crate) async fn send_invite(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    call_id: &str,
+    transport: &SipTransport,
+    server_addr: SocketAddr,
+    invite: String,
+) -> Result<(), String> {
+    let branch = extract_via_branch(&invite);
+    let (transactions, timing) = {
+        let s = state.read().await;
+        (s.transactions.clone(), s.timing)
+    };
+    let handle = transaction::send_request(
+        &transactions,
+        transport,
+        server_addr,
+        invite,
+        transaction::Kind::Invite,
+        timing,
+        None,
+    )
+    .await?;
+    let state = state.clone();
+    let event_tx = event_tx.clone();
+    let call_id = call_id.to_string();
+    tokio::spawn(async move {
+        if !matches!(handle.await, Ok(transaction::Outcome::TimedOut)) {
+            return;
+        }
+        let mut s = state.write().await;
+        let Some((account_id, call)) = s.find_call_mut(&call_id) else { return };
+        // Only the INVITE the call is waiting on: an auth retry replaced the
+        // first one, and a call the user already ended has had its event.
+        if !call.is_dialing() || call.last_invite_branch != branch {
+            return;
+        }
+        log::warn!("INVITE for call {} got no response (Timer B)", call_id);
+        let account_id = account_id.to_string();
+        let remote_uri = call.remote_uri.clone();
+        call.end(EndReason::Failed("Request timeout".to_string()));
+        drop(s);
+        let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+            &account_id,
+            &call_id,
+            "ended",
+            &remote_uri,
+            "outbound",
+        )));
+    });
+    Ok(())
+}
+
+/// Send a request outside the INVITE transaction (BYE, CANCEL, REFER,
+/// NOTIFY) and resend it over UDP until a final response (Timer E/F).
+///
+/// The handle resolves to how the transaction ended; callers that only need
+/// the request delivered can drop it.
+pub(crate) async fn send_non_invite(
+    state: &Arc<RwLock<ManagerState>>,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    msg: String,
+) -> Result<tokio::task::JoinHandle<transaction::Outcome>, String> {
+    let (transactions, timing) = {
+        let s = state.read().await;
+        (s.transactions.clone(), s.timing)
+    };
+    transaction::send_request(&transactions, transport, dest, msg, transaction::Kind::NonInvite, timing, None)
+        .await
+}
+
 /// The CSeq number of a SIP message.
 pub(crate) fn cseq_number(msg: &str) -> Option<u32> {
     extract_header(msg, "CSeq")?.split_whitespace().next()?.parse().ok()
@@ -3858,6 +3990,70 @@ pub(crate) async fn retransmit_2xx_until_ack(
     dest: SocketAddr,
     timing: Timing,
 ) -> bool {
+    let acked = retransmit_response_until_ack(state, call_id, response, transport, dest, timing, |c| {
+        !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq)
+    })
+    .await;
+    if !acked {
+        if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
+            c.pending_2xx = None;
+        }
+    }
+    acked
+}
+
+/// Answer an incoming INVITE with a 4xx-6xx and see it to its ACK (RFC 3261
+/// §17.2.1): over UDP it is resent at T1 doubling to T2 (Timer G) until the
+/// ACK or 64*T1 (Timer H), and a retransmitted INVITE meanwhile gets it again.
+///
+/// A decline used to go out once. The PBX's INVITE transaction already had
+/// our 180 and waits for a final response as long as it takes, so a lost 486
+/// left the caller hearing ringback until the PBX's no-answer timer.
+pub(crate) async fn send_invite_final_response(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id: &str,
+    response: String,
+    transport: &SipTransport,
+    dest: SocketAddr,
+) -> Result<(), String> {
+    let cseq = cseq_number(&response).unwrap_or(1);
+    let timing = {
+        let mut s = state.write().await;
+        if let Some((_, call)) = s.find_call_mut(call_id) {
+            call.pending_final = Some(state::Pending2xx { cseq, response: response.clone() });
+        }
+        s.timing
+    };
+    transport.send_to(response.as_bytes(), dest).await?;
+    let state = state.clone();
+    let transport = transport.clone();
+    let call_id = call_id.to_string();
+    tokio::spawn(async move {
+        let acked = retransmit_response_until_ack(&state, &call_id, &response, &transport, dest, timing, |c| {
+            c.pending_final.as_ref().is_some_and(|p| p.cseq == cseq)
+        })
+        .await;
+        if !acked {
+            log::warn!("No ACK for the final response to call {}", call_id);
+            if let Some((_, c)) = state.write().await.find_call_mut(&call_id) {
+                c.pending_final = None;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Resend `response` over UDP at T1 doubling to T2 while `outstanding` holds
+/// for the call; `false` when 64*T1 (Timer H) passed and it still did.
+async fn retransmit_response_until_ack(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id: &str,
+    response: &str,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    timing: Timing,
+    outstanding: impl Fn(&CallFSM) -> bool,
+) -> bool {
     let reliable = !matches!(transport, SipTransport::Udp(_));
     let timer_h = timing.t1 * 64;
     let started = tokio::time::Instant::now();
@@ -3867,23 +4063,16 @@ pub(crate) async fn retransmit_2xx_until_ack(
         let wait = if reliable { remaining } else { interval.min(remaining) };
         tokio::time::sleep(wait).await;
 
-        let outstanding = {
-            let s = state.read().await;
-            s.find_call(call_id)
-                .is_some_and(|(_, c)| !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq))
-        };
-        if !outstanding {
+        let still = state.read().await.find_call(call_id).is_some_and(|(_, c)| outstanding(c));
+        if !still {
             return true;
         }
         if started.elapsed() >= timer_h {
-            if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
-                c.pending_2xx = None;
-            }
             return false;
         }
-        log::debug!("No ACK yet for call {}; retransmitting the 200 OK", call_id);
+        log::debug!("No ACK yet for call {}; retransmitting its final response", call_id);
         if let Err(e) = transport.send_to(response.as_bytes(), dest).await {
-            log::warn!("Could not retransmit the 200 OK for call {}: {}", call_id, e);
+            log::warn!("Could not retransmit the final response for call {}: {}", call_id, e);
         }
         interval = (interval * 2).min(T2);
     }
@@ -3969,6 +4158,7 @@ async fn probe_target(
     target: &srv::Target,
     tls_name: &str,
     local_addr: SocketAddr,
+    t1: std::time::Duration,
 ) -> bool {
     match target.transport {
         TransportType::Tcp => {
@@ -3998,14 +4188,30 @@ async fn probe_target(
                 &account.username,
                 "udp",
             );
-            if sock.send_to(msg.as_bytes(), target.addr).await.is_err() {
-                return false;
-            }
+            // Resent at T1, doubling, within the 2 s the probe allows: one
+            // lost datagram used to mark a healthy server failed.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut interval = t1;
             let mut buf = [0u8; 2048];
-            matches!(
-                tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv_from(&mut buf)).await,
-                Ok(Ok((_, from))) if from == target.addr
-            )
+            loop {
+                if sock.send_to(msg.as_bytes(), target.addr).await.is_err() {
+                    return false;
+                }
+                let until = (tokio::time::Instant::now() + interval).min(deadline);
+                loop {
+                    match tokio::time::timeout_at(until, sock.recv_from(&mut buf)).await {
+                        Ok(Ok((_, from))) if from == target.addr => return true,
+                        // Something else on the socket: keep listening.
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(_)) => return false,
+                        Err(_) => break,
+                    }
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return false;
+                }
+                interval = (interval * 2).min(transaction::T2);
+            }
         }
     }
 }

@@ -47,7 +47,7 @@ pub async fn handle_incoming_request(
                             c.is_incoming(),
                             c.is_established(),
                             c.to_tag.clone().unwrap_or_default(),
-                            c.pending_2xx.clone(),
+                            c.pending_2xx.clone().or_else(|| c.pending_final.clone()),
                         )
                     })
                 };
@@ -70,9 +70,10 @@ pub async fn handle_incoming_request(
                         } else if let Some(pending) =
                             pending_2xx.filter(|p| crate::sip::cseq_number(text) == Some(p.cseq))
                         {
-                            // Answered, and the caller has not seen it: the
-                            // INVITE it resends gets the same 200 again.
-                            log::info!("Retransmitted INVITE for {}, re-sending 200 OK", call_id);
+                            // Answered (or declined), and the caller has not
+                            // seen it: the INVITE it resends gets the same
+                            // final response again.
+                            log::info!("Retransmitted INVITE for {}, re-sending its final response", call_id);
                             Some(pending.response)
                         } else {
                             None
@@ -384,14 +385,12 @@ pub async fn handle_incoming_request(
                 let remote_uri = call.remote_uri.clone();
                 let _ = call.process(CallFSMEvent::Cancel);
 
-                if let Some(ref invite_str) = raw_invite {
-                    if let Some(account) = s.get_account(account_id) {
-                        if let Some(ref transport) = account.transport {
-                            if let Some(resp) = build_terminated_response(invite_str, &to_tag) {
-                                let _ = transport.send_to(resp.as_bytes(), remote).await;
-                            }
-                        }
-                    }
+                let transport = s.get_account(account_id).and_then(|a| a.transport.clone());
+                drop(s);
+                let resp = raw_invite.as_deref().and_then(|invite| build_terminated_response(invite, &to_tag));
+                if let (Some(resp), Some(transport)) = (resp, transport) {
+                    let _ = crate::sip::send_invite_final_response(state, &call_internal_id, resp, &transport, remote)
+                        .await;
                 }
 
                 let _ = event_tx.send(SipEvent::CallStateChanged(
@@ -411,9 +410,9 @@ pub async fn handle_incoming_request(
                 }
             }
         }
-        // ACK has no response. The ACK for our 200 OK to an INVITE ends that
-        // 200's retransmission (RFC 3261 §13.3.1.4); any other ACK (for a
-        // 4xx-6xx, or a duplicate) needs nothing.
+        // ACK has no response. The ACK for our final response to an INVITE
+        // ends that response's retransmission (RFC 3261 §13.3.1.4 for a 2xx,
+        // §17.2.1 for a 4xx-6xx); a duplicate needs nothing.
         "ACK" => {
             let call_id = extract_header(text, "Call-ID").unwrap_or_default();
             let cseq = crate::sip::cseq_number(text);
@@ -422,6 +421,10 @@ pub async fn handle_incoming_request(
                 if call.pending_2xx.as_ref().is_some_and(|p| Some(p.cseq) == cseq) {
                     log::info!("ACK received for the 200 OK to call {}", call.id);
                     call.pending_2xx = None;
+                }
+                if call.pending_final.as_ref().is_some_and(|p| Some(p.cseq) == cseq) {
+                    log::info!("ACK received for the final response to call {}", call.id);
+                    call.pending_final = None;
                 }
             }
         }
