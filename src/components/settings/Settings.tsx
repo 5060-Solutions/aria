@@ -80,6 +80,7 @@ import { useAboutStore } from "../../stores/aboutStore";
 import { getVersion } from "@tauri-apps/api/app";
 import { sipRegister, sipUnregisterAccount, sipSetActiveAccount } from "../../hooks/useSip";
 import { keptProvisioning } from "../../utils/accountEdit";
+import { sdesKeysExposed } from "../../utils/callSecurity";
 import type {
   SipAccount,
   TransportType,
@@ -839,7 +840,7 @@ export function Settings() {
                 <IconButton
                   size="small"
                   onClick={(e) => handleOpenMenu(e, account.id)}
-                  aria-label={t("settings.accountOptions", "Account options")}
+                  aria-label={t("settings.accountOptions")}
                   sx={{ ml: 0.5 }}
                 >
                   <MoreVertIcon sx={{ fontSize: 18 }} />
@@ -907,7 +908,7 @@ export function Settings() {
                   <IconButton
                     size="small"
                     onClick={(e) => handleOpenMenu(e, account.id)}
-                    aria-label={t("settings.accountOptions", "Account options")}
+                    aria-label={t("settings.accountOptions")}
                   >
                     <MoreVertIcon sx={{ fontSize: 18 }} />
                   </IconButton>
@@ -1267,7 +1268,7 @@ export function Settings() {
                       size="small"
                       onClick={handleSyncSystemContacts}
                       disabled={syncingSystemContacts}
-                      aria-label={t("settings.syncNow", "Sync now")}
+                      aria-label={t("settings.syncNow")}
                     >
                       {syncingSystemContacts ? (
                         <CircularProgress size={18} />
@@ -1548,7 +1549,7 @@ export function Settings() {
                         size="small"
                         onClick={() => setShowPassword(!showPassword)}
                         edge="end"
-                        aria-label={showPassword ? t("settings.hidePassword", "Hide password") : t("settings.showPassword", "Show password")}
+                        aria-label={showPassword ? t("settings.hidePassword") : t("settings.showPassword")}
                       >
                         {showPassword ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
                       </IconButton>
@@ -1727,6 +1728,16 @@ export function Settings() {
                   <Typography variant="caption" sx={{ color: "text.disabled", mt: 0.5, display: "block" }}>
                     {t("settings.srtpModeNote")}
                   </Typography>
+                  {/* SDES keys ride in the signalling: without TLS they are readable. */}
+                  {sdesKeysExposed(form.srtpMode, form.transport) && (
+                    <Typography
+                      variant="caption"
+                      role="alert"
+                      sx={{ color: "warning.main", mt: 0.5, display: "block" }}
+                    >
+                      {t("settings.srtpNoTlsWarning")}
+                    </Typography>
+                  )}
                   {/* A hint only: switching to TLS never changes SRTP by itself. */}
                   {form.transport === "tls" && form.srtpMode === "disabled" && (
                     <Typography variant="caption" sx={{ color: "text.secondary", mt: 0.5, display: "block" }}>
@@ -1772,7 +1783,7 @@ export function Settings() {
                             <IconButton
                               size="small"
                               disabled={index === 0}
-                              aria-label={t("settings.moveUp", "Move up")}
+                              aria-label={t("settings.moveUp")}
                               onClick={() => {
                                 setForm((f) => {
                                   const newCodecs = [...f.codecs];
@@ -1793,7 +1804,7 @@ export function Settings() {
                             <IconButton
                               size="small"
                               disabled={index === form.codecs.length - 1}
-                              aria-label={t("settings.moveDown", "Move down")}
+                              aria-label={t("settings.moveDown")}
                               onClick={() => {
                                 setForm((f) => {
                                   const newCodecs = [...f.codecs];

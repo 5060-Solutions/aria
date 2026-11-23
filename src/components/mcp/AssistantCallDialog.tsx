@@ -16,13 +16,7 @@ import { useAppStore } from "../../stores/appStore";
 import { placeCall } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
 import { log } from "../../utils/log";
-
-/** What the backend sends when an assistant asks to place a call. */
-interface CallRequest {
-  requestId: string;
-  number: string;
-  accountId: string | null;
-}
+import { requestText, type AssistantRequest } from "../../utils/assistantRequest";
 
 /** Same as the backend's consent timeout; the dialog closes itself then. */
 const TIMEOUT_SECONDS = 30;
@@ -45,12 +39,15 @@ async function respond(
 }
 
 /**
- * The consent dialog for calls requested over MCP.
+ * The consent dialog for call actions requested over MCP.
  *
- * An assistant never dials on its own: the backend emits `mcp-call-request`,
- * this asks the user, and only on Allow is the call placed — through the
- * same `placeCall` + `dialUri` path as the dialer, so the account's dialing
- * rules apply. Deny, or no answer within the timeout, reports a denial.
+ * An assistant never dials, answers, transfers or sends keypad tones on its
+ * own: the backend emits `mcp-call-request` with the kind of action, this
+ * asks the user, and only on Allow does it go ahead. A new call is placed
+ * here, through the same `placeCall` + `dialUri` path as the dialer, so the
+ * account's dialing rules apply. For an action on an existing call, Allow
+ * echoes that call's id back and the backend acts. Deny, or no answer
+ * within the timeout, reports a denial.
  */
 export function AssistantCallDialog() {
   const { t } = useTranslation();
@@ -58,7 +55,7 @@ export function AssistantCallDialog() {
   const activeAccountId = useAppStore((s) => s.activeAccountId);
   const defaultCountry = useAppStore((s) => s.defaultCountry);
 
-  const [request, setRequest] = useState<CallRequest | null>(null);
+  const [request, setRequest] = useState<AssistantRequest | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(TIMEOUT_SECONDS);
   const [busy, setBusy] = useState(false);
   // The request on screen, readable from the event handler without a
@@ -69,7 +66,7 @@ export function AssistantCallDialog() {
   const deadlineRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const unlisten = listen<CallRequest>("mcp-call-request", (event) => {
+    const unlisten = listen<AssistantRequest>("mcp-call-request", (event) => {
       const incoming = event.payload;
       if (pendingRef.current) {
         void respond(incoming.requestId, {
@@ -126,6 +123,18 @@ export function AssistantCallDialog() {
 
   const handleAllow = async () => {
     if (!request) return;
+    if (request.kind !== "place") {
+      // An action on an existing call: the backend carries it out, and only
+      // for the call echoed back here.
+      await respond(
+        request.requestId,
+        request.callId
+          ? { allow: true, callId: request.callId }
+          : { allow: false, error: "the request names no call" },
+      );
+      close();
+      return;
+    }
     if (!account) {
       await respond(request.requestId, { allow: true, error: t("mcp.noAccount") });
       close();
@@ -145,6 +154,7 @@ export function AssistantCallDialog() {
   };
 
   const accountLabel = account ? account.displayName || account.username : "—";
+  const text = requestText(request?.kind ?? "place");
 
   return (
     <Dialog
@@ -158,11 +168,15 @@ export function AssistantCallDialog() {
     >
       <DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
         <SmartToyOutlinedIcon sx={{ fontSize: 22, color: "primary.main" }} />
-        {t("mcp.callRequestTitle")}
+        {t(text.title)}
       </DialogTitle>
       <DialogContent>
         <Typography variant="body2" sx={{ mb: 1 }}>
-          {t("mcp.callRequestBody", { number: request?.number ?? "", account: accountLabel })}
+          {t(text.body, {
+            number: request?.number ?? "",
+            remote: request?.remote ?? "",
+            account: accountLabel,
+          })}
         </Typography>
         <Box
           sx={{

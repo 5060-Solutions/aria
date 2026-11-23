@@ -34,11 +34,65 @@ pub(crate) fn app_data_root() -> Option<std::path::PathBuf> {
     dirs::data_dir().map(|d| d.join(BUNDLE_IDENTIFIER))
 }
 
+/// Bring the window back for a ringing call: a minimized or hidden Aria used
+/// to ring with nothing on screen to answer it. It asks for attention (Dock
+/// bounce, taskbar flash) rather than taking keyboard focus from whatever the
+/// user is typing into.
+fn surface_for_incoming_call(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
+    }
+    if !window.is_visible().unwrap_or(true) {
+        let _ = window.show();
+    }
+    if !window.is_focused().unwrap_or(false) {
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+    }
+}
+
+/// Whether a read from the default credential store says the store itself is
+/// unreachable, as opposed to the entry being missing.
+#[cfg(any(target_os = "linux", test))]
+fn credential_store_unavailable(probe: &keyring::Result<String>) -> bool {
+    matches!(probe, Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_)))
+}
+
+/// Fall back to the kernel keyring alone when there is no Secret Service.
+///
+/// The Linux store (`linux-native-sync-persistent`) writes keyutils and then
+/// the Secret Service, and undoes the keyutils write when the second fails;
+/// a read that misses keyutils asks the Secret Service. A session with no
+/// Secret Service provider (i3 or sway without gnome-keyring, WSLg,
+/// containers) could therefore neither save the SIP password nor give the
+/// MCP server a token. There the store is switched to keyutils only, which
+/// keeps credentials for the login session but not across a reboot — what
+/// those sessions had before the persistent store.
+///
+/// Must run before anything creates a keyring entry.
+#[cfg(target_os = "linux")]
+fn use_session_keyring_without_secret_service() {
+    let probe = keyring::Entry::new("aria-softphone", "keyring-probe").and_then(|e| e.get_password());
+    if credential_store_unavailable(&probe) {
+        log::warn!(
+            "No Secret Service is available ({}); saved credentials are kept in the kernel keyring \
+             and will not survive a reboot",
+            probe.err().map(|e| e.to_string()).unwrap_or_default()
+        );
+        keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
         .init();
+
+    #[cfg(target_os = "linux")]
+    use_session_keyring_without_secret_service();
 
     // Create manager and take receiver before moving into Tauri. This runs on
     // the bare main thread with no Tokio runtime: construction spawns nothing,
@@ -105,6 +159,7 @@ pub fn run() {
             
             // Spawn the event forwarding task with the receiver we took earlier
             let mut rx = event_rx;
+            let call_manager = app.state::<sip::SipManager>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 // scripts/smoke-launch.sh waits for this exact line to decide
                 // the app came up: it is logged unconditionally at info once
@@ -130,7 +185,18 @@ pub fn run() {
                                 let _ = app_handle.emit("sip-connection", payload);
                             }
                             sip::SipEvent::CallStateChanged(call_event) => {
-                                let _ = app_handle.emit("sip-call", call_event);
+                                if call_event.state == "incoming" {
+                                    surface_for_incoming_call(&app_handle);
+                                }
+                                // The padlock needs the signalling transport as
+                                // well as SRTP: an SDES key sent over UDP/TCP is
+                                // readable by anyone on the path.
+                                let mut payload = serde_json::to_value(&call_event).unwrap_or_default();
+                                if call_event.srtp_active.is_some() {
+                                    let tls = call_manager.signaling_is_tls(&call_event.account_id).await;
+                                    payload["signalingTls"] = serde_json::Value::Bool(tls);
+                                }
+                                let _ = app_handle.emit("sip-call", payload);
                             }
                             sip::SipEvent::DiagnosticMessage(log_entry) => {
                                 let _ = app_handle.emit("sip-diagnostic", log_entry);
@@ -380,5 +446,16 @@ mod tests {
             root.file_name().and_then(|n| n.to_str()),
             Some(BUNDLE_IDENTIFIER)
         );
+    }
+
+    /// A missing probe entry is a working store; only a store that cannot be
+    /// reached sends Linux to the session keyring.
+    #[test]
+    fn only_an_unreachable_store_counts_as_unavailable() {
+        let failure = || -> Box<dyn std::error::Error + Send + Sync> { "no secret service".into() };
+        assert!(!credential_store_unavailable(&Ok("x".into())));
+        assert!(!credential_store_unavailable(&Err(keyring::Error::NoEntry)));
+        assert!(credential_store_unavailable(&Err(keyring::Error::PlatformFailure(failure()))));
+        assert!(credential_store_unavailable(&Err(keyring::Error::NoStorageAccess(failure()))));
     }
 }

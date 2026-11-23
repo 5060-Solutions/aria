@@ -19,6 +19,7 @@ import type {
 import type { ConnectionReport, RetryPlan } from "../types/connection";
 import { storeCredential, getCredential, deleteCredential } from "../utils/credentials";
 import { log } from "../utils/log";
+import { DARK_MODE_KEY, initialDarkMode } from "../utils/preferences";
 
 type View = "dialer" | "history" | "contacts" | "settings" | "diagnostics";
 
@@ -183,6 +184,8 @@ interface AppState {
   setPresenceState: (extension: string, state: PresenceState) => void;
   setPresenceBulk: (entries: Array<{ extension: string; state: PresenceState }>) => void;
   clearPresence: () => void;
+  /** Forget one extension's presence, when no contact watches it any more. */
+  clearPresenceFor: (extension: string) => void;
 
   // Navigation
   currentView: View;
@@ -194,8 +197,15 @@ export const useAppStore = create<AppState>((set, get) => {
 
   return {
     // Theme
-    darkMode: window.matchMedia("(prefers-color-scheme: dark)").matches,
-    toggleDarkMode: () => set((s) => ({ darkMode: !s.darkMode })),
+    darkMode: initialDarkMode(
+      localStorage.getItem(DARK_MODE_KEY),
+      window.matchMedia("(prefers-color-scheme: dark)").matches,
+    ),
+    toggleDarkMode: () =>
+      set((s) => {
+        localStorage.setItem(DARK_MODE_KEY, String(!s.darkMode));
+        return { darkMode: !s.darkMode };
+      }),
 
     // Onboarding
     setupComplete: localStorage.getItem("aria_setup_complete") === "true",
@@ -745,6 +755,14 @@ export const useAppStore = create<AppState>((set, get) => {
         return { presenceMap: updated };
       }),
     clearPresence: () => set({ presenceMap: {} }),
+    clearPresenceFor: (extension) =>
+      set((s) => {
+        if (!(extension in s.presenceMap)) return s;
+        const presenceMap = Object.fromEntries(
+          Object.entries(s.presenceMap).filter(([ext]) => ext !== extension),
+        ) as Record<string, PresenceState>;
+        return { presenceMap };
+      }),
 
     // Navigation
     currentView: "dialer",
@@ -875,7 +893,7 @@ function saveAccounts(accounts: SipAccount[], activeAccountId: string | null) {
 export async function loadAccountPassword(accountId: string): Promise<string | null> {
   try {
     const password = await getCredential(accountId);
-    log.info(`[loadAccountPassword] accountId=${accountId}, hasPassword=${!!password}, length=${password?.length ?? 0}`);
+    log.info(`[loadAccountPassword] accountId=${accountId}, hasPassword=${!!password}`);
     return password;
   } catch (e) {
     log.error(`[loadAccountPassword] Failed for accountId=${accountId}:`, e);
@@ -885,7 +903,7 @@ export async function loadAccountPassword(accountId: string): Promise<string | n
 
 /** Save password for an account to secure storage */
 export async function saveAccountPassword(accountId: string, password: string): Promise<void> {
-  log.info(`[saveAccountPassword] Saving password for accountId=${accountId}, length=${password.length}`);
+  log.info(`[saveAccountPassword] Saving password for accountId=${accountId}, hasPassword=${password.length > 0}`);
   try {
     await storeCredential(accountId, password);
     log.info(`[saveAccountPassword] Successfully saved password for accountId=${accountId}`);

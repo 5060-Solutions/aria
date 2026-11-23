@@ -12,7 +12,10 @@
     "notConnected": "Sin conexión",
     "connectionError": "Error de conexión",
     "noAccount": "Sin cuenta configurada",
-    "clickForDetails": "Haz clic para ver los detalles de la conexión"
+    "clickForDetails": "Haz clic para ver los detalles de la conexión",
+    "voicemail": "Buzón de voz",
+    "voicemailWaiting": "{{count}} mensaje(s) de voz nuevo(s): haz clic para escuchar",
+    "callVoicemail": "Llamar al buzón de voz"
   },
   "connection": {
     "title": "Conexión",
@@ -56,7 +59,8 @@
     "selectAccount": "Seleccionar cuenta",
     "clearAll": "Borrar",
     "backspace": "Borrar último dígito",
-    "backspaceHold": "Borrar (mantener para borrar todo)"
+    "backspaceHold": "Borrar (mantener para borrar todo)",
+    "call": "Llamar"
   },
   "call": {
     "calling": "Llamando...",
@@ -77,6 +81,7 @@
     "answer": "Contestar",
     "decline": "Rechazar",
     "audio": "Audio",
+    "devicesNextCall": "Los cambios se aplican a partir de la próxima llamada.",
     "addCall": "Añadir",
     "transfer": "Transferir",
     "merge": "Unir",
@@ -86,7 +91,14 @@
     "notEncrypted": "Sin cifrar",
     "encryptedTooltip": "Tu voz viaja cifrada (SRTP) entre Aria y el servidor.",
     "notEncryptedRefused": "Aria ofreció cifrado, pero el servidor respondió sin él. Tu voz se envía sin cifrar.",
-    "notEncryptedOff": "El cifrado de medios está desactivado para esta cuenta. Tu voz se envía sin cifrar."
+    "notEncryptedOff": "El cifrado de medios está desactivado para esta cuenta. Tu voz se envía sin cifrar.",
+    "dial": "Marcar",
+    "inConference": "Llamada de conferencia",
+    "participants": "participantes",
+    "phoneNumber": "Número de teléfono o URI SIP",
+    "transferHint": "Envía esta llamada a otro número o extensión.",
+    "keysExposed": "Clave sin proteger",
+    "keysExposedTooltip": "Tu voz va cifrada (SRTP), pero la clave se envió en el establecimiento de la llamada sin cifrar (sin TLS). Cualquiera que vea el tráfico de red puede leer la clave y descifrar la llamada. Cambia esta cuenta a TLS para una protección real."
   },
   "history": {
     "title": "Recientes",
@@ -103,7 +115,8 @@
     "recordingAvailable": "Grabación disponible",
     "callBack": "Devolver llamada",
     "sipTrace": "Traza SIP",
-    "sipTraceDescription": "Descargar PCAP compatible con Wireshark"
+    "sipTraceDescription": "Descargar PCAP compatible con Wireshark",
+    "account": "Cuenta"
   },
   "contacts": {
     "title": "Contactos",
@@ -191,7 +204,20 @@
     "stripPrefixHelper": "Elimina este prefijo de los números marcados (ej. quitar código de país)",
     "prependPrefix": "Prefijo a anteponer",
     "prependPrefixPlaceholder": "ej. 9 o 0",
-    "prependPrefixHelper": "Añade este prefijo a los números marcados (ej. 9 para línea externa)"
+    "prependPrefixHelper": "Añade este prefijo a los números marcados (ej. 9 para línea externa)",
+    "accountOptions": "Opciones de la cuenta",
+    "hidePassword": "Ocultar contraseña",
+    "showPassword": "Mostrar contraseña",
+    "moveUp": "Subir",
+    "moveDown": "Bajar",
+    "syncNow": "Sincronizar ahora",
+    "srtpMode": "Cifrado de medios",
+    "srtpModeNote": "Cifra el tráfico de voz entre Aria y tu servidor. SDES intercambia las claves en el SDP; el servidor debe admitirlo.",
+    "srtp": {
+      "disabled": "Desactivado",
+      "sdes": "SDES"
+    },
+    "srtpNoTlsWarning": "Sin TLS, SDES envía la clave de cifrado en texto plano al establecer la llamada, así que cualquiera en la ruta de red puede descifrar el audio. Usa SDES con TLS."
   },
   "update": {
     "title": "Actualización disponible",
@@ -274,7 +300,14 @@
     "connecting": "Conectando...",
     "tagline": "Tu voz, bellamente conectada.",
     "scanQr": "Escanear código QR",
-    "developerDiagnostics": "Diagnósticos de desarrollador"
+    "developerDiagnostics": "Diagnósticos de desarrollador",
+    "scanQrTitle": "Escanear código QR",
+    "openCamera": "Abrir cámara",
+    "pasteLink": "Pegar enlace",
+    "pasteFromClipboard": "Pegar desde el portapapeles",
+    "paste": "Pegar",
+    "scanQrDescription": "Escanea un código QR desde tu panel de administración o pega el enlace de configuración.",
+    "pointAtQr": "Apunta la cámara al código QR"
   },
   "diagnostics": {
     "title": "Diagnósticos",
@@ -327,7 +360,8 @@
     "tx": "TX",
     "rx": "RX",
     "messageView": "Lista de mensajes",
-    "ladderView": "Diagrama de flujo de llamada"
+    "ladderView": "Diagrama de flujo de llamada",
+    "reconnecting": "Reconectando..."
   },
   "common": {
     "cancel": "Cancelar",
@@ -337,7 +371,9 @@
     "loading": "Cargando...",
     "never": "Nunca",
     "test": "Probar",
-    "stop": "Parar"
+    "stop": "Parar",
+    "close": "Cerrar",
+    "clear": "Borrar"
   },
   "time": {
     "hours": "h",
@@ -374,7 +410,7 @@
     "intro": "Un servidor MCP local permite a un asistente en este equipo (por ejemplo, Claude Code) leer el estado de registro, las llamadas y la traza SIP. Nada sale de este equipo y las contraseñas nunca se exponen.",
     "enableRead": "Permitir a los asistentes locales leer el estado y las trazas",
     "enableControl": "Permitir a los asistentes realizar y controlar llamadas",
-    "enableControlNote": "Cada llamada nueva seguirá pidiéndote permiso primero.",
+    "enableControlNote": "Se te pedirá permiso antes de que un asistente haga una llamada, conteste una llamada, transfiera una llamada o envíe tonos de teclado en una llamada (una vez por llamada). Colgar y poner en espera no piden permiso.",
     "port": "Puerto",
     "portNote": "Solo se sirve en 127.0.0.1.",
     "notRunning": "No se pudo iniciar el servidor: {{error}}",
@@ -390,7 +426,13 @@
     "callRequestExpires": "Esta solicitud caduca en {{seconds}} s.",
     "allow": "Permitir",
     "deny": "Denegar",
-    "noAccount": "No hay ninguna cuenta disponible para hacer esta llamada."
+    "noAccount": "No hay ninguna cuenta disponible para hacer esta llamada.",
+    "answerRequestTitle": "Un asistente quiere contestar una llamada",
+    "answerRequestBody": "Un asistente quiere contestar la llamada entrante de {{remote}} en {{account}}. Tu micrófono estará activo en cuanto se conteste la llamada.",
+    "transferRequestTitle": "Un asistente quiere transferir una llamada",
+    "transferRequestBody": "Un asistente quiere transferir tu llamada con {{remote}} a {{number}}.",
+    "dtmfRequestTitle": "Un asistente quiere pulsar teclas en una llamada",
+    "dtmfRequestBody": "Un asistente quiere enviar tonos de teclado en tu llamada con {{remote}}, empezando por {{number}}. Si lo permites, podrá enviar más tonos en esta llamada sin volver a preguntar."
   },
   "provision": {
     "title": "¿Añadir esta línea telefónica?",
@@ -421,5 +463,26 @@
       "tlsOnly": "Las llamadas van por TLS, pero el audio no está cifrado (SRTP desactivado).",
       "none": "Las llamadas no están cifradas."
     }
+  },
+  "presence": {
+    "available": "Disponible",
+    "busy": "Ocupado",
+    "onThePhone": "Al teléfono",
+    "ringing": "Sonando",
+    "away": "Ausente",
+    "doNotDisturb": "No molestar",
+    "offline": "Desconectado",
+    "unknown": "Desconocido"
+  },
+  "errors": {
+    "placeCall": "No se pudo realizar la llamada: {{error}}",
+    "transferFailed": "La transferencia falló: {{error}}",
+    "hold": "No se pudo poner la llamada en espera: {{error}}",
+    "resume": "No se pudo reanudar la llamada: {{error}}",
+    "mute": "No se pudo silenciar: {{error}}",
+    "unmute": "No se pudo activar el sonido: {{error}}",
+    "record": "No se pudo cambiar la grabación: {{error}}",
+    "merge": "No se pudieron unir las llamadas: {{error}}",
+    "swap": "No se pudieron alternar las llamadas: {{error}}"
   }
 }

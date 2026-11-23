@@ -4,6 +4,7 @@
 //! organized by message type.
 
 mod invite;
+mod media_update;
 mod presence;
 mod registration;
 mod request;
@@ -30,6 +31,9 @@ pub async fn handle_response(
         Some(c) => c,
         None => return,
     };
+    // Stop the request's retransmissions before anything else: its handler
+    // may take a while, and a retransmission sent meanwhile is wasted.
+    state.read().await.transactions.on_response(text, status);
     let cseq_header = extract_header(text, "CSeq").unwrap_or_default();
     let method = cseq_header
         .split_whitespace()
@@ -65,13 +69,9 @@ pub async fn handle_response(
         }
         "SUBSCRIBE" => handle_subscribe_response(state, event_tx, text, status, account_id).await,
         "OPTIONS" => {
+            // Any answer, whatever its status, shows the server is there. The
+            // keepalive learns of it from its transaction and `last_heard`.
             log::debug!("OPTIONS response: {}", status);
-            // Any answer, whatever its status, shows the server is there; the
-            // keepalive counts the ones that never come.
-            let mut s = state.write().await;
-            if let Some(account) = s.get_account_mut(account_id) {
-                account.options_last_response = Some(std::time::Instant::now());
-            }
         }
         _ => {
             log::debug!("Unhandled response for {}: {}", method, status);

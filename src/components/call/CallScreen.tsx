@@ -11,6 +11,7 @@ import { RecordingIndicator } from "./RecordingIndicator";
 import { useCallTimer } from "../../hooks/useCallTimer";
 import type { SrtpMode } from "../../types/sip";
 import { callerInitials } from "../../utils/callerAvatar";
+import { mediaSecurity } from "../../utils/callSecurity";
 
 const stateMessageKeys: Record<string, string> = {
   dialing: "call.calling",
@@ -59,9 +60,11 @@ const callScreenLayout = {
 function EncryptionIndicator({
   srtpMode,
   srtpActive,
+  signalingTls,
 }: {
   srtpMode: SrtpMode;
   srtpActive: boolean | undefined;
+  signalingTls: boolean | undefined;
 }) {
   const { t } = useTranslation();
   const theme = useTheme();
@@ -73,14 +76,25 @@ function EncryptionIndicator({
   // rather than guessing.
   if (srtpActive === undefined) return null;
 
-  const isEncrypted = srtpActive;
-  const label = isEncrypted ? t("call.encrypted") : t("call.notEncrypted");
+  // SDES puts the key in the signalling, so the padlock needs TLS too: over
+  // UDP or TCP the media is encrypted with a key anyone on the path can read.
+  const security = mediaSecurity(srtpActive, signalingTls);
+  const isEncrypted = security === "encrypted";
+  const label =
+    security === "encrypted"
+      ? t("call.encrypted")
+      : security === "keysInClear"
+        ? t("call.keysExposed")
+        : t("call.notEncrypted");
   // Only SDES encrypts; a stored "dtls" account was migrated to disabled.
-  const tooltip = isEncrypted
-    ? t("call.encryptedTooltip")
-    : srtpMode === "sdes"
-      ? t("call.notEncryptedRefused")
-      : t("call.notEncryptedOff");
+  const tooltip =
+    security === "encrypted"
+      ? t("call.encryptedTooltip")
+      : security === "keysInClear"
+        ? t("call.keysExposedTooltip")
+        : srtpMode === "sdes"
+          ? t("call.notEncryptedRefused")
+          : t("call.notEncryptedOff");
   const palette = isEncrypted ? theme.palette.success : theme.palette.warning;
   // The main shades are pale enough to wash out on the light background.
   const color = theme.palette.mode === "dark" ? palette.main : palette.dark;
@@ -260,6 +274,7 @@ export function CallScreen() {
           <EncryptionIndicator
             srtpMode={accountSrtpMode}
             srtpActive={activeCall.srtpActive}
+            signalingTls={activeCall.signalingTls}
           />
         )}
 

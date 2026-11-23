@@ -12,7 +12,10 @@
     "notConnected": "Nicht verbunden",
     "connectionError": "Verbindungsfehler",
     "noAccount": "Kein Konto konfiguriert",
-    "clickForDetails": "Klicken für Verbindungsdetails"
+    "clickForDetails": "Klicken für Verbindungsdetails",
+    "voicemail": "Mailbox",
+    "voicemailWaiting": "{{count}} neue Sprachnachricht(en) – zum Abhören klicken",
+    "callVoicemail": "Mailbox anrufen"
   },
   "connection": {
     "title": "Verbindung",
@@ -53,7 +56,11 @@
   "dialer": {
     "searchCountry": "Land suchen...",
     "enterNumber": "Nummer eingeben",
-    "selectAccount": "Konto auswählen"
+    "selectAccount": "Konto auswählen",
+    "call": "Anrufen",
+    "clearAll": "Leeren",
+    "backspace": "Letzte Ziffer löschen",
+    "backspaceHold": "Löschen (halten, um alles zu löschen)"
   },
   "call": {
     "calling": "Ruft an...",
@@ -74,6 +81,7 @@
     "answer": "Annehmen",
     "decline": "Ablehnen",
     "audio": "Audio",
+    "devicesNextCall": "Änderungen gelten ab dem nächsten Anruf.",
     "addCall": "Hinzufügen",
     "transfer": "Weiterleiten",
     "merge": "Verbinden",
@@ -83,7 +91,14 @@
     "notEncrypted": "Unverschlüsselt",
     "encryptedTooltip": "Ihre Sprache wird zwischen Aria und dem Server verschlüsselt (SRTP).",
     "notEncryptedRefused": "Aria hat Verschlüsselung angeboten, aber der Server hat ohne geantwortet. Ihre Sprache wird unverschlüsselt übertragen.",
-    "notEncryptedOff": "Die Medienverschlüsselung ist für dieses Konto ausgeschaltet. Ihre Sprache wird unverschlüsselt übertragen."
+    "notEncryptedOff": "Die Medienverschlüsselung ist für dieses Konto ausgeschaltet. Ihre Sprache wird unverschlüsselt übertragen.",
+    "dial": "Wählen",
+    "inConference": "Konferenzgespräch",
+    "participants": "Teilnehmer",
+    "phoneNumber": "Telefonnummer oder SIP-URI",
+    "transferHint": "Diesen Anruf an eine andere Nummer oder Durchwahl weitergeben.",
+    "keysExposed": "Schlüssel ungeschützt",
+    "keysExposedTooltip": "Ihre Sprache wird verschlüsselt (SRTP), aber der Schlüssel wurde im unverschlüsselten Verbindungsaufbau (ohne TLS) übertragen. Wer den Netzwerkverkehr mitlesen kann, kann den Schlüssel lesen und das Gespräch entschlüsseln. Stellen Sie dieses Konto für echten Schutz auf TLS um."
   },
   "history": {
     "title": "Letzte",
@@ -100,7 +115,8 @@
     "recordingAvailable": "Aufnahme verfügbar",
     "callBack": "Zurückrufen",
     "sipTrace": "SIP-Trace",
-    "sipTraceDescription": "Wireshark-kompatible PCAP herunterladen"
+    "sipTraceDescription": "Wireshark-kompatible PCAP herunterladen",
+    "account": "Konto"
   },
   "contacts": {
     "title": "Kontakte",
@@ -188,7 +204,20 @@
     "stripPrefixHelper": "Entfernt dieses Präfix von gewählten Nummern (z.B. Ländercode entfernen)",
     "prependPrefix": "Voranzustellendes Präfix",
     "prependPrefixPlaceholder": "z.B. 9 oder 0",
-    "prependPrefixHelper": "Fügt dieses Präfix vor gewählten Nummern ein (z.B. 9 für Amtsleitung)"
+    "prependPrefixHelper": "Fügt dieses Präfix vor gewählten Nummern ein (z.B. 9 für Amtsleitung)",
+    "accountOptions": "Kontooptionen",
+    "hidePassword": "Passwort verbergen",
+    "showPassword": "Passwort anzeigen",
+    "moveUp": "Nach oben",
+    "moveDown": "Nach unten",
+    "syncNow": "Jetzt synchronisieren",
+    "srtpMode": "Medienverschlüsselung",
+    "srtpModeNote": "Verschlüsselt den Sprachverkehr zwischen Aria und Ihrem Server. SDES tauscht die Schlüssel im SDP aus; der Server muss dies unterstützen.",
+    "srtp": {
+      "disabled": "Aus",
+      "sdes": "SDES"
+    },
+    "srtpNoTlsWarning": "Ohne TLS überträgt SDES den Schlüssel im Klartext beim Verbindungsaufbau, sodass jeder auf dem Netzwerkpfad das Gespräch entschlüsseln kann. Verwenden Sie SDES zusammen mit TLS."
   },
   "update": {
     "title": "Update verfügbar",
@@ -271,7 +300,14 @@
     "connecting": "Verbinde...",
     "tagline": "Deine Stimme, wunderschön verbunden.",
     "scanQr": "QR-Code scannen",
-    "developerDiagnostics": "Entwickler-Diagnose"
+    "developerDiagnostics": "Entwickler-Diagnose",
+    "scanQrTitle": "QR-Code scannen",
+    "openCamera": "Kamera öffnen",
+    "pasteLink": "Link einfügen",
+    "pasteFromClipboard": "Aus der Zwischenablage einfügen",
+    "paste": "Einfügen",
+    "scanQrDescription": "Scannen Sie einen QR-Code aus Ihrem Admin-Bereich oder fügen Sie den Einrichtungslink ein.",
+    "pointAtQr": "Richten Sie die Kamera auf den QR-Code"
   },
   "diagnostics": {
     "title": "Diagnose",
@@ -324,7 +360,8 @@
     "tx": "TX",
     "rx": "RX",
     "messageView": "Nachrichtenliste",
-    "ladderView": "Anrufflussdiagramm"
+    "ladderView": "Anrufflussdiagramm",
+    "reconnecting": "Verbindung wird wiederhergestellt..."
   },
   "common": {
     "cancel": "Abbrechen",
@@ -334,7 +371,9 @@
     "loading": "Laden...",
     "never": "Nie",
     "test": "Test",
-    "stop": "Stopp"
+    "stop": "Stopp",
+    "close": "Schließen",
+    "clear": "Leeren"
   },
   "time": {
     "hours": "h",
@@ -371,7 +410,7 @@
     "intro": "Ein lokaler MCP-Server lässt einen Assistenten auf diesem Computer (z. B. Claude Code) Registrierungsstatus, Anrufe und den SIP-Trace lesen. Nichts verlässt diesen Computer, Passwörter werden nie preisgegeben.",
     "enableRead": "Lokalen Assistenten das Lesen von Status und Traces erlauben",
     "enableControl": "Assistenten erlauben, Anrufe zu tätigen und zu steuern",
-    "enableControlNote": "Bei jedem neuen Anruf werden Sie weiterhin zuerst gefragt.",
+    "enableControlNote": "Sie werden zuerst gefragt, bevor ein Assistent einen Anruf tätigt, annimmt, weiterleitet oder Tastentöne in einem Anruf sendet (einmal pro Anruf). Auflegen und Halten erfolgen ohne Rückfrage.",
     "port": "Port",
     "portNote": "Nur auf 127.0.0.1 erreichbar.",
     "notRunning": "Der Server konnte nicht gestartet werden: {{error}}",
@@ -387,7 +426,13 @@
     "callRequestExpires": "Diese Anfrage läuft in {{seconds}} s ab.",
     "allow": "Erlauben",
     "deny": "Ablehnen",
-    "noAccount": "Kein Konto verfügbar, um diesen Anruf zu tätigen."
+    "noAccount": "Kein Konto verfügbar, um diesen Anruf zu tätigen.",
+    "answerRequestTitle": "Ein Assistent möchte einen Anruf annehmen",
+    "answerRequestBody": "Ein Assistent möchte den eingehenden Anruf von {{remote}} über {{account}} annehmen. Sobald der Anruf angenommen ist, ist Ihr Mikrofon aktiv.",
+    "transferRequestTitle": "Ein Assistent möchte einen Anruf weiterleiten",
+    "transferRequestBody": "Ein Assistent möchte Ihren Anruf mit {{remote}} an {{number}} weiterleiten.",
+    "dtmfRequestTitle": "Ein Assistent möchte in einem Anruf Tasten drücken",
+    "dtmfRequestBody": "Ein Assistent möchte in Ihrem Anruf mit {{remote}} Tastentöne senden, beginnend mit {{number}}. Wenn Sie das erlauben, kann er in diesem Anruf weitere Töne senden, ohne erneut zu fragen."
   },
   "provision": {
     "title": "Diese Telefonleitung hinzufügen?",
@@ -418,5 +463,26 @@
       "tlsOnly": "Anrufe laufen über TLS, aber der Ton ist nicht verschlüsselt (SRTP ist aus).",
       "none": "Anrufe sind nicht verschlüsselt."
     }
+  },
+  "presence": {
+    "available": "Verfügbar",
+    "busy": "Beschäftigt",
+    "onThePhone": "Im Gespräch",
+    "ringing": "Klingelt",
+    "away": "Abwesend",
+    "doNotDisturb": "Nicht stören",
+    "offline": "Offline",
+    "unknown": "Unbekannt"
+  },
+  "errors": {
+    "placeCall": "Anruf konnte nicht gestartet werden: {{error}}",
+    "transferFailed": "Weiterleitung fehlgeschlagen: {{error}}",
+    "hold": "Anruf konnte nicht gehalten werden: {{error}}",
+    "resume": "Anruf konnte nicht fortgesetzt werden: {{error}}",
+    "mute": "Stummschalten fehlgeschlagen: {{error}}",
+    "unmute": "Stummschaltung konnte nicht aufgehoben werden: {{error}}",
+    "record": "Aufnahme konnte nicht geändert werden: {{error}}",
+    "merge": "Anrufe konnten nicht verbunden werden: {{error}}",
+    "swap": "Anrufe konnten nicht gewechselt werden: {{error}}"
   }
 }

@@ -10,12 +10,16 @@ pub mod ice;
 mod emergency;
 mod instance;
 pub mod media;
+pub mod mwi;
 pub mod presence;
+pub(crate) mod recording_parts;
+mod signaling;
 #[allow(dead_code)]
 pub mod srtp;
 pub mod srv;
 pub mod state;
 pub mod transfer;
+pub(crate) mod transaction;
 pub mod transport;
 #[cfg(test)]
 mod voip_stack_harness;
@@ -31,9 +35,8 @@ pub use account::AccountConfig;
 pub use transport::TransportType;
 
 use self::builder::{
-    build_200_ok_invite_srtp, build_bye_with_routes, build_cancel, build_options, build_refer,
+    build_bye_with_routes, build_cancel, build_options, build_refer,
     build_refer_with_replaces, build_register, build_subscribe, extract_header, extract_via_branch, is_request,
-    parse_sdp_connection,
 };
 use self::diagnostics::DiagnosticLog;
 use self::media::MediaSessionExt;
@@ -191,6 +194,9 @@ pub(crate) struct Timing {
     /// The longest a reconnect waits between rounds, whatever a `Retry-After`
     /// asked for.
     pub max_wait: std::time::Duration,
+    /// How long an outbound call that has had a provisional response may go
+    /// unanswered before it is cancelled.
+    pub no_answer: std::time::Duration,
 }
 
 impl Default for Timing {
@@ -204,6 +210,7 @@ impl Default for Timing {
             options_interval: std::time::Duration::from_secs(15),
             options_wait: std::time::Duration::from_secs(5),
             max_wait: srv::MAX_WAIT,
+            no_answer: std::time::Duration::from_secs(180),
         }
     }
 }
@@ -299,6 +306,8 @@ pub(crate) struct ManagerState {
     pub(crate) last_latency_ms: Option<f64>,
     /// Shared diagnostic store
     pub(crate) diagnostic_store: Arc<diagnostics::DiagnosticStore>,
+    /// Client transactions in flight, for retransmission (RFC 3261 §17.1).
+    pub(crate) transactions: Arc<transaction::Transactions>,
     /// What the status chip's panel shows, per account. Kept outside
     /// `AccountState` so a failure before the account exists (DNS, a refused
     /// connect) and the attempt after an unregister both have somewhere to go.
@@ -334,7 +343,10 @@ pub(crate) fn save_recording(
 ) -> Result<Option<std::path::PathBuf>, String> {
     let path = media
         .stop_recording()
-        .map_err(|e| format!("Failed to stop recording: {}", e))?;
+        .map_err(|e| format!("Failed to stop recording: {}", e))?
+        // The rest of a recording a media restart split: joined onto the
+        // first part, which is then the call's recording.
+        .map(recording_parts::join);
     if let Some(p) = path.as_ref() {
         log::info!("Call recording saved: {}", p.display());
         // Runs on its own thread, so a slow transcription cannot hold up
@@ -374,6 +386,35 @@ pub(crate) async fn finish_call_media(
         log::error!("Media teardown task failed: {}", e);
         None
     })
+}
+
+/// Stop a session a media restart replaced, whose recording carries on in
+/// the new session at `continued_in`.
+///
+/// The part saved here is not the call's recording yet, so it is not
+/// transcribed or reported: when the part at `continued_in` is saved, it is
+/// appended to this one (see `recording_parts`). The caller has registered
+/// `continued_in` with `recording_parts::expect` before the new session
+/// could be stopped.
+pub(crate) async fn finish_replaced_media(old: media::MediaSession, continued_in: std::path::PathBuf) {
+    let saved = tokio::task::spawn_blocking(move || {
+        let path = old.stop_recording().map(|p| p.map(recording_parts::join));
+        old.stop();
+        path
+    })
+    .await;
+    let earlier = match saved {
+        Ok(Ok(path)) => path,
+        Ok(Err(e)) => {
+            log::warn!("Could not save the first part of a recording: {}", e);
+            None
+        }
+        Err(e) => {
+            log::error!("Media teardown task failed: {}", e);
+            None
+        }
+    };
+    recording_parts::resolve(&continued_in, earlier);
 }
 
 impl ManagerState {
@@ -584,6 +625,7 @@ impl SipManager {
                 active_account_id: None,
                 last_latency_ms: None,
                 diagnostic_store: Arc::new(diagnostics::DiagnosticStore::new(500)),
+                transactions: Arc::new(transaction::Transactions::default()),
                 connection_reports: HashMap::new(),
                 preferred_input_device: None,
                 preferred_output_device: None,
@@ -1063,7 +1105,8 @@ impl SipManager {
             (name, local)
         };
         let probe_config = with_transport(&config, &candidate.transport);
-        if probe_target(&probe_config, &candidate, &tls_name, local_addr).await {
+        let t1 = state.read().await.timing.t1;
+        if probe_target(&probe_config, &candidate, &tls_name, local_addr, t1).await {
             log::info!("Higher-priority server {} ({}) answers again; moving back to it", candidate.addr, candidate.host);
             {
                 let mut s = state.write().await;
@@ -1086,9 +1129,16 @@ impl SipManager {
     }
 
     /// Keep the NAT pinhole open with an OPTIONS, and notice when nothing
-    /// answers: a send that fails, or two OPTIONS in a row with no response of
-    /// any kind, means the server is gone. Over UDP a send never fails, so the
-    /// missing response is the only way a dead server is ever seen.
+    /// answers: a send that fails, or two keepalive rounds in a row in which
+    /// nothing at all came from the server, means the server is gone. Over UDP
+    /// a send never fails, so the silence is the only way a dead server is
+    /// ever seen.
+    ///
+    /// Within a round the OPTIONS is resent at T1, doubling (Timer E), until
+    /// the wait is up, and anything the server sent since the last round
+    /// counts as an answer. A single lost OPTIONS or response used to count
+    /// as a miss, and two in a row failed a healthy server over: at the 5.7%
+    /// loss users see, about every half hour on an idle client.
     async fn options_keepalive_loop(
         state: Arc<RwLock<ManagerState>>,
         event_tx: mpsc::UnboundedSender<SipEvent>,
@@ -1096,10 +1146,12 @@ impl SipManager {
         generation: u64,
     ) {
         let mut misses = 0u32;
+        // The end of the previous round: whatever arrives after it counts.
+        let mut round_ended: Option<std::time::Instant> = None;
         loop {
-            let (interval, wait) = {
+            let (interval, wait, timing, transactions) = {
                 let s = state.read().await;
-                (s.timing.options_interval, s.timing.options_wait)
+                (s.timing.options_interval, s.timing.options_wait, s.timing, s.transactions.clone())
             };
             tokio::time::sleep(interval).await;
 
@@ -1136,21 +1188,33 @@ impl SipManager {
                 account_config.transport.param(),
             );
 
-            let sent_at = std::time::Instant::now();
-            let answered = if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
-                log::warn!("OPTIONS keepalive could not be sent for {}: {}", aid, e);
-                false
-            } else {
-                tokio::time::sleep(wait).await;
-                let s = state.read().await;
-                if !Self::account_current(&s, &aid, generation) {
-                    return;
+            let since = round_ended.unwrap_or_else(std::time::Instant::now);
+            let sent = transaction::send_request(
+                &transactions,
+                &transport,
+                server_addr,
+                msg,
+                transaction::Kind::NonInvite,
+                timing,
+                Some(wait),
+            )
+            .await;
+            let answered = match sent {
+                Err(e) => {
+                    log::warn!("OPTIONS keepalive could not be sent for {}: {}", aid, e);
+                    false
                 }
-                s.accounts
-                    .get(&aid)
-                    .and_then(|a| a.options_last_response)
-                    .is_some_and(|at| at >= sent_at)
+                Ok(handle) => {
+                    let outcome = handle.await;
+                    let s = state.read().await;
+                    if !Self::account_current(&s, &aid, generation) {
+                        return;
+                    }
+                    matches!(outcome, Ok(transaction::Outcome::Answered(_)))
+                        || s.accounts.get(&aid).and_then(|a| a.last_heard).is_some_and(|at| at >= since)
+                }
             };
+            round_ended = Some(std::time::Instant::now());
 
             if answered {
                 misses = 0;
@@ -1568,81 +1632,56 @@ impl SipManager {
             call.id = id;
         }
         let id = call.id.clone();
-
-        transport.send_to(invite.as_bytes(), server_addr).await?;
-
-        log::info!("Sending INVITE to {}", uri);
-
         let sip_call_id_header = call.call_id_header.clone();
-        self.emit(SipEvent::CallStateChanged(CallEvent::new(
-            &aid, &id, "dialing", uri, "outbound"
-        ).with_sip_call_id(&sip_call_id_header)));
 
+        // In the list, and announced, before the INVITE goes out: a fast
+        // response has to find the call, and the UI has to have heard of it
+        // before it hears that it rings.
         {
             let mut s = self.state.write().await;
             if let Some(account) = s.get_account_mut(&aid) {
                 account.calls.push(call);
             }
         }
+        self.emit(SipEvent::CallStateChanged(CallEvent::new(
+            &aid, &id, "dialing", uri, "outbound"
+        ).with_sip_call_id(&sip_call_id_header)));
 
-        // Start INVITE timeout timer (32 seconds per RFC 3261)
-        self.start_invite_timeout(&id, &aid);
+        log::info!("Sending INVITE to {}", uri);
+        if let Err(e) = send_invite(&self.state, &self.event_tx, &id, &transport, server_addr, invite).await {
+            if let Some(account) = self.state.write().await.get_account_mut(&aid) {
+                account.calls.retain(|c| c.id != id);
+            }
+            self.emit(SipEvent::CallStateChanged(CallEvent::new(&aid, &id, "ended", uri, "outbound")));
+            return Err(e);
+        }
+
+        self.start_no_answer_timeout(&id);
 
         Ok(id)
     }
 
-    /// Start a timer that ends the call if it stays in pre-connected states too long
-    fn start_invite_timeout(&self, call_id: &str, account_id: &str) {
-        let state = self.state.clone();
-        let event_tx = self.event_tx.clone();
+    /// Cancel an outbound call that is still unanswered after `no_answer`.
+    ///
+    /// A call with no response at all is Timer B's (see `send_invite`). This
+    /// one has had a provisional response, so the far end is working on it:
+    /// a PSTN call can sit on 100 Trying for well over 32 s before anything
+    /// rings. It used to be ended at 32 s whatever had come back, and ended
+    /// locally, with no CANCEL, so the callee kept ringing.
+    fn start_no_answer_timeout(&self, call_id: &str) {
         let manager = self.clone();
         let call_id = call_id.to_string();
-        let account_id = account_id.to_string();
-
         tokio::spawn(async move {
-            // First check: 32 seconds for initial response (RFC 3261 INVITE transaction timeout)
-            tokio::time::sleep(tokio::time::Duration::from_secs(32)).await;
-
-            {
-                let s = state.read().await;
-                if let Some((_, call)) = s.find_call(&call_id) {
-                    // If still dialing with no response at all, timeout immediately
-                    if call.is_dialing() {
-                        drop(s);
-                        let mut s = state.write().await;
-                        if let Some((_, call)) = s.find_call_mut(&call_id) {
-                            if call.is_dialing() {
-                                log::warn!("INVITE timeout (no response) for call {}", call_id);
-                                let remote_uri = call.remote_uri.clone();
-                                call.end(EndReason::Failed("Request timeout".to_string()));
-                                let _ = event_tx.send(SipEvent::CallStateChanged(
-                                    CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                                ));
-                            }
-                        }
-                        return;
-                    }
-                    // If ringing, let it continue - we'll check again later
-                    if !call.is_ringing() {
-                        return; // Already connected or ended
-                    }
-                } else {
-                    return; // Call no longer exists
-                }
-            }
-
-            // Second check: additional 60 seconds for ringing to be answered
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-
-            let still_ringing = state
+            let wait = manager.state.read().await.timing.no_answer;
+            tokio::time::sleep(wait).await;
+            let unanswered = manager
+                .state
                 .read()
                 .await
                 .find_call(&call_id)
-                .is_some_and(|(_, call)| call.is_ringing());
-            if still_ringing {
-                // Give up the same way the user would: with a CANCEL. Ending
-                // the call locally left the far end ringing until its own
-                // timer expired.
+                .is_some_and(|(_, call)| call.is_dialing() || call.is_ringing());
+            if unanswered {
+                // Give up the same way the user would: with a CANCEL.
                 log::warn!("Call timeout (unanswered) for call {}", call_id);
                 if let Err(e) = manager.hangup(&call_id).await {
                     log::warn!("Could not cancel unanswered call {}: {}", call_id, e);
@@ -1652,12 +1691,22 @@ impl SipManager {
     }
 
     pub async fn hangup(&self, call_id: &str) -> Result<(), String> {
-        let (action_msg, server_addr, transport, account_id, remote_uri, direction, sent_cancel) = {
+        let (action_msg, server_addr, transport, account_id, remote_uri, direction, sent_cancel, is_incoming) = {
             let mut s = self.state.write().await;
             let (aid, cseq, remote_uri, direction, our_tag, their_tag, call_id_header, last_invite_branch, invite_cseq, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact) = {
                 let (aid, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
                 let aid = aid.to_string();
-                let cseq = call.next_cseq();
+                // Only a BYE is a new request in the dialog. A CANCEL reuses
+                // the INVITE's CSeq and a 486 is a response, so neither may
+                // move the dialog's CSeq on: the ACK for the INVITE's final
+                // response is built from it.
+                let sends_bye = !call.is_incoming() && !call.is_dialing() && !call.is_ringing();
+                let cseq = if sends_bye {
+                    call.bye_sent = true;
+                    call.next_cseq()
+                } else {
+                    call.cseq
+                };
                 let remote_uri = call.remote_uri.clone();
                 let direction = call.direction_str().to_string();
                 let (our_tag, their_tag) = call.dialog_tags();
@@ -1729,11 +1778,17 @@ impl SipManager {
                 Some(bye)
             };
 
-            (msg, sa, transport, aid, remote_uri, direction, is_dialing_or_ringing)
+            (msg, sa, transport, aid, remote_uri, direction, is_dialing_or_ringing, is_incoming)
         };
 
         if let Some(msg) = action_msg {
-            transport.send_to(msg.as_bytes(), server_addr).await?;
+            if is_incoming {
+                // A response to their INVITE, resent until it is ACKed.
+                send_invite_final_response(&self.state, call_id, msg, &transport, server_addr).await?;
+            } else {
+                // A CANCEL or BYE, resent over UDP until it is answered.
+                send_non_invite(&self.state, &transport, server_addr, msg).await?;
+            }
         }
 
         let (media, late_bye) = {
@@ -1741,11 +1796,19 @@ impl SipManager {
             let Some((aid, call)) = s.find_call_mut(call_id) else {
                 return Ok(());
             };
+            // Something else ended the call while the CANCEL or BYE was going
+            // out: the 487 for the INVITE, a BYE from the far end, or Timer
+            // B. Whatever did has already sent "ended"; a second one would
+            // file the call in history twice.
+            if call.is_ended() {
+                return Ok(());
+            }
             let aid = aid.to_string();
             // The 200 OK may have arrived while the CANCEL was going out, and
             // the response handler will have ACKed it. That dialog is now
             // confirmed and the CANCEL does nothing to it: only a BYE ends it.
-            let late_bye = if sent_cancel && call.is_established() {
+            let late_bye = if sent_cancel && call.is_established() && !call.bye_sent {
+                call.bye_sent = true;
                 let cseq = call.next_cseq();
                 let (our_tag, their_tag) = call.dialog_tags();
                 let target = call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone());
@@ -1776,7 +1839,7 @@ impl SipManager {
         };
         if let Some(bye) = late_bye {
             log::info!("Call {} was answered as it was cancelled; sending BYE", call_id);
-            let _ = transport.send_to(bye.as_bytes(), server_addr).await;
+            let _ = send_non_invite(&self.state, &transport, server_addr, bye).await;
         }
         let recording_path = finish_call_media(call_id, media).await;
 
@@ -1794,7 +1857,7 @@ impl SipManager {
     }
 
     pub async fn answer(&self, call_id: &str) -> Result<(), String> {
-        let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport, srtp_mode) = {
+        let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport, srtp_mode, codec_prefs) = {
             let s = self.state.read().await;
             let (account, call) = s.find_call(call_id).ok_or("Call not found")?;
             if !call.is_incoming() {
@@ -1817,6 +1880,7 @@ impl SipManager {
                 account_id,
                 transport,
                 account.config.srtp_mode,
+                account.config.codecs.clone(),
             )
         };
 
@@ -1826,30 +1890,26 @@ impl SipManager {
         // had an unanswered call, so hangup answered 486 to a finished
         // transaction and the caller sat in silence. A call we cannot carry
         // audio for is declined instead.
-        let sdp = raw_invite.split("\r\n\r\n").nth(1).unwrap_or("");
-        let Some((ip, port)) = parse_sdp_connection(sdp) else {
+        let sdp = builder::request_body(&raw_invite);
+        // The codec comes from the same negotiation the answer's payload
+        // list is built from, in the user's preference order. Taking it from
+        // rtp-engine's own pick ran a Yealink call (G.722 first) on G.722
+        // while the answer said PCMU: no audio either way.
+        let Some(remote) = media::remote_media(sdp, Some(&codec_prefs)) else {
             self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here").await;
-            return Err("The caller offered no media".into());
+            return Err("The caller offered no media this phone can carry".into());
         };
-        let remote_rtp: SocketAddr = match format!("{}:{}", ip, port).parse() {
-            Ok(addr) => addr,
-            Err(e) => {
-                self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here").await;
-                return Err(format!("Bad RTP addr: {}", e));
-            }
-        };
-        let negotiated_codec = codec::negotiate_codec(sdp);
-        log::info!("Negotiated codec for inbound: {:?}", negotiated_codec);
+        let remote_rtp = remote.addr;
+        log::info!("Negotiated codec for inbound: {:?} on payload type {}", remote.audio.codec, remote.audio.pt);
 
         // SRTP answer: when the account offers SDES and the caller's offer is
         // RTP/SAVP with a key, generate our own key, answer encrypted, and run
         // the session with both contexts. Inbound calls used to be answered
         // RTP/AVP whatever the offer said, so a call to an SRTP extension was
         // always plaintext — and a PBX that requires SRTP rejected it.
-        let remote_srtp_key = builder::parse_sdp_crypto(sdp);
         let use_srtp = srtp_mode == crate::sip::account::SrtpMode::Sdes
             && builder::sdp_offers_savp(sdp)
-            && remote_srtp_key.is_some();
+            && remote.srtp_key.is_some();
         let our_srtp_key = if use_srtp {
             match rtp_engine::srtp::SrtpContext::generate() {
                 Ok((_, key)) => Some(key),
@@ -1861,56 +1921,27 @@ impl SipManager {
         } else {
             None
         };
-        // Encrypt only when we have both a key to send and the context pair built.
-        let answer_crypto = our_srtp_key.clone();
 
         let (input_dev, output_dev) = {
             let s = self.state.read().await;
             (s.preferred_input_device.clone(), s.preferred_output_device.clone())
         };
 
-        let media_result = match (&our_srtp_key, &remote_srtp_key) {
-            (Some(our_key), Some(their_key)) => {
-                match (
-                    rtp_engine::srtp::SrtpContext::from_base64(our_key),
-                    rtp_engine::srtp::SrtpContext::from_base64(their_key),
-                ) {
-                    (Ok(tx), Ok(rx)) => {
-                        log::info!("Answering incoming call with SRTP");
-                        media::MediaSession::start_with_srtp_keys_and_devices(
-                            rtp_port, remote_rtp, negotiated_codec, tx, rx, input_dev, output_dev,
-                        )
-                        .await
-                    }
-                    _ => {
-                        log::error!("Could not build SRTP contexts; answering plain");
-                        media::MediaSession::start_with_devices(
-                            rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
-                        )
-                        .await
-                    }
-                }
-            }
-            _ => {
-                media::MediaSession::start_with_devices(
-                    rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
-                )
-                .await
-            }
+        let plan = media::MediaPlan {
+            local_port: rtp_port,
+            remote,
+            local_srtp_key: our_srtp_key.clone(),
+            input_device: input_dev,
+            output_device: output_dev,
         };
-        // Encrypted only when both keys were present and both contexts built.
-        let srtp_active = use_srtp && answer_crypto.is_some() && media_result.is_ok();
-        let media = match media_result {
-            Ok(media) => media,
+        let (media, srtp_active) = match media::start_call_media(&plan, sdp).await {
+            Ok(started) => (started.session, started.srtp_active),
             Err(e) => {
                 log::error!("Could not start audio for incoming call {}: {}", call_id, e);
                 self.decline_incoming(call_id, &raw_invite, &to_tag, 480, "Temporarily Unavailable").await;
                 return Err(format!("Could not start audio: {}", e));
             }
         };
-
-        // Audio and DTMF go on the payload types the caller's offer named.
-        media::apply_negotiated_payload_types(&media, sdp);
 
         // Discover public IP via STUN for NAT traversal in SDP
         // A server on a private network is answered with the local address:
@@ -1928,27 +1959,30 @@ impl SipManager {
             }
         };
         let sdp_ip = media::sdp_address(local_addr.ip(), stun_ip, Some(server_addr.ip()));
-        let public_ip = Some(sdp_ip.to_string());
 
         // Our crypto line only when the session actually came up encrypted,
         // so the answer never claims SRTP the media is not using.
-        let answer_crypto = if srtp_active { answer_crypto.as_deref() } else { None };
-        let response = build_200_ok_invite_srtp(
-            &raw_invite,
-            local_addr,
-            rtp_port,
-            &to_tag,
-            Some(&username),
-            public_ip.as_deref(),
-            answer_crypto,
+        let answer_crypto = if srtp_active { our_srtp_key.as_deref() } else { None };
+        let answer_sdp = builder::build_sdp_answer_with(
+            sdp,
+            &builder::AnswerOptions {
+                ip: sdp_ip.to_string(),
+                rtp_port,
+                crypto_b64_key: answer_crypto,
+                codecs: Some(&codec_prefs),
+                origin: None,
+            },
         )
-        .ok_or("Failed to build 200 OK")?;
+        .ok_or("Failed to build the SDP answer")?;
+        // An offer that holds us (sendonly, inactive) is answered recvonly
+        // or inactive, and we then must not send.
+        let remote_hold = !builder::offer_direction(sdp).mirror().sends();
         let invite_cseq = cseq_number(&raw_invite).unwrap_or(1);
 
         // Built when auto-record starts. Emitted after the call-state event
         // below, so the frontend has the call in its list before it is told the
         // call is being recorded.
-        let recording_event = {
+        let (response, recording_event) = {
             let mut s = self.state.write().await;
             let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
             let result = call.process(CallFSMEvent::LocalAnswer { media, remote_rtp });
@@ -1958,9 +1992,23 @@ impl SipManager {
                 // to, and the UI has had its ended event.
                 return Err("Call ended before it could be answered".into());
             }
+            let answer_sdp = call.stamp_local_sdp(&answer_sdp);
+            let response = builder::build_200_ok_invite_with_sdp(
+                &raw_invite,
+                local_addr,
+                &to_tag,
+                Some(&username),
+                &answer_sdp,
+            )
+            .ok_or("Failed to build 200 OK")?;
             call.set_to_tag(to_tag.clone());
             call.pending_2xx = Some(state::Pending2xx { cseq: invite_cseq, response: response.clone() });
             call.srtp_active = srtp_active;
+            call.remote_media = Some(plan.remote.clone().for_session(srtp_active));
+            call.set_remote_hold(remote_hold);
+            // The session went in through the FSM, not set_media: a mute
+            // pressed while the call rang applies now.
+            call.apply_mute();
             // Remember our key for the session, so a re-INVITE refresh answers
             // with the same crypto line instead of downgrading to plain RTP.
             if srtp_active {
@@ -1972,9 +2020,11 @@ impl SipManager {
 
             // Only once the session is on the call, so a recording is never
             // started for a call that is already gone.
-            s.find_call(call_id)
+            let recording = s
+                .find_call(call_id)
                 .and_then(|(_, call)| call.media())
-                .and_then(|media| s.start_auto_record(&account_id, call_id, media))
+                .and_then(|media| s.start_auto_record(&account_id, call_id, media));
+            (response, recording)
         };
 
         transport.send_to(response.as_bytes(), server_addr).await?;
@@ -2034,7 +2084,7 @@ impl SipManager {
         if let (Some(transport), Some(server_addr), Some(resp)) =
             (transport, server_addr, builder::build_final_response(raw_invite, code, reason, to_tag))
         {
-            let _ = transport.send_to(resp.as_bytes(), server_addr).await;
+            let _ = send_invite_final_response(&self.state, call_id, resp, &transport, server_addr).await;
         }
         self.emit(SipEvent::CallStateChanged(
             CallEvent::new(&aid, call_id, "ended", &remote_uri, "inbound"),
@@ -2061,23 +2111,23 @@ impl SipManager {
         Ok(())
     }
 
+    /// The user's Mute button. Stored on the call in any state, so it holds
+    /// across hold and resume and reaches a session that has not started yet
+    /// (a call still ringing); the microphone is open only when the call is
+    /// neither muted nor held.
     pub async fn mute(&self, call_id: &str, mute: bool) -> Result<(), String> {
-        let s = self.state.read().await;
-        if let Some((_, call)) = s.find_call(call_id) {
-            if let Some(media) = call.media() {
-                media.set_mute(mute);
-            }
-            Ok(())
-        } else {
-            Err("Call not found".into())
-        }
+        let mut s = self.state.write().await;
+        let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
+        call.set_user_mute(mute);
+        Ok(())
     }
 
     pub async fn send_dtmf(&self, call_id: &str, digit: &str) -> Result<(), String> {
         log::info!("DTMF: {} on call {}", digit, call_id);
         let s = self.state.read().await;
         let (_, call) = s.find_call(call_id).ok_or("Call not found")?;
-        if let Some(media) = call.media() {
+        // Early media too: an IVR played in a 183 asks for digits.
+        if let Some(media) = call.media_any() {
             media.send_dtmf(digit);
         } else {
             return Err("No active media session".into());
@@ -2199,8 +2249,7 @@ impl SipManager {
             &remote_uri,
         );
 
-        transport.send_to(refer.as_bytes(), server_addr).await?;
-
+        self.send_refer(&account_id, call_id, &transport, server_addr, refer).await?;
 
         log::info!(
             "Sent blind REFER to transfer call {} -> {}",
@@ -2285,8 +2334,7 @@ impl SipManager {
             &a_remote_uri,
         );
 
-        transport.send_to(refer.as_bytes(), server_addr).await?;
-
+        self.send_refer(&account_id, call_id_a, &transport, server_addr, refer).await?;
 
         log::info!(
             "Sent attended REFER to transfer call {} (with Replaces for call {})",
@@ -2301,6 +2349,34 @@ impl SipManager {
             message: "Attended transfer initiated".into(),
         }));
 
+        Ok(())
+    }
+
+    /// Send a REFER and resend it over UDP until it is answered. If it never
+    /// is, the UI hears so through the transfer status: a lost REFER used to
+    /// leave "Transfer initiated" on screen for good.
+    async fn send_refer(
+        &self,
+        account_id: &str,
+        call_id: &str,
+        transport: &SipTransport,
+        server_addr: SocketAddr,
+        refer: String,
+    ) -> Result<(), String> {
+        let handle = send_non_invite(&self.state, transport, server_addr, refer).await?;
+        let event_tx = self.event_tx.clone();
+        let (account_id, call_id) = (account_id.to_string(), call_id.to_string());
+        tokio::spawn(async move {
+            if matches!(handle.await, Ok(transaction::Outcome::TimedOut)) {
+                log::warn!("REFER for call {} was never answered", call_id);
+                let _ = event_tx.send(SipEvent::TransferProgress(TransferEvent {
+                    account_id,
+                    call_id,
+                    status: 408,
+                    message: "Transfer failed: no response from the server".into(),
+                }));
+            }
+        });
         Ok(())
     }
 
@@ -2337,8 +2413,12 @@ impl SipManager {
         // Enable conference mode on all media sessions
         for call_id in call_ids {
             if let Some((_, call)) = s.find_call_mut(call_id) {
+                // Every leg of a conference is live, so a held one is
+                // resumed; a leg the user muted stays muted.
+                if call.is_held() {
+                    call.unhold();
+                }
                 if let Some(media) = call.media() {
-                    media.set_mute(false);
                     media.set_conference_mode(true);
                 }
             }
@@ -2396,8 +2476,8 @@ impl SipManager {
             if let Some((_, call)) = s.find_call_mut(call_id) {
                 if let Some(media) = call.media() {
                     media.set_conference_mode(false);
-                    media.set_mute(true);
                 }
+                call.hold();
             }
             
             (remaining, ended)
@@ -2835,6 +2915,7 @@ impl SipManager {
         s.active_account().and_then(|a| {
             a.subscriptions
                 .iter()
+                .filter(|sub| sub.event_type != EventType::MessageSummary)
                 .find(|sub| presence::extract_extension_from_uri(&sub.target_uri) == extension)
                 .map(|sub| sub.id.clone())
         })
@@ -2994,7 +3075,7 @@ impl SipManager {
                         (msg, transport, server_addr, sub.target_uri.clone(), sub.cseq)
                     };
                     let (msg, transport, server_addr, target_uri, cseq) = sent;
-                    if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
+                    if let Err(e) = send_subscribe(&state, &aid, &call_id, &transport, server_addr, msg).await {
                         log::error!("SUBSCRIBE refresh failed for {}: {}", target_uri, e);
                     } else {
                         log::debug!("Sent SUBSCRIBE refresh for {} (cseq={})", target_uri, cseq);
@@ -3339,6 +3420,10 @@ impl SipManager {
                     );
                 }
                 continue;
+            }
+
+            if let Some(a) = state.write().await.accounts.get_mut(&account_id) {
+                a.last_heard = Some(std::time::Instant::now());
             }
 
             let text = match String::from_utf8(msg.data) {
@@ -3831,6 +3916,126 @@ pub(crate) async fn send_register(
     Ok(())
 }
 
+/// Send an INVITE for `call_id` (our id) and run its client transaction.
+///
+/// Over UDP the INVITE is resent at T1, doubling (Timer A), until anything
+/// comes back on its branch. When nothing does within 64*T1 (Timer B), the
+/// call fails. The first INVITE and the authenticated retry both come through
+/// here; each used to go out once, so a lost one left the user listening to
+/// nothing for 32 s and then "Request timeout" (about one call in nine at the
+/// 5.7% loss users see).
+pub(crate) async fn send_invite(
+    state: &Arc<RwLock<ManagerState>>,
+    event_tx: &mpsc::UnboundedSender<SipEvent>,
+    call_id: &str,
+    transport: &SipTransport,
+    server_addr: SocketAddr,
+    invite: String,
+) -> Result<(), String> {
+    let branch = extract_via_branch(&invite);
+    let (transactions, timing) = {
+        let s = state.read().await;
+        (s.transactions.clone(), s.timing)
+    };
+    let handle = transaction::send_request(
+        &transactions,
+        transport,
+        server_addr,
+        invite,
+        transaction::Kind::Invite,
+        timing,
+        None,
+    )
+    .await?;
+    let state = state.clone();
+    let event_tx = event_tx.clone();
+    let call_id = call_id.to_string();
+    tokio::spawn(async move {
+        if !matches!(handle.await, Ok(transaction::Outcome::TimedOut)) {
+            return;
+        }
+        let mut s = state.write().await;
+        let Some((account_id, call)) = s.find_call_mut(&call_id) else { return };
+        // Only the INVITE the call is waiting on: an auth retry replaced the
+        // first one, and a call the user already ended has had its event.
+        if !call.is_dialing() || call.last_invite_branch != branch {
+            return;
+        }
+        log::warn!("INVITE for call {} got no response (Timer B)", call_id);
+        let account_id = account_id.to_string();
+        let remote_uri = call.remote_uri.clone();
+        call.end(EndReason::Failed("Request timeout".to_string()));
+        drop(s);
+        let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+            &account_id,
+            &call_id,
+            "ended",
+            &remote_uri,
+            "outbound",
+        )));
+    });
+    Ok(())
+}
+
+/// Send a request outside the INVITE transaction (BYE, CANCEL, REFER,
+/// NOTIFY) and resend it over UDP until a final response (Timer E/F).
+///
+/// The handle resolves to how the transaction ended; callers that only need
+/// the request delivered can drop it.
+pub(crate) async fn send_non_invite(
+    state: &Arc<RwLock<ManagerState>>,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    msg: String,
+) -> Result<tokio::task::JoinHandle<transaction::Outcome>, String> {
+    let (transactions, timing) = {
+        let s = state.read().await;
+        (s.transactions.clone(), s.timing)
+    };
+    transaction::send_request(&transactions, transport, dest, msg, transaction::Kind::NonInvite, timing, None)
+        .await
+}
+
+/// Send a SUBSCRIBE for the subscription `sub_call_id` of `account_id` as a
+/// non-INVITE transaction: resent over UDP until answered.
+///
+/// A message-summary subscription the server never answered is dropped when
+/// the transaction times out. Left `Pending`, it counted as live, so no later
+/// registration subscribed again and voicemail counts never arrived; dropped,
+/// the next registration refresh subscribes afresh.
+pub(crate) async fn send_subscribe(
+    state: &Arc<RwLock<ManagerState>>,
+    account_id: &str,
+    sub_call_id: &str,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    msg: String,
+) -> Result<(), String> {
+    let handle = send_non_invite(state, transport, dest, msg).await?;
+    let state = state.clone();
+    let (account_id, sub_call_id) = (account_id.to_owned(), sub_call_id.to_owned());
+    tokio::spawn(async move {
+        if !matches!(handle.await, Ok(transaction::Outcome::TimedOut)) {
+            return;
+        }
+        let mut s = state.write().await;
+        let Some(account) = s.get_account_mut(&account_id) else { return };
+        let before = account.subscriptions.len();
+        account.subscriptions.retain(|sub| {
+            !(sub.call_id == sub_call_id
+                && sub.event_type == EventType::MessageSummary
+                && sub.state == SubscriptionState::Pending)
+        });
+        if account.subscriptions.len() != before {
+            log::warn!(
+                "message-summary SUBSCRIBE for {} went unanswered; subscribing again at the next registration",
+                account_id
+            );
+        }
+    });
+    Ok(())
+}
+
 /// The CSeq number of a SIP message.
 pub(crate) fn cseq_number(msg: &str) -> Option<u32> {
     extract_header(msg, "CSeq")?.split_whitespace().next()?.parse().ok()
@@ -3855,6 +4060,70 @@ pub(crate) async fn retransmit_2xx_until_ack(
     dest: SocketAddr,
     timing: Timing,
 ) -> bool {
+    let acked = retransmit_response_until_ack(state, call_id, response, transport, dest, timing, |c| {
+        !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq)
+    })
+    .await;
+    if !acked {
+        if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
+            c.pending_2xx = None;
+        }
+    }
+    acked
+}
+
+/// Answer an incoming INVITE with a 4xx-6xx and see it to its ACK (RFC 3261
+/// §17.2.1): over UDP it is resent at T1 doubling to T2 (Timer G) until the
+/// ACK or 64*T1 (Timer H), and a retransmitted INVITE meanwhile gets it again.
+///
+/// A decline used to go out once. The PBX's INVITE transaction already had
+/// our 180 and waits for a final response as long as it takes, so a lost 486
+/// left the caller hearing ringback until the PBX's no-answer timer.
+pub(crate) async fn send_invite_final_response(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id: &str,
+    response: String,
+    transport: &SipTransport,
+    dest: SocketAddr,
+) -> Result<(), String> {
+    let cseq = cseq_number(&response).unwrap_or(1);
+    let timing = {
+        let mut s = state.write().await;
+        if let Some((_, call)) = s.find_call_mut(call_id) {
+            call.pending_final = Some(state::Pending2xx { cseq, response: response.clone() });
+        }
+        s.timing
+    };
+    transport.send_to(response.as_bytes(), dest).await?;
+    let state = state.clone();
+    let transport = transport.clone();
+    let call_id = call_id.to_string();
+    tokio::spawn(async move {
+        let acked = retransmit_response_until_ack(&state, &call_id, &response, &transport, dest, timing, |c| {
+            c.pending_final.as_ref().is_some_and(|p| p.cseq == cseq)
+        })
+        .await;
+        if !acked {
+            log::warn!("No ACK for the final response to call {}", call_id);
+            if let Some((_, c)) = state.write().await.find_call_mut(&call_id) {
+                c.pending_final = None;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Resend `response` over UDP at T1 doubling to T2 while `outstanding` holds
+/// for the call; `false` when 64*T1 (Timer H) passed and it still did.
+async fn retransmit_response_until_ack(
+    state: &Arc<RwLock<ManagerState>>,
+    call_id: &str,
+    response: &str,
+    transport: &SipTransport,
+    dest: SocketAddr,
+    timing: Timing,
+    outstanding: impl Fn(&CallFSM) -> bool,
+) -> bool {
     let reliable = !matches!(transport, SipTransport::Udp(_));
     let timer_h = timing.t1 * 64;
     let started = tokio::time::Instant::now();
@@ -3864,23 +4133,16 @@ pub(crate) async fn retransmit_2xx_until_ack(
         let wait = if reliable { remaining } else { interval.min(remaining) };
         tokio::time::sleep(wait).await;
 
-        let outstanding = {
-            let s = state.read().await;
-            s.find_call(call_id)
-                .is_some_and(|(_, c)| !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq))
-        };
-        if !outstanding {
+        let still = state.read().await.find_call(call_id).is_some_and(|(_, c)| outstanding(c));
+        if !still {
             return true;
         }
         if started.elapsed() >= timer_h {
-            if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
-                c.pending_2xx = None;
-            }
             return false;
         }
-        log::debug!("No ACK yet for call {}; retransmitting the 200 OK", call_id);
+        log::debug!("No ACK yet for call {}; retransmitting its final response", call_id);
         if let Err(e) = transport.send_to(response.as_bytes(), dest).await {
-            log::warn!("Could not retransmit the 200 OK for call {}: {}", call_id, e);
+            log::warn!("Could not retransmit the final response for call {}: {}", call_id, e);
         }
         interval = (interval * 2).min(T2);
     }
@@ -3966,6 +4228,7 @@ async fn probe_target(
     target: &srv::Target,
     tls_name: &str,
     local_addr: SocketAddr,
+    t1: std::time::Duration,
 ) -> bool {
     match target.transport {
         TransportType::Tcp => {
@@ -3995,14 +4258,30 @@ async fn probe_target(
                 &account.username,
                 "udp",
             );
-            if sock.send_to(msg.as_bytes(), target.addr).await.is_err() {
-                return false;
-            }
+            // Resent at T1, doubling, within the 2 s the probe allows: one
+            // lost datagram used to mark a healthy server failed.
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut interval = t1;
             let mut buf = [0u8; 2048];
-            matches!(
-                tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv_from(&mut buf)).await,
-                Ok(Ok((_, from))) if from == target.addr
-            )
+            loop {
+                if sock.send_to(msg.as_bytes(), target.addr).await.is_err() {
+                    return false;
+                }
+                let until = (tokio::time::Instant::now() + interval).min(deadline);
+                loop {
+                    match tokio::time::timeout_at(until, sock.recv_from(&mut buf)).await {
+                        Ok(Ok((_, from))) if from == target.addr => return true,
+                        // Something else on the socket: keep listening.
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(_)) => return false,
+                        Err(_) => break,
+                    }
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return false;
+                }
+                interval = (interval * 2).min(transaction::T2);
+            }
         }
     }
 }

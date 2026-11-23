@@ -8,7 +8,6 @@ use super::builder::{
     parse_replaces_header, parse_sdp_connection, parse_sipfrag_status,
 };
 use super::state::{CallFSM, CallFSMEvent, InboundCallParams};
-use super::codec;
 use super::media;
 use super::{CallEvent, ManagerState, SipEvent, TransferEvent};
 
@@ -114,18 +113,19 @@ pub async fn handle_incoming_refer(
         )
     };
 
-    // Send initial NOTIFY (100 Trying)
-    {
+    // Send initial NOTIFY (100 Trying). Built under the lock, sent after it:
+    // the transaction layer needs the state too.
+    let notify = {
         let mut s = state.write().await;
         let account = match s.get_account_mut(account_id) {
             Some(a) => a,
             None => return,
         };
-        if let Some(call) = account.calls.iter_mut().find(|c| c.id == call_internal_id) {
+        account.calls.iter_mut().find(|c| c.id == call_internal_id).map(|call| {
             call.cseq += 1;
             let cseq = call.cseq;
             let local_addr = transport.local_addr();
-            let notify = build_notify_refer(
+            build_notify_refer(
                 &notify_target,
                 &notify_local_uri,
                 &notify_remote_uri,
@@ -138,9 +138,11 @@ pub async fn handle_incoming_refer(
                 100,
                 "Trying",
                 "active;expires=60",
-            );
-            let _ = transport.send_to(notify.as_bytes(), remote).await;
-        }
+            )
+        })
+    };
+    if let Some(notify) = notify {
+        let _ = super::send_non_invite(state, &transport, remote, notify).await;
     }
 
     // Attempt the transfer: make a new call to the Refer-To target
@@ -204,15 +206,21 @@ pub async fn handle_incoming_refer(
         new_call.sdp_public_ip = Some(sdp_ip);
         let new_id = new_call.id.clone();
 
-        let send_result = transport.send_to(invite.as_bytes(), server_addr).await;
-
-        if send_result.is_ok() {
-            let mut s = state.write().await;
-            if let Some(account) = s.get_account_mut(account_id) {
-                account.calls.push(new_call);
+        // The call is in the list before its INVITE goes out, so a fast
+        // response finds it; the INVITE is resent until answered.
+        if let Some(account) = state.write().await.get_account_mut(account_id) {
+            account.calls.push(new_call);
+        }
+        let _ = event_tx.send(SipEvent::CallStateChanged(
+            CallEvent::new(account_id, &new_id, "dialing", &refer_to, "outbound")
+        ));
+        let send_result = super::send_invite(state, event_tx, &new_id, &transport, server_addr, invite).await;
+        if send_result.is_err() {
+            if let Some(account) = state.write().await.get_account_mut(account_id) {
+                account.calls.retain(|c| c.id != new_id);
             }
             let _ = event_tx.send(SipEvent::CallStateChanged(
-                CallEvent::new(account_id, &new_id, "dialing", &refer_to, "outbound")
+                CallEvent::new(account_id, &new_id, "ended", &refer_to, "outbound")
             ));
         }
 
@@ -227,30 +235,34 @@ pub async fn handle_incoming_refer(
             (503, "Service Unavailable", "terminated;reason=noresource")
         };
 
-        let mut s = state.write().await;
-        let account = match s.get_account_mut(account_id) {
-            Some(a) => a,
-            None => return,
+        let notify = {
+            let mut s = state.write().await;
+            let account = match s.get_account_mut(account_id) {
+                Some(a) => a,
+                None => return,
+            };
+            account.calls.iter_mut().find(|c| c.id == call_internal_id).map(|call| {
+                call.cseq += 1;
+                let cseq = call.cseq;
+                let local_addr = transport.local_addr();
+                build_notify_refer(
+                    &notify_target,
+                    &notify_local_uri,
+                    &notify_remote_uri,
+                    local_addr,
+                    &notify_call_id,
+                    cseq,
+                    &notify_from_tag,
+                    &notify_to_tag,
+                    &transport_str,
+                    sf_status,
+                    sf_reason,
+                    sf_sub,
+                )
+            })
         };
-        if let Some(call) = account.calls.iter_mut().find(|c| c.id == call_internal_id) {
-            call.cseq += 1;
-            let cseq = call.cseq;
-            let local_addr = transport.local_addr();
-            let notify = build_notify_refer(
-                &notify_target,
-                &notify_local_uri,
-                &notify_remote_uri,
-                local_addr,
-                &notify_call_id,
-                cseq,
-                &notify_from_tag,
-                &notify_to_tag,
-                &transport_str,
-                sf_status,
-                sf_reason,
-                sf_sub,
-            );
-            let _ = transport.send_to(notify.as_bytes(), remote).await;
+        if let Some(notify) = notify {
+            let _ = super::send_non_invite(state, &transport, remote, notify).await;
         }
     }
 
@@ -523,18 +535,21 @@ pub async fn handle_invite_with_replaces(
     let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
     if let Some((ip, port)) = parse_sdp_connection(sdp) {
         if let Ok(remote_rtp) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-            let negotiated_codec = codec::negotiate_codec(sdp);
-            log::info!(
-                "Negotiated codec for INVITE with Replaces: {:?}",
-                negotiated_codec
-            );
+            // The same pick as the answer's first payload type (the 200
+            // above was built from the offer's order).
+            let negotiated = builder::negotiate_audio(sdp, None);
+            log::info!("Negotiated codec for INVITE with Replaces: {:?}", negotiated);
 
             let (input_dev, output_dev) = {
                 let s = state.read().await;
                 (s.preferred_input_device.clone(), s.preferred_output_device.clone())
             };
-            match media::MediaSession::start_with_devices(rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev).await {
+            let codec = negotiated.map_or(media::CodecType::Pcmu, |n| n.codec);
+            match media::MediaSession::start_with_devices(rtp_port, remote_rtp, codec, input_dev, output_dev).await {
                 Ok(session) => {
+                    if let Some(audio) = negotiated {
+                        media::apply_negotiated_payload_types(&session, audio, sdp);
+                    }
                     let mut s = state.write().await;
                     let mut new_call = call;
                     let _ = new_call.process(CallFSMEvent::Answered {

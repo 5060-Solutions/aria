@@ -14,7 +14,6 @@ import HeadsetMicIcon from "@mui/icons-material/HeadsetMic";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import StopIcon from "@mui/icons-material/Stop";
 import AddIcCallIcon from "@mui/icons-material/AddIcCall";
-import CallMergeIcon from "@mui/icons-material/CallMerge";
 import SwapCallsIcon from "@mui/icons-material/SwapCalls";
 import CheckIcon from "@mui/icons-material/Check";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
@@ -23,11 +22,13 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 import CallIcon from "@mui/icons-material/Call";
-import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceMerge, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
+import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
 import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
 import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
+import { errorText, notifyError } from "../../stores/toastStore";
+import { pushAudioDevices } from "../../utils/audioDevices";
 
 interface AudioDevice {
   name: string;
@@ -110,7 +111,6 @@ export function CallControls() {
   const setCallRecording = useAppStore((s) => s.setCallRecording);
   const updateCall = useAppStore((s) => s.updateCall);
   const setPrimaryCall = useAppStore((s) => s.setPrimaryCall);
-  const createConference = useAppStore((s) => s.createConference);
   const endConference = useAppStore((s) => s.endConference);
   const accounts = useAppStore((s) => s.accounts);
 
@@ -213,7 +213,8 @@ export function CallControls() {
   const hasMultipleCalls = connectedCalls.length > 1;
   const isInConference = activeCall.conferenceId !== undefined;
   const canAddCall = activeCall.state === "connected" && !isInConference;
-  const canMerge = hasMultipleCalls && !isInConference;
+  // No Merge: the engine has no mixer, so "merged" calls could hear Aria's
+  // user but not each other. It comes back with mixing (or a PBX bridge).
 
   // Stopping the recording and filing history both happen when the backend
   // reports the call ended, so hangup is the same whichever side ends it.
@@ -230,21 +231,30 @@ export function CallControls() {
     await hangupCall(activeCall);
   };
 
+  // Mute and hold flip the UI at once and put it back if the backend could
+  // not do it. Failures used to be ignored, so the screen could say "Held"
+  // while the far end still heard everything.
   const handleMute = async () => {
+    const { id, muted } = activeCall;
     toggleMute();
     try {
-      await sipMute(activeCall.id, !activeCall.muted);
-    } catch {
-      // ignore
+      await sipMute(id, !muted);
+    } catch (e) {
+      log.error("Mute toggle failed:", e);
+      updateCall(id, { muted });
+      notifyError(t(muted ? "errors.unmute" : "errors.mute", { error: errorText(e) }));
     }
   };
 
   const handleHold = async () => {
+    const { id, held, state } = activeCall;
     toggleHold();
     try {
-      await sipHold(activeCall.id, !activeCall.held);
-    } catch {
-      // ignore
+      await sipHold(id, !held);
+    } catch (e) {
+      log.error("Hold toggle failed:", e);
+      updateCall(id, { held, state });
+      notifyError(t(held ? "errors.resume" : "errors.hold", { error: errorText(e) }));
     }
   };
 
@@ -259,6 +269,7 @@ export function CallControls() {
       }
     } catch (e) {
       log.error("Recording toggle failed:", e);
+      notifyError(t("errors.record", { error: errorText(e) }));
     }
   };
 
@@ -266,7 +277,10 @@ export function CallControls() {
     if (!newCallUri.trim()) return;
 
     try {
-      await sipHold(activeCall.id, true);
+      await sipHold(activeCall.id, true).catch((e) => {
+        notifyError(t("errors.hold", { error: errorText(e) }));
+        throw e;
+      });
       updateCall(activeCall.id, { held: true, state: "held" });
       const account = accounts.find((a) => a.id === activeCall.accountId);
       await placeCall(
@@ -292,27 +306,16 @@ export function CallControls() {
         activeCall.id,
         dialUri(transferUri, account, useAppStore.getState().defaultCountry),
       );
-      // The backend ends the call when the transfer is accepted; closing the
-      // dialog is enough here.
+      // The 202 only means the far end will try. The backend ends the call
+      // when the transfer's NOTIFY reports success (sipfrag 200); a refusal
+      // arrives later as a transfer-progress event, which useSipEvents shows.
       setTransferDialogOpen(false);
       setTransferUri("");
     } catch (e) {
       log.error("Transfer failed:", e);
+      notifyError(t("errors.transferFailed", { error: errorText(e) }));
     } finally {
       setTransferring(false);
-    }
-  };
-
-  const handleMerge = async () => {
-    const callIds = connectedCalls.map((c) => c.id);
-    if (callIds.length < 2) return;
-
-    try {
-      const conferenceId = await sipConferenceMerge(callIds);
-      createConference(callIds);
-      log.info("Conference created:", conferenceId);
-    } catch (e) {
-      log.error("Merge failed:", e);
     }
   };
 
@@ -327,6 +330,7 @@ export function CallControls() {
       setPrimaryCall(otherCall.id);
     } catch (e) {
       log.error("Swap failed:", e);
+      notifyError(t("errors.swap", { error: errorText(e) }));
     }
   };
 
@@ -336,11 +340,13 @@ export function CallControls() {
     } else {
       setSelectedOutputDevice(name);
     }
-    // Push to backend
-    invoke("set_audio_devices", {
-      inputDevice: type === "input" ? name : selectedInputDevice,
-      outputDevice: type === "output" ? name : selectedOutputDevice,
-    }).catch(() => {});
+    // Push to backend. The call in progress keeps its devices (the engine
+    // cannot move a running stream); the menu says so.
+    pushAudioDevices(
+      invoke,
+      type === "input" ? name : selectedInputDevice,
+      type === "output" ? name : selectedOutputDevice,
+    ).catch(() => {});
   };
 
   const hasNonDefaultDevice = audioDevices && (
@@ -399,14 +405,6 @@ export function CallControls() {
       },
     );
   }
-  if (canMerge) {
-    controls.push({
-      key: "merge",
-      icon: <CallMergeIcon />,
-      label: t("call.merge"),
-      onClick: handleMerge,
-    });
-  }
   if (hasMultipleCalls && heldCalls.length > 0) {
     controls.push({
       key: "swap",
@@ -450,7 +448,7 @@ export function CallControls() {
         {isInConference && (
           <Box sx={{ textAlign: "center" }}>
             <Typography variant="caption" color="primary">
-              {t("call.inConference", "Conference Call")} ({conferences.find(c => c.id === activeCall.conferenceId)?.callIds.length ?? 0} {t("call.participants", "participants")})
+              {t("call.inConference")} ({conferences.find(c => c.id === activeCall.conferenceId)?.callIds.length ?? 0} {t("call.participants")})
             </Typography>
           </Box>
         )}
@@ -548,6 +546,12 @@ export function CallControls() {
       >
         {audioDevices && (
           <Box sx={{ py: 1 }}>
+            <Typography
+              variant="caption"
+              sx={{ px: 2, pb: 0.5, display: "block", color: "text.secondary" }}
+            >
+              {t("call.devicesNextCall")}
+            </Typography>
             {/* Microphone section */}
             <Typography
               variant="overline"
@@ -683,7 +687,7 @@ export function CallControls() {
           <TextField
             autoFocus
             margin="dense"
-            label={t("call.phoneNumber", "Phone Number or SIP URI")}
+            label={t("call.phoneNumber")}
             fullWidth
             variant="outlined"
             value={newCallUri}
@@ -699,7 +703,7 @@ export function CallControls() {
               {t("common.cancel", "Cancel")}
             </Button>
             <Button variant="contained" onClick={handleAddCall} disabled={!newCallUri.trim()}>
-              {t("call.dial", "Dial")}
+              {t("call.dial")}
             </Button>
           </Box>
         </DialogContent>
@@ -715,12 +719,12 @@ export function CallControls() {
         <DialogTitle>{t("call.transfer", "Transfer")}</DialogTitle>
         <DialogContent>
           <Typography variant="caption" sx={{ color: "text.secondary", display: "block", mb: 1 }}>
-            {t("call.transferHint", "Send this call to another number or extension.")}
+            {t("call.transferHint")}
           </Typography>
           <TextField
             autoFocus
             margin="dense"
-            label={t("call.phoneNumber", "Phone Number or SIP URI")}
+            label={t("call.phoneNumber")}
             fullWidth
             variant="outlined"
             value={transferUri}

@@ -14,7 +14,8 @@
     "noAccount": "No account configured",
     "clickForDetails": "Click for connection details",
     "voicemail": "Voicemail",
-    "voicemailWaiting": "{{count}} new voicemail message(s) — click to listen"
+    "voicemailWaiting": "{{count}} new voicemail message(s) — click to listen",
+    "callVoicemail": "Call voicemail"
   },
   "connection": {
     "title": "Connection",
@@ -58,7 +59,8 @@
     "selectAccount": "Select account",
     "clearAll": "Clear",
     "backspace": "Delete last digit",
-    "backspaceHold": "Delete (hold to clear)"
+    "backspaceHold": "Delete (hold to clear)",
+    "call": "Call"
   },
   "call": {
     "calling": "Calling...",
@@ -75,6 +77,7 @@
     "keypad": "Keypad",
     "speaker": "Speaker",
     "audio": "Audio",
+    "devicesNextCall": "Changes apply from your next call.",
     "recording": "REC",
     "recordingInProgress": "Recording in progress",
     "encrypted": "Encrypted",
@@ -88,7 +91,14 @@
     "hangUp": "Hang up",
     "encryptedTooltip": "Your voice is encrypted (SRTP) between Aria and the server.",
     "notEncryptedRefused": "Aria offered encryption, but the server answered without it. Your voice is sent unencrypted.",
-    "notEncryptedOff": "Media encryption is turned off for this account. Your voice is sent unencrypted."
+    "notEncryptedOff": "Media encryption is turned off for this account. Your voice is sent unencrypted.",
+    "dial": "Dial",
+    "inConference": "Conference Call",
+    "participants": "participants",
+    "phoneNumber": "Phone Number or SIP URI",
+    "transferHint": "Send this call to another number or extension.",
+    "keysExposed": "Key not protected",
+    "keysExposedTooltip": "Your voice is encrypted (SRTP), but the key was sent in call setup that is not encrypted (no TLS). Anyone who can see the network traffic can read the key and decrypt the call. Switch this account to TLS for real protection."
   },
   "history": {
     "title": "Recent",
@@ -200,7 +210,14 @@
     "stripPrefixHelper": "Removes this prefix from dialed numbers (e.g. remove country code)",
     "prependPrefix": "Prefix to prepend",
     "prependPrefixPlaceholder": "e.g. 9 or 0",
-    "prependPrefixHelper": "Adds this prefix before dialed numbers (e.g. 9 for outside line)"
+    "prependPrefixHelper": "Adds this prefix before dialed numbers (e.g. 9 for outside line)",
+    "accountOptions": "Account options",
+    "hidePassword": "Hide password",
+    "showPassword": "Show password",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "syncNow": "Sync now",
+    "srtpNoTlsWarning": "Without TLS, SDES sends the encryption key in plain text during call setup, so anyone on the network path can decrypt the audio. Use TLS with SDES."
   },
   "update": {
     "title": "Update available",
@@ -283,7 +300,14 @@
     "connecting": "Connecting...",
     "tagline": "Your voice, beautifully connected.",
     "scanQr": "Scan QR code",
-    "developerDiagnostics": "Developer diagnostics"
+    "developerDiagnostics": "Developer diagnostics",
+    "scanQrTitle": "Scan QR Code",
+    "openCamera": "Open Camera",
+    "pasteLink": "Paste Link",
+    "pasteFromClipboard": "Paste from clipboard",
+    "paste": "Paste",
+    "scanQrDescription": "Scan a QR code from your admin panel, or paste the provisioning link.",
+    "pointAtQr": "Point your camera at the QR code"
   },
   "diagnostics": {
     "title": "Diagnostics",
@@ -347,7 +371,9 @@
     "loading": "Loading...",
     "never": "Never",
     "test": "Test",
-    "stop": "Stop"
+    "stop": "Stop",
+    "close": "Close",
+    "clear": "Clear"
   },
   "time": {
     "hours": "h",
@@ -384,7 +410,7 @@
     "intro": "A local MCP server lets an assistant on this computer (Claude Code, for example) read registration state, calls and the SIP trace. Nothing leaves this computer and passwords are never exposed.",
     "enableRead": "Allow local assistants to read status and traces",
     "enableControl": "Allow assistants to place and control calls",
-    "enableControlNote": "Each new call still asks you first.",
+    "enableControlNote": "You are asked first before an assistant places a call, answers a call, transfers a call, or sends keypad tones on a call (once per call). Hanging up and hold happen without asking.",
     "port": "Port",
     "portNote": "Served on 127.0.0.1 only.",
     "notRunning": "The server could not start: {{error}}",
@@ -400,7 +426,13 @@
     "callRequestExpires": "This request expires in {{seconds}} s.",
     "allow": "Allow",
     "deny": "Deny",
-    "noAccount": "No account is available to place this call."
+    "noAccount": "No account is available to place this call.",
+    "answerRequestTitle": "An assistant wants to answer a call",
+    "answerRequestBody": "An assistant wants to answer the incoming call from {{remote}} on {{account}}. Your microphone is live as soon as the call is answered.",
+    "transferRequestTitle": "An assistant wants to transfer a call",
+    "transferRequestBody": "An assistant wants to transfer your call with {{remote}} to {{number}}.",
+    "dtmfRequestTitle": "An assistant wants to press keys on a call",
+    "dtmfRequestBody": "An assistant wants to send keypad tones on your call with {{remote}}, starting with {{number}}. If you allow this, it can send more tones on this call without asking again."
   },
   "provision": {
     "title": "Add this phone line?",
@@ -431,5 +463,26 @@
       "tlsOnly": "Calls connect over TLS, but call audio isn't encrypted (SRTP is off).",
       "none": "Calls aren't encrypted."
     }
+  },
+  "presence": {
+    "available": "Available",
+    "busy": "Busy",
+    "onThePhone": "On the phone",
+    "ringing": "Ringing",
+    "away": "Away",
+    "doNotDisturb": "Do not disturb",
+    "offline": "Offline",
+    "unknown": "Unknown"
+  },
+  "errors": {
+    "placeCall": "Couldn't place the call: {{error}}",
+    "transferFailed": "Transfer failed: {{error}}",
+    "hold": "Couldn't put the call on hold: {{error}}",
+    "resume": "Couldn't resume the call: {{error}}",
+    "mute": "Couldn't mute: {{error}}",
+    "unmute": "Couldn't unmute: {{error}}",
+    "record": "Couldn't change recording: {{error}}",
+    "merge": "Couldn't merge the calls: {{error}}",
+    "swap": "Couldn't swap the calls: {{error}}"
   }
 }

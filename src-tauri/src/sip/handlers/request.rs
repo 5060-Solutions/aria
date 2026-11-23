@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method, parse_sdp_connection};
+use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method};
 use crate::sip::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use crate::sip::transfer;
 use crate::sip::{CallEvent, ManagerState, SipEvent, VoicemailStatusEvent};
@@ -42,17 +42,15 @@ pub async fn handle_incoming_request(
                     s.find_call_by_header(&call_id).map(|(_, c)| {
                         (
                             c.id.clone(),
-                            c.local_rtp_port,
-                            c.sdp_public_ip,
                             c.is_incoming(),
                             c.is_established(),
                             c.to_tag.clone().unwrap_or_default(),
-                            c.pending_2xx.clone(),
+                            c.pending_2xx.clone().or_else(|| c.pending_final.clone()),
                         )
                     })
                 };
 
-                if let Some((call_internal_id, rtp_port, answered_ip, ringing_here, established, our_tag, pending_2xx)) =
+                if let Some((call_internal_id, ringing_here, established, our_tag, pending_2xx)) =
                     existing
                 {
                     let in_dialog = extract_header(text, "To").is_some_and(|to| to.contains("tag="));
@@ -70,67 +68,28 @@ pub async fn handle_incoming_request(
                         } else if let Some(pending) =
                             pending_2xx.filter(|p| crate::sip::cseq_number(text) == Some(p.cseq))
                         {
-                            // Answered, and the caller has not seen it: the
-                            // INVITE it resends gets the same 200 again.
-                            log::info!("Retransmitted INVITE for {}, re-sending 200 OK", call_id);
+                            // Answered (or declined), and the caller has not
+                            // seen it: the INVITE it resends gets the same
+                            // final response again.
+                            log::info!("Retransmitted INVITE for {}, re-sending its final response", call_id);
                             Some(pending.response)
                         } else {
                             None
                         }
                     } else if established {
                         // RFC 3261 §14: a re-INVITE within an established call,
-                        // e.g. a session refresh or the PBX moving media.
-                        let Some(la) = account.local_addr else { return };
-                        let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
-                        let new_target = if sdp.contains("m=audio") {
-                            parse_sdp_connection(sdp)
-                                .and_then(|(ip, port)| format!("{}:{}", ip, port).parse::<SocketAddr>().ok())
-                        } else {
-                            None
-                        };
-                        if let Some(target) = new_target {
-                            // Recorded on the call only. The running media
-                            // session keeps sending to the address it started
-                            // with; redirecting it needs support in rtp-engine.
-                            log::info!("re-INVITE offers RTP target {} for call {}", target, call_internal_id);
-                        }
-                        // The address the call's own offer/answer carried, so
-                        // the refresh keeps media where it already flows. The
-                        // registration-time fallback is for a call that was
-                        // set up before the address was recorded; recomputing
-                        // from it alone could move `c=` to the LAN address.
-                        let media_ip = answered_ip
-                            .unwrap_or_else(|| {
-                                crate::sip::media::sdp_address(
-                                    la.ip(),
-                                    account.public_addr.map(|a| a.ip()),
-                                    account.server_addr.map(|a| a.ip()),
-                                )
-                            })
-                            .to_string();
-                        // Keep the call's crypto on a session refresh: an SRTP
-                        // call answered RTP/AVP here would be torn down by the
-                        // PBX (media_encryption=sdes) or lose audio. Reuse the
-                        // key the call already negotiated.
-                        let srtp_key = s
-                            .find_call(&call_internal_id)
-                            .and_then(|(_, c)| if c.srtp_active { c.local_srtp_key.clone() } else { None });
-                        let resp = builder::build_200_ok_invite_srtp(
-                            text,
-                            la,
-                            rtp_port,
-                            &our_tag,
-                            Some(&account.config.username),
-                            Some(&media_ip),
-                            srtp_key.as_deref(),
-                        );
+                        // e.g. a session refresh or the PBX moving media (an
+                        // attended transfer to this phone moves it to another
+                        // relay port, with a new SRTP key on an SRTP call).
                         drop(s);
-                        if let Some(target) = new_target {
-                            let mut s = state.write().await;
-                            if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
-                                call.set_remote_rtp(target);
-                            }
-                        }
+                        let resp = super::media_update::answer_reinvite(
+                            state,
+                            event_tx,
+                            &call_internal_id,
+                            account_id,
+                            text,
+                        )
+                        .await;
                         let s = state.read().await;
                         if let (Some(resp), Some(transport)) = (
                             resp,
@@ -316,6 +275,7 @@ pub async fn handle_incoming_request(
                 handle_notify_presence(state, event_tx, text, remote, &event_trimmed, account_id).await;
             } else if event_trimmed == "message-summary" {
                 // RFC 3842 MWI NOTIFY — parse the body for voicemail status
+                crate::sip::mwi::track_notify_state(state, account_id, text).await;
                 let mwi = parse_mwi_body(text);
                 log::info!(
                     "MWI NOTIFY from {}: waiting={}, new={}, old={}",
@@ -383,14 +343,12 @@ pub async fn handle_incoming_request(
                 let remote_uri = call.remote_uri.clone();
                 let _ = call.process(CallFSMEvent::Cancel);
 
-                if let Some(ref invite_str) = raw_invite {
-                    if let Some(account) = s.get_account(account_id) {
-                        if let Some(ref transport) = account.transport {
-                            if let Some(resp) = build_terminated_response(invite_str, &to_tag) {
-                                let _ = transport.send_to(resp.as_bytes(), remote).await;
-                            }
-                        }
-                    }
+                let transport = s.get_account(account_id).and_then(|a| a.transport.clone());
+                drop(s);
+                let resp = raw_invite.as_deref().and_then(|invite| build_terminated_response(invite, &to_tag));
+                if let (Some(resp), Some(transport)) = (resp, transport) {
+                    let _ = crate::sip::send_invite_final_response(state, &call_internal_id, resp, &transport, remote)
+                        .await;
                 }
 
                 let _ = event_tx.send(SipEvent::CallStateChanged(
@@ -410,9 +368,9 @@ pub async fn handle_incoming_request(
                 }
             }
         }
-        // ACK has no response. The ACK for our 200 OK to an INVITE ends that
-        // 200's retransmission (RFC 3261 §13.3.1.4); any other ACK (for a
-        // 4xx-6xx, or a duplicate) needs nothing.
+        // ACK has no response. The ACK for our final response to an INVITE
+        // ends that response's retransmission (RFC 3261 §13.3.1.4 for a 2xx,
+        // §17.2.1 for a 4xx-6xx); a duplicate needs nothing.
         "ACK" => {
             let call_id = extract_header(text, "Call-ID").unwrap_or_default();
             let cseq = crate::sip::cseq_number(text);
@@ -421,6 +379,10 @@ pub async fn handle_incoming_request(
                 if call.pending_2xx.as_ref().is_some_and(|p| Some(p.cseq) == cseq) {
                     log::info!("ACK received for the 200 OK to call {}", call.id);
                     call.pending_2xx = None;
+                }
+                if call.pending_final.as_ref().is_some_and(|p| Some(p.cseq) == cseq) {
+                    log::info!("ACK received for the final response to call {}", call.id);
+                    call.pending_final = None;
                 }
             }
         }

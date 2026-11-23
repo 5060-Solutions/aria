@@ -1,0 +1,20 @@
+{
+  "bundle": {
+    "windows": {
+      "signCommand": {
+        "cmd": "artifact-signing-cli",
+        "args": [
+          "-e",
+          "https://wcus.codesigning.azure.net/",
+          "-a",
+          "FiftySixty-Solutions",
+          "-c",
+          "Aria-Softphone",
+          "-d",
+          "Aria",
+          "%1"
+        ]
+      }
+    }
+  }
+}

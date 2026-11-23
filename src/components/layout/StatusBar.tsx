@@ -11,6 +11,7 @@ import { placeCall, sipSetActiveAccount } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
 import { log } from "../../utils/log";
 import { ConnectionPanel } from "./ConnectionPanel";
+import { voicemailButton } from "../../utils/preferences";
 import { stateColors, stateLabelsKeys } from "./statusChip";
 
 export function StatusBar() {
@@ -31,14 +32,14 @@ export function StatusBar() {
   const registrationState = activeState?.registrationState ?? "unregistered";
 
   const vm = activeAccountId ? voicemail[activeAccountId] : undefined;
-  const hasVoicemail = !!vm?.hasMessages;
+  const vmButton = voicemailButton(activeAccount, vm);
 
   const handleCallVoicemail = async () => {
     if (!activeAccount) return;
     // Dial the account's voicemail number (from provisioning); fall back to
     // the common *97 feature code when none was configured. A feature code
     // passes through the dialing rules untouched; a plain extension gets them.
-    const number = activeAccount.voicemailNumber?.trim() || "*97";
+    const number = vmButton.number;
     await placeCall({
       uri: dialUri(number, activeAccount, useAppStore.getState().defaultCountry),
       accountId: activeAccount.id,
@@ -162,15 +163,23 @@ export function StatusBar() {
         </Box>
       )}
       <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-        {hasVoicemail && (
+        {vmButton.visible && (
           <Tooltip
-            title={t("status.voicemailWaiting", { count: vm?.newMessages ?? 0 })}
+            title={
+              vmButton.waiting
+                ? t("status.voicemailWaiting", { count: vm?.newMessages ?? 0 })
+                : t("status.callVoicemail")
+            }
             placement="bottom"
           >
             <IconButton
               onClick={handleCallVoicemail}
               size="small"
-              sx={{ WebkitAppRegion: "no-drag", color: "warning.main" }}
+              aria-label={t("status.callVoicemail")}
+              sx={{
+                WebkitAppRegion: "no-drag",
+                color: vmButton.waiting ? "warning.main" : "text.secondary",
+              }}
             >
               <Badge
                 badgeContent={vm?.newMessages || undefined}

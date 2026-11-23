@@ -12,7 +12,10 @@
     "notConnected": "Non connecté",
     "connectionError": "Erreur de connexion",
     "noAccount": "Aucun compte configuré",
-    "clickForDetails": "Cliquez pour les détails de la connexion"
+    "clickForDetails": "Cliquez pour les détails de la connexion",
+    "voicemail": "Messagerie vocale",
+    "voicemailWaiting": "{{count}} nouveau(x) message(s) vocal(aux) – cliquez pour écouter",
+    "callVoicemail": "Appeler la messagerie vocale"
   },
   "connection": {
     "title": "Connexion",
@@ -53,7 +56,11 @@
   "dialer": {
     "searchCountry": "Rechercher un pays...",
     "enterNumber": "Entrer le numéro",
-    "selectAccount": "Sélectionner un compte"
+    "selectAccount": "Sélectionner un compte",
+    "call": "Appeler",
+    "clearAll": "Effacer",
+    "backspace": "Supprimer le dernier chiffre",
+    "backspaceHold": "Supprimer (maintenir pour tout effacer)"
   },
   "call": {
     "calling": "Appel...",
@@ -74,6 +81,7 @@
     "answer": "Répondre",
     "decline": "Refuser",
     "audio": "Audio",
+    "devicesNextCall": "Les changements s’appliquent à partir du prochain appel.",
     "addCall": "Ajouter",
     "transfer": "Transférer",
     "merge": "Fusionner",
@@ -83,7 +91,14 @@
     "notEncrypted": "Non chiffré",
     "encryptedTooltip": "Votre voix est chiffrée (SRTP) entre Aria et le serveur.",
     "notEncryptedRefused": "Aria a proposé le chiffrement, mais le serveur a répondu sans. Votre voix est transmise en clair.",
-    "notEncryptedOff": "Le chiffrement des médias est désactivé pour ce compte. Votre voix est transmise en clair."
+    "notEncryptedOff": "Le chiffrement des médias est désactivé pour ce compte. Votre voix est transmise en clair.",
+    "dial": "Composer",
+    "inConference": "Conférence téléphonique",
+    "participants": "participants",
+    "phoneNumber": "Numéro de téléphone ou URI SIP",
+    "transferHint": "Transférer cet appel vers un autre numéro ou poste.",
+    "keysExposed": "Clé non protégée",
+    "keysExposedTooltip": "Votre voix est chiffrée (SRTP), mais la clé a été envoyée lors de l'établissement de l'appel sans chiffrement (sans TLS). Toute personne qui voit le trafic réseau peut lire la clé et déchiffrer l'appel. Passez ce compte en TLS pour une vraie protection."
   },
   "history": {
     "title": "Récents",
@@ -100,7 +115,8 @@
     "recordingAvailable": "Enregistrement disponible",
     "callBack": "Rappeler",
     "sipTrace": "Trace SIP",
-    "sipTraceDescription": "Télécharger PCAP compatible Wireshark"
+    "sipTraceDescription": "Télécharger PCAP compatible Wireshark",
+    "account": "Compte"
   },
   "contacts": {
     "title": "Contacts",
@@ -188,7 +204,20 @@
     "stripPrefixHelper": "Supprime ce préfixe des numéros composés (ex. supprimer l'indicatif de pays)",
     "prependPrefix": "Préfixe à ajouter",
     "prependPrefixPlaceholder": "ex. 9 ou 0",
-    "prependPrefixHelper": "Ajoute ce préfixe au début des numéros composés (ex. 9 pour une ligne externe)"
+    "prependPrefixHelper": "Ajoute ce préfixe au début des numéros composés (ex. 9 pour une ligne externe)",
+    "accountOptions": "Options du compte",
+    "hidePassword": "Masquer le mot de passe",
+    "showPassword": "Afficher le mot de passe",
+    "moveUp": "Monter",
+    "moveDown": "Descendre",
+    "syncNow": "Synchroniser maintenant",
+    "srtpMode": "Chiffrement des médias",
+    "srtpModeNote": "Chiffre le trafic vocal entre Aria et votre serveur. SDES échange les clés dans le SDP ; le serveur doit le prendre en charge.",
+    "srtp": {
+      "disabled": "Désactivé",
+      "sdes": "SDES"
+    },
+    "srtpNoTlsWarning": "Sans TLS, SDES envoie la clé de chiffrement en clair lors de l'établissement de l'appel : toute personne sur le chemin réseau peut déchiffrer l'audio. Utilisez SDES avec TLS."
   },
   "update": {
     "title": "Mise à jour disponible",
@@ -271,7 +300,14 @@
     "connecting": "Connexion...",
     "tagline": "Votre voix, magnifiquement connectée.",
     "scanQr": "Scanner un code QR",
-    "developerDiagnostics": "Diagnostics développeur"
+    "developerDiagnostics": "Diagnostics développeur",
+    "scanQrTitle": "Scanner un code QR",
+    "openCamera": "Ouvrir la caméra",
+    "pasteLink": "Coller le lien",
+    "pasteFromClipboard": "Coller depuis le presse-papiers",
+    "paste": "Coller",
+    "scanQrDescription": "Scannez un code QR depuis votre espace d'administration, ou collez le lien de configuration.",
+    "pointAtQr": "Pointez la caméra vers le code QR"
   },
   "diagnostics": {
     "title": "Diagnostics",
@@ -324,7 +360,8 @@
     "tx": "TX",
     "rx": "RX",
     "messageView": "Liste des messages",
-    "ladderView": "Diagramme de flux d'appel"
+    "ladderView": "Diagramme de flux d'appel",
+    "reconnecting": "Reconnexion..."
   },
   "common": {
     "cancel": "Annuler",
@@ -334,7 +371,9 @@
     "loading": "Chargement...",
     "never": "Jamais",
     "test": "Tester",
-    "stop": "Arrêter"
+    "stop": "Arrêter",
+    "close": "Fermer",
+    "clear": "Effacer"
   },
   "time": {
     "hours": "h",
@@ -371,7 +410,7 @@
     "intro": "Un serveur MCP local permet à un assistant sur cet ordinateur (Claude Code, par exemple) de lire l'état d'enregistrement, les appels et la trace SIP. Rien ne quitte cet ordinateur et les mots de passe ne sont jamais exposés.",
     "enableRead": "Autoriser les assistants locaux à lire l'état et les traces",
     "enableControl": "Autoriser les assistants à passer et contrôler des appels",
-    "enableControlNote": "Chaque nouvel appel vous demande toujours confirmation.",
+    "enableControlNote": "Votre accord est demandé avant qu'un assistant passe un appel, réponde à un appel, transfère un appel ou envoie des tonalités de clavier pendant un appel (une fois par appel). Raccrocher et mettre en attente se font sans demande.",
     "port": "Port",
     "portNote": "Servi uniquement sur 127.0.0.1.",
     "notRunning": "Le serveur n'a pas pu démarrer : {{error}}",
@@ -387,7 +426,13 @@
     "callRequestExpires": "Cette demande expire dans {{seconds}} s.",
     "allow": "Autoriser",
     "deny": "Refuser",
-    "noAccount": "Aucun compte disponible pour passer cet appel."
+    "noAccount": "Aucun compte disponible pour passer cet appel.",
+    "answerRequestTitle": "Un assistant souhaite répondre à un appel",
+    "answerRequestBody": "Un assistant souhaite répondre à l'appel entrant de {{remote}} sur {{account}}. Votre micro est actif dès que l'appel est décroché.",
+    "transferRequestTitle": "Un assistant souhaite transférer un appel",
+    "transferRequestBody": "Un assistant souhaite transférer votre appel avec {{remote}} vers {{number}}.",
+    "dtmfRequestTitle": "Un assistant souhaite appuyer sur des touches pendant un appel",
+    "dtmfRequestBody": "Un assistant souhaite envoyer des tonalités de clavier pendant votre appel avec {{remote}}, en commençant par {{number}}. Si vous l'autorisez, il pourra envoyer d'autres tonalités pendant cet appel sans redemander."
   },
   "provision": {
     "title": "Ajouter cette ligne téléphonique ?",
@@ -418,5 +463,26 @@
       "tlsOnly": "Les appels passent par TLS, mais l'audio n'est pas chiffré (SRTP désactivé).",
       "none": "Les appels ne sont pas chiffrés."
     }
+  },
+  "presence": {
+    "available": "Disponible",
+    "busy": "Occupé",
+    "onThePhone": "En communication",
+    "ringing": "Sonnerie",
+    "away": "Absent",
+    "doNotDisturb": "Ne pas déranger",
+    "offline": "Hors ligne",
+    "unknown": "Inconnu"
+  },
+  "errors": {
+    "placeCall": "Impossible de passer l'appel : {{error}}",
+    "transferFailed": "Échec du transfert : {{error}}",
+    "hold": "Impossible de mettre l'appel en attente : {{error}}",
+    "resume": "Impossible de reprendre l'appel : {{error}}",
+    "mute": "Impossible de couper le micro : {{error}}",
+    "unmute": "Impossible de réactiver le micro : {{error}}",
+    "record": "Impossible de modifier l'enregistrement : {{error}}",
+    "merge": "Impossible de fusionner les appels : {{error}}",
+    "swap": "Impossible de basculer entre les appels : {{error}}"
   }
 }

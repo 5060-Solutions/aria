@@ -317,7 +317,7 @@ export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScanne
         }}
       >
         <Typography variant="h6" sx={{ fontSize: "1.1rem", fontWeight: 600 }}>
-          {t("wizard.scanQrTitle", "Scan QR Code")}
+          {t("wizard.scanQrTitle")}
         </Typography>
         <IconButton
           onClick={() => {
@@ -354,10 +354,7 @@ export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScanne
               variant="body2"
               sx={{ color: "text.secondary", textAlign: "center", mb: 1 }}
             >
-              {t(
-                "wizard.scanQrDescription",
-                "Scan a QR code from your admin panel, or paste the provisioning link."
-              )}
+              {t("wizard.scanQrDescription")}
             </Typography>
 
             <Button
@@ -366,7 +363,7 @@ export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScanne
               onClick={startCamera}
               sx={{ borderRadius: "20px", px: 4, py: 1.2, width: "100%" }}
             >
-              {t("wizard.openCamera", "Open Camera")}
+              {t("wizard.openCamera")}
             </Button>
 
             <Button
@@ -375,7 +372,7 @@ export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScanne
               onClick={() => setMode("paste")}
               sx={{ borderRadius: "20px", px: 4, py: 1.2, width: "100%" }}
             >
-              {t("wizard.pasteLink", "Paste Link")}
+              {t("wizard.pasteLink")}
             </Button>
 
             <Button
@@ -387,7 +384,7 @@ export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScanne
                 fontSize: "0.8rem",
               }}
             >
-              {t("wizard.pasteFromClipboard", "Paste from clipboard")}
+              {t("wizard.pasteFromClipboard")}
             </Button>
           </>
         )}
@@ -430,10 +427,7 @@ export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScanne
               variant="body2"
               sx={{ color: "text.secondary", textAlign: "center" }}
             >
-              {t(
-                "wizard.pointAtQr",
-                "Point your camera at the QR code"
-              )}
+              {t("wizard.pointAtQr")}
             </Typography>
 
             <Button
@@ -484,7 +478,7 @@ export function QrScanner({ onProvisioned, onProvisionLink, onCancel }: QrScanne
                 startIcon={<ContentPasteIcon />}
                 sx={{ borderRadius: "20px", flex: 1 }}
               >
-                {t("wizard.paste", "Paste")}
+                {t("wizard.paste")}
               </Button>
               <Button
                 variant="contained"

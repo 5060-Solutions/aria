@@ -15,6 +15,9 @@ import { shouldPlayRingback } from "../utils/ringback";
 import { log } from "../utils/log";
 import type { ConnectionReport } from "../types/connection";
 import { isAuthFailure } from "../utils/authFailure";
+import i18n from "i18next";
+import { errorText, notifyError } from "../stores/toastStore";
+import { blfDiff, blfExtensions, isNotRegistered } from "../utils/blf";
 
 interface ConnectionPayload {
   accountId: string;
@@ -50,6 +53,8 @@ interface CallPayload {
   recordingPath?: string;
   /** Set on "connected": whether the media is encrypted, as negotiated. */
   srtpActive?: boolean;
+  /** Set with srtpActive: whether the signalling (and so the SDES key) went over TLS. */
+  signalingTls?: boolean;
   /** Set on 180/183 when early media stream is present. */
   hasEarlyMedia?: boolean;
 }
@@ -319,13 +324,37 @@ export function useSipEvents() {
         log.info("[useSipEvents] Registration event received:", { accountId, state, error });
         useAppStore.getState().setAccountRegistrationState(accountId, state, error ?? undefined);
 
-        // Auto-subscribe to presence for internal contacts after registration success
+        // Auto-subscribe to presence for internal contacts after registration
+        // success. The account stays marked only once the backend took the
+        // request: it subscribes from the *active* account, which may not be
+        // registered yet when another account's event arrives, and marking
+        // it unconditionally meant that "Not registered" was never retried.
         if (state === "registered" && !subscribedAccounts.current.has(accountId)) {
           subscribedAccounts.current.add(accountId);
-          autoSubscribePresence(useAppStore.getState().contacts);
+          void autoSubscribePresence(useAppStore.getState().contacts).then((ok) => {
+            if (!ok) subscribedAccounts.current.delete(accountId);
+          });
         }
       },
     );
+
+    // Keep presence subscriptions in step with the contact list: a contact
+    // added while registered used to get no dot until a restart, and a
+    // deleted one stayed subscribed.
+    const unsubscribeContacts = useAppStore.subscribe((s, prev) => {
+      if (s.contacts === prev.contacts) return;
+      const { add, remove } = blfDiff(prev.contacts, s.contacts);
+      if (add.length > 0) {
+        sipSubscribeBlf(add).catch((e) => {
+          // Not registered: the registration event subscribes every contact.
+          if (!isNotRegistered(e)) log.error("[presence] Subscribe failed:", e);
+        });
+      }
+      for (const ext of remove) {
+        sipUnsubscribeBlf(ext).catch((e) => log.warn("[presence] Unsubscribe failed:", ext, e));
+        useAppStore.getState().clearPresenceFor(ext);
+      }
+    });
 
     // Listen for presence/BLF updates
     const unlistenPresence = listen<PresencePayload>(
@@ -424,6 +453,7 @@ export function useSipEvents() {
             recording: false,
             sipCallId: p.sipCallId,
             srtpActive: p.srtpActive,
+            signalingTls: p.signalingTls,
             hasEarlyMedia: p.hasEarlyMedia ?? false,
           });
           store.setCurrentView("dialer");
@@ -436,6 +466,7 @@ export function useSipEvents() {
           p.state === "connected" && !call.connectTime ? Date.now() : call.connectTime,
         sipCallId: p.sipCallId ?? call.sipCallId,
         srtpActive: p.srtpActive ?? call.srtpActive,
+        signalingTls: p.signalingTls ?? call.signalingTls,
         hasEarlyMedia: p.hasEarlyMedia ?? call.hasEarlyMedia,
       });
     });
@@ -449,6 +480,11 @@ export function useSipEvents() {
       const { callId, status, message } = event.payload;
       log.info("[useSipEvents] Transfer progress:", { callId, status, message });
       useAppStore.getState().setTransferStatus({ callId, status, message });
+      // The dialog closed on the 202; a refusal after that (the target
+      // rejected, busy, unknown) leaves the call up and used to say nothing.
+      if (status >= 400) {
+        notifyError(i18n.t("errors.transferFailed", { error: `${status} ${message}`.trim() }));
+      }
     });
 
     // Auto-record is started by the backend, so the UI only learns a call is
@@ -460,6 +496,7 @@ export function useSipEvents() {
     });
 
     return () => {
+      unsubscribeContacts();
       unlistenReg.then((fn_) => fn_());
       unlistenConnection.then((fn_) => fn_());
       unlistenCall.then((fn_) => fn_());
@@ -527,6 +564,9 @@ export async function placeCall(
   } catch (e) {
     log.error("[placeCall] Failed to place call:", e);
     useAppStore.getState().removeCall(id);
+    // Every caller (dialer, history, contacts, voicemail) used to swallow
+    // this, so the card flashed and vanished with no word why.
+    notifyError(i18n.t("errors.placeCall", { error: errorText(e) }));
     throw e;
   }
   return id;
@@ -728,29 +768,30 @@ export async function sipSubscribeBlf(extensions: string[]): Promise<string[]> {
   return invoke<string[]>("sip_subscribe_blf", { extensions });
 }
 
-/** Auto-subscribe to presence for all contacts that look like internal extensions */
-async function autoSubscribePresence(contacts: Array<{ uri: string }>) {
-  // Extract extensions from contacts
-  const extensions = contacts
-    .map((c) => {
-      const withoutScheme = c.uri.replace(/^sips?:/, "");
-      return withoutScheme.split("@")[0];
-    })
-    .filter((ext) => ext && /^\d{2,6}$/.test(ext)); // Only short numeric extensions (internal)
+/** Drop the presence subscription for one extension. */
+export async function sipUnsubscribeBlf(extension: string): Promise<void> {
+  return invoke("sip_unsubscribe_blf", { extension });
+}
 
-  if (extensions.length === 0) {
+/**
+ * Subscribe to presence for every contact that looks like an internal
+ * extension. False when the backend was not registered yet, so the caller can
+ * try again on the next registration.
+ */
+async function autoSubscribePresence(contacts: Array<{ uri: string }>): Promise<boolean> {
+  const unique = blfExtensions(contacts);
+  if (unique.length === 0) {
     log.info("[autoSubscribePresence] No internal extensions to subscribe to");
-    return;
+    return true;
   }
-
-  // Deduplicate
-  const unique = [...new Set(extensions)];
   log.info("[autoSubscribePresence] Subscribing to presence for extensions:", unique);
 
   try {
     await sipSubscribeBlf(unique);
+    return true;
   } catch (e) {
     log.error("[autoSubscribePresence] Failed:", e);
+    return !isNotRegistered(e);
   }
 }
 
@@ -771,6 +812,8 @@ function mapPresenceState(state: string): PresenceState {
       return "doNotDisturb";
     case "unknown":
       return "unknown";
+    case "offline":
+      return "offline";
     default:
       return "offline";
   }
