@@ -15,6 +15,16 @@ export function usePresence(extensionOrUri: string): PresenceState {
 }
 
 /**
+ * The presence the server has reported for an extension or SIP URI, or
+ * undefined when it has reported nothing (not subscribed, or no NOTIFY yet).
+ * Unlike usePresence, this tells "offline" apart from "no data".
+ */
+export function usePresenceReported(extensionOrUri: string): PresenceState | undefined {
+  const extension = extractExtension(extensionOrUri);
+  return useAppStore((s) => s.presenceMap[extension]);
+}
+
+/**
  * Get the full presence map (all extensions).
  */
 export function usePresenceMap(): Record<string, PresenceState> {

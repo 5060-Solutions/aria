@@ -28,6 +28,7 @@ import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
 import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
+import { errorText, notifyError } from "../../stores/toastStore";
 
 interface AudioDevice {
   name: string;
@@ -230,21 +231,30 @@ export function CallControls() {
     await hangupCall(activeCall);
   };
 
+  // Mute and hold flip the UI at once and put it back if the backend could
+  // not do it. Failures used to be ignored, so the screen could say "Held"
+  // while the far end still heard everything.
   const handleMute = async () => {
+    const { id, muted } = activeCall;
     toggleMute();
     try {
-      await sipMute(activeCall.id, !activeCall.muted);
-    } catch {
-      // ignore
+      await sipMute(id, !muted);
+    } catch (e) {
+      log.error("Mute toggle failed:", e);
+      updateCall(id, { muted });
+      notifyError(t(muted ? "errors.unmute" : "errors.mute", { error: errorText(e) }));
     }
   };
 
   const handleHold = async () => {
+    const { id, held, state } = activeCall;
     toggleHold();
     try {
-      await sipHold(activeCall.id, !activeCall.held);
-    } catch {
-      // ignore
+      await sipHold(id, !held);
+    } catch (e) {
+      log.error("Hold toggle failed:", e);
+      updateCall(id, { held, state });
+      notifyError(t(held ? "errors.resume" : "errors.hold", { error: errorText(e) }));
     }
   };
 
@@ -259,6 +269,7 @@ export function CallControls() {
       }
     } catch (e) {
       log.error("Recording toggle failed:", e);
+      notifyError(t("errors.record", { error: errorText(e) }));
     }
   };
 
@@ -266,7 +277,10 @@ export function CallControls() {
     if (!newCallUri.trim()) return;
 
     try {
-      await sipHold(activeCall.id, true);
+      await sipHold(activeCall.id, true).catch((e) => {
+        notifyError(t("errors.hold", { error: errorText(e) }));
+        throw e;
+      });
       updateCall(activeCall.id, { held: true, state: "held" });
       const account = accounts.find((a) => a.id === activeCall.accountId);
       await placeCall(
@@ -292,12 +306,14 @@ export function CallControls() {
         activeCall.id,
         dialUri(transferUri, account, useAppStore.getState().defaultCountry),
       );
-      // The backend ends the call when the transfer is accepted; closing the
-      // dialog is enough here.
+      // The 202 only means the far end will try. The backend ends the call
+      // when the transfer's NOTIFY reports success (sipfrag 200); a refusal
+      // arrives later as a transfer-progress event, which useSipEvents shows.
       setTransferDialogOpen(false);
       setTransferUri("");
     } catch (e) {
       log.error("Transfer failed:", e);
+      notifyError(t("errors.transferFailed", { error: errorText(e) }));
     } finally {
       setTransferring(false);
     }
@@ -313,6 +329,7 @@ export function CallControls() {
       log.info("Conference created:", conferenceId);
     } catch (e) {
       log.error("Merge failed:", e);
+      notifyError(t("errors.merge", { error: errorText(e) }));
     }
   };
 
@@ -327,6 +344,7 @@ export function CallControls() {
       setPrimaryCall(otherCall.id);
     } catch (e) {
       log.error("Swap failed:", e);
+      notifyError(t("errors.swap", { error: errorText(e) }));
     }
   };
 
@@ -450,7 +468,7 @@ export function CallControls() {
         {isInConference && (
           <Box sx={{ textAlign: "center" }}>
             <Typography variant="caption" color="primary">
-              {t("call.inConference", "Conference Call")} ({conferences.find(c => c.id === activeCall.conferenceId)?.callIds.length ?? 0} {t("call.participants", "participants")})
+              {t("call.inConference")} ({conferences.find(c => c.id === activeCall.conferenceId)?.callIds.length ?? 0} {t("call.participants")})
             </Typography>
           </Box>
         )}
@@ -683,7 +701,7 @@ export function CallControls() {
           <TextField
             autoFocus
             margin="dense"
-            label={t("call.phoneNumber", "Phone Number or SIP URI")}
+            label={t("call.phoneNumber")}
             fullWidth
             variant="outlined"
             value={newCallUri}
@@ -699,7 +717,7 @@ export function CallControls() {
               {t("common.cancel", "Cancel")}
             </Button>
             <Button variant="contained" onClick={handleAddCall} disabled={!newCallUri.trim()}>
-              {t("call.dial", "Dial")}
+              {t("call.dial")}
             </Button>
           </Box>
         </DialogContent>
@@ -715,12 +733,12 @@ export function CallControls() {
         <DialogTitle>{t("call.transfer", "Transfer")}</DialogTitle>
         <DialogContent>
           <Typography variant="caption" sx={{ color: "text.secondary", display: "block", mb: 1 }}>
-            {t("call.transferHint", "Send this call to another number or extension.")}
+            {t("call.transferHint")}
           </Typography>
           <TextField
             autoFocus
             margin="dense"
-            label={t("call.phoneNumber", "Phone Number or SIP URI")}
+            label={t("call.phoneNumber")}
             fullWidth
             variant="outlined"
             value={transferUri}

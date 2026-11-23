@@ -190,6 +190,12 @@ export interface ActiveCall {
    * without a crypto line.
    */
   srtpActive?: boolean;
+  /**
+   * Whether the call's signalling ran over TLS, reported with srtpActive.
+   * SDES sends the SRTP key in the signalling, so without TLS the media is
+   * encrypted but its key is readable on the path.
+   */
+  signalingTls?: boolean;
   /** SIP Call-ID header (for linking to PCAP/diagnostic traces) */
   sipCallId?: string;
   /**

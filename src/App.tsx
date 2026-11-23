@@ -15,6 +15,7 @@ import { deepLinkTarget } from "./utils/deepLink";
 import { allowLocalSetupLinks, isProvisionLink, parseProvisionLink } from "./utils/provisionLink";
 import { ProvisionLinkDialog } from "./components/provision/ProvisionLinkDialog";
 import { AboutDialog } from "./components/about/AboutDialog";
+import { AppToast } from "./components/layout/AppToast";
 import { useAppMenu } from "./hooks/useAppMenu";
 import { provisionFlow } from "./components/provision/provisionApi";
 import "./i18n";
@@ -129,6 +130,7 @@ function MainApp() {
       <ProvisionLinkDialog />
       {/* Likewise: the app menu's About works before setup is done. */}
       <AboutDialog />
+      <AppToast />
     </>
   );
 }

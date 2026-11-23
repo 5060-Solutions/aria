@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 pub enum EventType {
     Dialog,
     Presence,
+    /// RFC 3842 message-waiting for the account's own mailbox.
+    MessageSummary,
 }
 
 impl EventType {
@@ -13,6 +15,7 @@ impl EventType {
         match self {
             EventType::Dialog => "dialog",
             EventType::Presence => "presence",
+            EventType::MessageSummary => "message-summary",
         }
     }
 
@@ -20,6 +23,7 @@ impl EventType {
         match self {
             EventType::Dialog => "application/dialog-info+xml",
             EventType::Presence => "application/pidf+xml",
+            EventType::MessageSummary => "application/simple-message-summary",
         }
     }
 }
@@ -96,6 +100,8 @@ pub enum PresenceState {
     OnThePhone,
     Ringing,
     DoNotDisturb,
+    /// PIDF `basic=closed`: nothing is registered for the extension.
+    Offline,
 }
 
 /// A single BLF entry, serializable for the frontend
@@ -172,7 +178,9 @@ pub fn parse_pidf_xml(body: &str) -> PresenceState {
                 _ => PresenceState::Available,
             }
         }
-        Some("closed") => PresenceState::Away,
+        // The Aria PBX sends closed (note "Offline") when the extension has
+        // no registered device; that is not "Away", which is a user choice.
+        Some("closed") => PresenceState::Offline,
         _ => PresenceState::Unknown,
     }
 }
@@ -259,7 +267,19 @@ mod tests {
     fn test_parse_pidf_closed() {
         let xml =
             r#"<presence><tuple id="1"><status><basic>closed</basic></status></tuple></presence>"#;
-        assert_eq!(parse_pidf_xml(xml), PresenceState::Away);
+        assert_eq!(parse_pidf_xml(xml), PresenceState::Offline);
+    }
+
+    /// What the Aria PBX sends for an extension with nothing registered.
+    #[test]
+    fn test_parse_pidf_aria_offline() {
+        let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<presence xmlns=\"urn:ietf:params:xml:ns:pidf\" entity=\"sip:1002@t\">\r\n<tuple id=\"t1\">\r\n<status><basic>closed</basic></status>\r\n<note>Offline</note>\r\n</tuple>\r\n</presence>";
+        assert_eq!(parse_pidf_xml(xml), PresenceState::Offline);
+    }
+
+    #[test]
+    fn test_offline_serializes_for_the_frontend() {
+        assert_eq!(serde_json::to_string(&PresenceState::Offline).unwrap(), "\"offline\"");
     }
 
     #[test]

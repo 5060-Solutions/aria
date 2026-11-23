@@ -75,6 +75,9 @@ pub struct AccountState {
     /// Subscription targets to re-subscribe after reconnect.
     /// Saved when transport dies, consumed when registration succeeds.
     pub pending_resubscriptions: Vec<(String, EventType)>,
+    /// The server refused a message-summary SUBSCRIBE for this account; do
+    /// not ask again on every registration refresh.
+    pub mwi_refused: bool,
     /// Which transport/registration cycle the account's background tasks
     /// belong to. Bumped whenever a new transport is created or the account
     /// is unregistered; a task whose generation no longer matches exits.
@@ -159,6 +162,7 @@ impl AccountState {
             realm_fallback: None,
             realm_fallback_exhausted: false,
             pending_resubscriptions: Vec::new(),
+            mwi_refused: false,
             timer_generation: 0,
             requested_expires: DEFAULT_REGISTER_EXPIRES,
             granted_expires: DEFAULT_REGISTER_EXPIRES,
