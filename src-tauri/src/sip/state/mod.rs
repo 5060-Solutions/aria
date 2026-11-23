@@ -106,6 +106,10 @@ pub struct AccountState {
     pub configured_transport: TransportType,
     /// When the last response to an OPTIONS keepalive arrived.
     pub options_last_response: Option<Instant>,
+    /// When anything last arrived from the account's server: a response, a
+    /// NOTIFY, an incoming call. The keepalive counts all of it as a sign the
+    /// server is there.
+    pub last_heard: Option<Instant>,
     /// The registrar's `Flow-Timer` (RFC 5626 §11), in seconds.
     pub flow_timer: Option<u32>,
 }
@@ -144,6 +148,7 @@ impl AccountState {
             failover: Failover::default(),
             target: None,
             options_last_response: None,
+            last_heard: None,
             flow_timer: None,
             config,
             registration: RegistrationFSM::new(),

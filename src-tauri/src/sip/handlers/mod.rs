@@ -30,6 +30,9 @@ pub async fn handle_response(
         Some(c) => c,
         None => return,
     };
+    // Stop the request's retransmissions before anything else: its handler
+    // may take a while, and a retransmission sent meanwhile is wasted.
+    state.read().await.transactions.on_response(text, status);
     let cseq_header = extract_header(text, "CSeq").unwrap_or_default();
     let method = cseq_header
         .split_whitespace()
