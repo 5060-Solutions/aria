@@ -34,6 +34,25 @@ pub(crate) fn app_data_root() -> Option<std::path::PathBuf> {
     dirs::data_dir().map(|d| d.join(BUNDLE_IDENTIFIER))
 }
 
+/// Bring the window back for a ringing call: a minimized or hidden Aria used
+/// to ring with nothing on screen to answer it. It asks for attention (Dock
+/// bounce, taskbar flash) rather than taking keyboard focus from whatever the
+/// user is typing into.
+fn surface_for_incoming_call(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
+    }
+    if !window.is_visible().unwrap_or(true) {
+        let _ = window.show();
+    }
+    if !window.is_focused().unwrap_or(false) {
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -105,6 +124,7 @@ pub fn run() {
             
             // Spawn the event forwarding task with the receiver we took earlier
             let mut rx = event_rx;
+            let call_manager = app.state::<sip::SipManager>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 // scripts/smoke-launch.sh waits for this exact line to decide
                 // the app came up: it is logged unconditionally at info once
@@ -130,7 +150,18 @@ pub fn run() {
                                 let _ = app_handle.emit("sip-connection", payload);
                             }
                             sip::SipEvent::CallStateChanged(call_event) => {
-                                let _ = app_handle.emit("sip-call", call_event);
+                                if call_event.state == "incoming" {
+                                    surface_for_incoming_call(&app_handle);
+                                }
+                                // The padlock needs the signalling transport as
+                                // well as SRTP: an SDES key sent over UDP/TCP is
+                                // readable by anyone on the path.
+                                let mut payload = serde_json::to_value(&call_event).unwrap_or_default();
+                                if call_event.srtp_active.is_some() {
+                                    let tls = call_manager.signaling_is_tls(&call_event.account_id).await;
+                                    payload["signalingTls"] = serde_json::Value::Bool(tls);
+                                }
+                                let _ = app_handle.emit("sip-call", payload);
                             }
                             sip::SipEvent::DiagnosticMessage(log_entry) => {
                                 let _ = app_handle.emit("sip-diagnostic", log_entry);

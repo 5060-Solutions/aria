@@ -1129,7 +1129,7 @@ pub async fn store_credential(account_id: String, password: String) -> Result<()
 }
 
 pub(crate) fn store_credential_blocking(account_id: &str, password: &str) -> Result<(), String> {
-    log::info!("store_credential: account_id={}, password_len={}", account_id, password.len());
+    log::info!("store_credential: account_id={}, has_password={}", account_id, !password.is_empty());
     
     #[cfg(feature = "dev-insecure")]
     {
@@ -1186,7 +1186,7 @@ fn get_credential_blocking(account_id: &str) -> Result<Option<String>, String> {
             .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
         match entry.get_password() {
             Ok(password) => {
-                log::info!("get_credential: found password for account_id={}, len={}", account_id, password.len());
+                log::info!("get_credential: found password for account_id={}", account_id);
                 Ok(Some(password))
             }
             Err(keyring::Error::NoEntry) => {

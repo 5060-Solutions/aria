@@ -12,6 +12,7 @@ mod instance;
 pub mod media;
 pub mod mwi;
 pub mod presence;
+mod signaling;
 #[allow(dead_code)]
 pub mod srtp;
 pub mod srv;
