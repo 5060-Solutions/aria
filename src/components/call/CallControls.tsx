@@ -14,7 +14,6 @@ import HeadsetMicIcon from "@mui/icons-material/HeadsetMic";
 import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import StopIcon from "@mui/icons-material/Stop";
 import AddIcCallIcon from "@mui/icons-material/AddIcCall";
-import CallMergeIcon from "@mui/icons-material/CallMerge";
 import SwapCallsIcon from "@mui/icons-material/SwapCalls";
 import CheckIcon from "@mui/icons-material/Check";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
@@ -23,12 +22,13 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 import CallIcon from "@mui/icons-material/Call";
-import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceMerge, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
+import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
 import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
 import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
 import { errorText, notifyError } from "../../stores/toastStore";
+import { pushAudioDevices } from "../../utils/audioDevices";
 
 interface AudioDevice {
   name: string;
@@ -111,7 +111,6 @@ export function CallControls() {
   const setCallRecording = useAppStore((s) => s.setCallRecording);
   const updateCall = useAppStore((s) => s.updateCall);
   const setPrimaryCall = useAppStore((s) => s.setPrimaryCall);
-  const createConference = useAppStore((s) => s.createConference);
   const endConference = useAppStore((s) => s.endConference);
   const accounts = useAppStore((s) => s.accounts);
 
@@ -214,7 +213,8 @@ export function CallControls() {
   const hasMultipleCalls = connectedCalls.length > 1;
   const isInConference = activeCall.conferenceId !== undefined;
   const canAddCall = activeCall.state === "connected" && !isInConference;
-  const canMerge = hasMultipleCalls && !isInConference;
+  // No Merge: the engine has no mixer, so "merged" calls could hear Aria's
+  // user but not each other. It comes back with mixing (or a PBX bridge).
 
   // Stopping the recording and filing history both happen when the backend
   // reports the call ended, so hangup is the same whichever side ends it.
@@ -319,20 +319,6 @@ export function CallControls() {
     }
   };
 
-  const handleMerge = async () => {
-    const callIds = connectedCalls.map((c) => c.id);
-    if (callIds.length < 2) return;
-
-    try {
-      const conferenceId = await sipConferenceMerge(callIds);
-      createConference(callIds);
-      log.info("Conference created:", conferenceId);
-    } catch (e) {
-      log.error("Merge failed:", e);
-      notifyError(t("errors.merge", { error: errorText(e) }));
-    }
-  };
-
   const handleSwap = async () => {
     const otherCall = heldCalls.find((c) => c.id !== activeCall.id);
     if (!otherCall) return;
@@ -354,11 +340,13 @@ export function CallControls() {
     } else {
       setSelectedOutputDevice(name);
     }
-    // Push to backend
-    invoke("set_audio_devices", {
-      inputDevice: type === "input" ? name : selectedInputDevice,
-      outputDevice: type === "output" ? name : selectedOutputDevice,
-    }).catch(() => {});
+    // Push to backend. The call in progress keeps its devices (the engine
+    // cannot move a running stream); the menu says so.
+    pushAudioDevices(
+      invoke,
+      type === "input" ? name : selectedInputDevice,
+      type === "output" ? name : selectedOutputDevice,
+    ).catch(() => {});
   };
 
   const hasNonDefaultDevice = audioDevices && (
@@ -416,14 +404,6 @@ export function CallControls() {
         onClick: () => setTransferDialogOpen(true),
       },
     );
-  }
-  if (canMerge) {
-    controls.push({
-      key: "merge",
-      icon: <CallMergeIcon />,
-      label: t("call.merge"),
-      onClick: handleMerge,
-    });
   }
   if (hasMultipleCalls && heldCalls.length > 0) {
     controls.push({
@@ -566,6 +546,12 @@ export function CallControls() {
       >
         {audioDevices && (
           <Box sx={{ py: 1 }}>
+            <Typography
+              variant="caption"
+              sx={{ px: 2, pb: 0.5, display: "block", color: "text.secondary" }}
+            >
+              {t("call.devicesNextCall")}
+            </Typography>
             {/* Microphone section */}
             <Typography
               variant="overline"

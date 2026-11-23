@@ -267,7 +267,13 @@ pub fn build_invite_with_public_ip(
             None
         }
     };
-    let sdp = build_sdp_offer_with_codecs(sdp_ip, rtp_port, crypto_key.as_deref(), &account.codecs);
+    let sdp = build_sdp_offer_with_origin(
+        sdp_ip,
+        rtp_port,
+        crypto_key.as_deref(),
+        &account.codecs,
+        sdp_session_id(call_id),
+    );
 
     let request_uri = parse_uri(target_uri);
 
@@ -479,7 +485,8 @@ pub fn build_200_ok_invite_with_public_ip(
 /// is given and the offer was RTP/SAVP.
 ///
 /// The offer-less case still produces an offer. The plain-RTP case is this
-/// with `crypto_b64_key = None`.
+/// with `crypto_b64_key = None`. `None` when a header is missing or the offer
+/// has no codec this softphone carries (the caller answers 488 then).
 #[allow(clippy::too_many_arguments)]
 pub fn build_200_ok_invite_srtp(
     request_raw: &str,
@@ -489,6 +496,35 @@ pub fn build_200_ok_invite_srtp(
     username: Option<&str>,
     public_ip: Option<&str>,
     crypto_b64_key: Option<&str>,
+) -> Option<String> {
+    // Use public IP for SDP if available (for NAT traversal), otherwise use local IP
+    let ip = sdp_ip(local_addr, public_ip);
+
+    // If the request has SDP, generate an answer; otherwise generate an offer
+    let remote_sdp = request_body(request_raw);
+    let sdp = if remote_sdp.contains("m=audio") {
+        build_sdp_answer_with(
+            remote_sdp,
+            &AnswerOptions { ip, rtp_port, crypto_b64_key, codecs: None, origin: None },
+        )?
+    } else {
+        build_sdp_offer(ip, rtp_port)
+    };
+    build_200_ok_invite_with_sdp(request_raw, local_addr, to_tag, username, &sdp)
+}
+
+/// The body of a SIP message: everything after the blank line.
+pub fn request_body(raw: &str) -> &str {
+    raw.split("\r\n\r\n").nth(1).unwrap_or("")
+}
+
+/// Build a 200 OK for an incoming INVITE carrying `sdp` as it is.
+pub fn build_200_ok_invite_with_sdp(
+    request_raw: &str,
+    local_addr: SocketAddr,
+    to_tag: &str,
+    username: Option<&str>,
+    sdp: &str,
 ) -> Option<String> {
     let via = extract_header(request_raw, "Via")?;
     let from = extract_header(request_raw, "From")?;
@@ -504,17 +540,6 @@ pub fn build_200_ok_invite_srtp(
         format!("{};tag={}", to_base, to_tag)
     };
 
-    // Use public IP for SDP if available (for NAT traversal), otherwise use local IP
-    let sdp_ip = sdp_ip(local_addr, public_ip);
-
-    // If the request has SDP, generate an answer; otherwise generate an offer
-    let remote_sdp = request_raw.split("\r\n\r\n").nth(1).unwrap_or("");
-    let sdp = if remote_sdp.contains("m=audio") {
-        build_sdp_answer_srtp(remote_sdp, sdp_ip, rtp_port, crypto_b64_key)
-    } else {
-        build_sdp_offer(sdp_ip, rtp_port)
-    };
-
     let mut headers = rsip::Headers::default();
     headers.push(rsip::headers::Via::new(via).into());
     headers.push(rsip::headers::From::new(from).into());
@@ -526,7 +551,7 @@ pub fn build_200_ok_invite_srtp(
     headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
     headers.push(rsip::headers::ContentLength::new(sdp.len().to_string()).into());
 
-    Some(response_to_string(200.into(), headers, sdp.into_bytes()))
+    Some(response_to_string(200.into(), headers, sdp.as_bytes().to_vec()))
 }
 
 // ---------------------------------------------------------------------------
@@ -625,10 +650,232 @@ fn telephone_event_rtpmap(pt: u8, rate: u32) -> String {
     format!("a=rtpmap:{pt} telephone-event/{rate}\r\na=fmtp:{pt} 0-16\r\n")
 }
 
-/// Build an SDP answer that only includes codecs from the offer that we support
+/// Build an SDP answer that only includes codecs from the offer that we
+/// support; `None` when there are none.
 #[allow(dead_code)]
-pub fn build_sdp_answer(remote_sdp: &str, ip: String, rtp_port: u16) -> String {
-    build_sdp_answer_srtp(remote_sdp, ip, rtp_port, None)
+pub fn build_sdp_answer(remote_sdp: &str, ip: String, rtp_port: u16) -> Option<String> {
+    build_sdp_answer_with(
+        remote_sdp,
+        &AnswerOptions { ip, rtp_port, crypto_b64_key: None, codecs: None, origin: None },
+    )
+}
+
+/// The audio codec a call runs on and the payload type it is carried on.
+///
+/// Produced only by [`negotiate_audio`], from the same filtered list the SDP
+/// answer is built from, so the session can never run a codec the answer did
+/// not name. G.722 first in a Yealink offer used to start the session on
+/// G.722 while the answer said PCMU: no audio either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NegotiatedAudio {
+    pub codec: rtp_engine::CodecType,
+    pub pt: u8,
+}
+
+/// The `o=` line's session id and version (RFC 4566 §5.2). The id stays the
+/// same for the whole dialog and the version goes up with each change
+/// (RFC 3264 §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdpOrigin {
+    pub id: u64,
+    pub version: u64,
+}
+
+/// A stable session id for the SDP of the dialog with this Call-ID: FNV-1a,
+/// kept below 2^31 so no parser chokes on it.
+pub fn sdp_session_id(call_id: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in call_id.bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    (hash & 0x7fff_ffff).max(1)
+}
+
+/// Replace the session id and version of `sdp`'s `o=` line, keeping the rest.
+pub fn with_sdp_origin(sdp: &str, origin: SdpOrigin) -> String {
+    sdp.split_inclusive('\n')
+        .map(|line| match line.strip_prefix("o=") {
+            Some(rest) => {
+                let fields: Vec<&str> = rest.trim_end().split(' ').collect();
+                if fields.len() < 6 {
+                    return line.to_string();
+                }
+                let ending = &line[line.trim_end().len()..];
+                format!(
+                    "o={} {} {} {}{}",
+                    fields[0],
+                    origin.id,
+                    origin.version,
+                    fields[3..].join(" "),
+                    ending
+                )
+            }
+            None => line.to_string(),
+        })
+        .collect()
+}
+
+/// `sdp` without its `o=` line, for telling whether two SDPs say the same.
+pub fn sdp_without_origin(sdp: &str) -> String {
+    sdp.split_inclusive('\n').filter(|l| !l.starts_with("o=")).collect()
+}
+
+/// A media direction attribute (RFC 3264 §5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    SendRecv,
+    SendOnly,
+    RecvOnly,
+    Inactive,
+}
+
+impl Direction {
+    /// The attribute name, as it goes after `a=`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SendRecv => "sendrecv",
+            Self::SendOnly => "sendonly",
+            Self::RecvOnly => "recvonly",
+            Self::Inactive => "inactive",
+        }
+    }
+
+    /// The answer's direction for an offer in this one (RFC 3264 §6.1).
+    pub fn mirror(self) -> Self {
+        match self {
+            Self::SendOnly => Self::RecvOnly,
+            Self::RecvOnly => Self::SendOnly,
+            other => other,
+        }
+    }
+
+    /// Whether the side using this direction may send media.
+    pub fn sends(self) -> bool {
+        matches!(self, Self::SendRecv | Self::SendOnly)
+    }
+}
+
+/// The direction the offer's audio stream asks for, seen from the offerer.
+///
+/// A media-level attribute wins over a session-level one. An offer with no
+/// attribute and a `c=0.0.0.0` connection is the RFC 2543 way to put a call on
+/// hold, which is read as `sendonly`.
+pub fn offer_direction(sdp: &str) -> Direction {
+    let parse = |line: &str| match line {
+        "a=sendrecv" => Some(Direction::SendRecv),
+        "a=sendonly" => Some(Direction::SendOnly),
+        "a=recvonly" => Some(Direction::RecvOnly),
+        "a=inactive" => Some(Direction::Inactive),
+        _ => None,
+    };
+    let mut session_level = None;
+    let mut media_level = None;
+    // 0: session level, 1: the first audio stream, 2: anything after it.
+    let mut section = 0;
+    for line in sdp.lines().map(str::trim) {
+        if line.starts_with("m=") {
+            section = if section == 0 && line.starts_with("m=audio ") { 1 } else { 2 };
+            continue;
+        }
+        match section {
+            0 => session_level = parse(line).or(session_level),
+            1 => media_level = parse(line).or(media_level),
+            _ => {}
+        }
+    }
+    if let Some(dir) = media_level.or(session_level) {
+        return dir;
+    }
+    let held_address = parse_sdp_connection(sdp).is_some_and(|(ip, _)| ip == "0.0.0.0");
+    if held_address { Direction::SendOnly } else { Direction::SendRecv }
+}
+
+/// What goes into an SDP answer besides the offer.
+pub struct AnswerOptions<'a> {
+    /// The connection address.
+    pub ip: String,
+    pub rtp_port: u16,
+    /// Our SDES key, when the call is answered in SRTP.
+    pub crypto_b64_key: Option<&'a str>,
+    /// The account's codec preferences; `None` keeps the offer's order.
+    pub codecs: Option<&'a [super::account::CodecPreference]>,
+    /// The `o=` id and version; `None` for a random one.
+    pub origin: Option<SdpOrigin>,
+}
+
+/// The payload types of the first audio stream in `sdp`, in order.
+fn audio_payload_types(sdp: &str) -> Vec<u8> {
+    sdp.lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("m=audio "))
+        .map(|line| line.split_whitespace().skip(3).filter_map(|pt| pt.parse().ok()).collect())
+        .unwrap_or_default()
+}
+
+/// The codecs this side will carry, best first: the account's enabled
+/// preferences in priority order, or every supported codec when the
+/// preferences name none. An empty or all-disabled list is a broken setting,
+/// not a request to refuse every call.
+fn preferred_codecs(prefs: &[super::account::CodecPreference]) -> Vec<rtp_engine::CodecType> {
+    let mut enabled: Vec<&super::account::CodecPreference> =
+        prefs.iter().filter(|p| p.enabled && SUPPORTED_CODECS.contains(&p.codec)).collect();
+    enabled.sort_by_key(|p| p.priority);
+    let codecs: Vec<_> = enabled.into_iter().map(|p| p.codec).collect();
+    if codecs.is_empty() { SUPPORTED_CODECS.to_vec() } else { codecs }
+}
+
+/// The payload types an answer to `offer` carries, in the order it lists
+/// them: the codecs (the user's preference order when `prefs` is given, else
+/// the offer's), then every telephone-event the offer named. Empty when no
+/// codec is in common.
+///
+/// Every offered payload type we can carry keeps the number the offer gave
+/// it: the static codecs, Opus on whatever dynamic type the peer put it on
+/// (not only 111), and telephone-event at every rate the peer offered, so
+/// DTMF can run on the clock that matches the codec.
+fn answer_payloads(
+    offer: &str,
+    prefs: Option<&[super::account::CodecPreference]>,
+) -> Vec<(u8, OfferedPayload)> {
+    let rtpmaps = parse_rtpmaps(offer);
+    let offered: Vec<(u8, OfferedPayload)> = audio_payload_types(offer)
+        .into_iter()
+        .filter_map(|pt| classify_payload(pt, &rtpmaps).map(|p| (pt, p)))
+        .collect();
+    let mut payloads: Vec<(u8, OfferedPayload)> =
+        offered.iter().copied().filter(|(_, p)| matches!(p, OfferedPayload::Codec(_))).collect();
+    if let Some(prefs) = prefs {
+        let order = preferred_codecs(prefs);
+        let rank = |p: &OfferedPayload| match p {
+            OfferedPayload::Codec(c) => order.iter().position(|o| o == c),
+            OfferedPayload::TelephoneEvent(_) => None,
+        };
+        payloads.retain(|(_, p)| rank(p).is_some());
+        // Stable: two payload types for one codec keep the offer's order.
+        payloads.sort_by_key(|(_, p)| rank(p));
+    }
+    if payloads.is_empty() {
+        return Vec::new();
+    }
+    payloads.extend(offered.into_iter().filter(|(_, p)| matches!(p, OfferedPayload::TelephoneEvent(_))));
+    payloads
+}
+
+/// The codec and payload type a call on this SDP runs on: the first codec
+/// its answer carries. `None` when there is no codec in common, which an
+/// answerer turns into a 488.
+///
+/// For an offer we answer, pass the account's preferences; for the answer to
+/// our own offer pass `None`, so the answerer's first choice is the one used.
+pub fn negotiate_audio(
+    sdp: &str,
+    prefs: Option<&[super::account::CodecPreference]>,
+) -> Option<NegotiatedAudio> {
+    answer_payloads(sdp, prefs).into_iter().find_map(|(pt, p)| match p {
+        OfferedPayload::Codec(codec) => Some(NegotiatedAudio { codec, pt }),
+        OfferedPayload::TelephoneEvent(_) => None,
+    })
 }
 
 /// Build an SDP answer with optional SRTP crypto attribute.
@@ -636,46 +883,37 @@ pub fn build_sdp_answer(remote_sdp: &str, ip: String, rtp_port: u16) -> String {
 /// If the remote offer contains an `a=crypto` line with AES_CM_128_HMAC_SHA1_80
 /// and `crypto_b64_key` is provided, the answer echoes back the crypto suite
 /// with our own keying material and uses RTP/SAVP.
+#[allow(dead_code)]
 pub fn build_sdp_answer_srtp(
     remote_sdp: &str,
     ip: String,
     rtp_port: u16,
     crypto_b64_key: Option<&str>,
-) -> String {
-    let session_id = rand::random::<u32>();
-    // Parse offered payload types from m= line
-    let mut offered_pts: Vec<u8> = Vec::new();
-    let mut remote_uses_savp = false;
-    for line in remote_sdp.lines() {
-        let line = line.trim();
-        if line.starts_with("m=audio ") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 && parts[2] == "RTP/SAVP" {
-                remote_uses_savp = true;
-            }
-            for pt_str in parts.iter().skip(3) {
-                if let Ok(pt) = pt_str.parse::<u8>() {
-                    offered_pts.push(pt);
-                }
-            }
-        }
-    }
+) -> Option<String> {
+    build_sdp_answer_with(
+        remote_sdp,
+        &AnswerOptions { ip, rtp_port, crypto_b64_key, codecs: None, origin: None },
+    )
+}
+
+/// Build an SDP answer to `remote_sdp`.
+///
+/// The codecs are [`answer_payloads`], the same list [`negotiate_audio`]
+/// picks the session's codec from. `None` when no offered codec can be
+/// carried: RFC 3264 §6 has that refused (488), not answered with a codec the
+/// offer never named. The direction mirrors the offer's.
+pub fn build_sdp_answer_with(remote_sdp: &str, opts: &AnswerOptions<'_>) -> Option<String> {
+    let remote_uses_savp = remote_sdp.lines().map(str::trim).any(|line| {
+        line.starts_with("m=audio ") && line.split_whitespace().nth(2) == Some("RTP/SAVP")
+    });
 
     // Use SAVP if the remote offered it and we have a crypto key
-    let use_srtp = remote_uses_savp && crypto_b64_key.is_some();
+    let use_srtp = remote_uses_savp && opts.crypto_b64_key.is_some();
     let profile = if use_srtp { "RTP/SAVP" } else { "RTP/AVP" };
 
-    // Keep every offered payload type we can carry, on the number the
-    // offer gave it: the static codecs, Opus on whatever dynamic type the
-    // peer put it on (not only 111), and telephone-event at every rate the
-    // peer offered, so DTMF can run on the clock that matches the codec.
-    let rtpmaps = parse_rtpmaps(remote_sdp);
-    let mut common: Vec<(u8, OfferedPayload)> = offered_pts
-        .iter()
-        .filter_map(|&pt| classify_payload(pt, &rtpmaps).map(|p| (pt, p)))
-        .collect();
-    if !common.iter().any(|(_, p)| matches!(p, OfferedPayload::Codec(_))) {
-        common.insert(0, (0, OfferedPayload::Codec(rtp_engine::CodecType::Pcmu))); // fallback to PCMU
+    let common = answer_payloads(remote_sdp, opts.codecs);
+    if common.is_empty() {
+        return None;
     }
 
     let pt_list: String = common
@@ -684,16 +922,21 @@ pub fn build_sdp_answer_srtp(
         .collect::<Vec<_>>()
         .join(" ");
 
+    let origin = opts.origin.unwrap_or_else(|| {
+        let id = u64::from(rand::random::<u32>());
+        SdpOrigin { id, version: id }
+    });
     let mut sdp = format!(
         "v=0\r\n\
-         o=aria {sid} {sid} IN IP4 {ip}\r\n\
+         o=aria {id} {version} IN IP4 {ip}\r\n\
          s=Aria Call\r\n\
          c=IN IP4 {ip}\r\n\
          t=0 0\r\n\
          m=audio {port} {profile} {pts}\r\n",
-        sid = session_id,
-        ip = ip,
-        port = rtp_port,
+        id = origin.id,
+        version = origin.version,
+        ip = opts.ip,
+        port = opts.rtp_port,
         profile = profile,
         pts = pt_list,
     );
@@ -706,15 +949,15 @@ pub fn build_sdp_answer_srtp(
     }
 
     sdp.push_str("a=ptime:20\r\n");
-    sdp.push_str("a=sendrecv\r\n");
+    sdp.push_str(&format!("a={}\r\n", offer_direction(remote_sdp).mirror().as_str()));
 
     if use_srtp {
-        if let Some(key) = crypto_b64_key {
+        if let Some(key) = opts.crypto_b64_key {
             sdp.push_str(&super::srtp::build_sdp_crypto_line(key));
         }
     }
 
-    sdp
+    Some(sdp)
 }
 
 /// Parse the `a=crypto` attribute from remote SDP.
@@ -780,9 +1023,21 @@ pub fn build_sdp_offer_with_codecs(
     crypto_b64_key: Option<&str>,
     codecs: &[super::account::CodecPreference],
 ) -> String {
+    build_sdp_offer_with_origin(ip, rtp_port, crypto_b64_key, codecs, u64::from(rand::random::<u32>()))
+}
+
+/// [`build_sdp_offer_with_codecs`] with the `o=` session id given: the
+/// dialog's, so every SDP this side sends in it carries the same one. A first
+/// offer is version 1.
+pub fn build_sdp_offer_with_origin(
+    ip: String,
+    rtp_port: u16,
+    crypto_b64_key: Option<&str>,
+    codecs: &[super::account::CodecPreference],
+    session_id: u64,
+) -> String {
     use rtp_engine::CodecType;
 
-    let session_id = rand::random::<u32>();
     let profile = if crypto_b64_key.is_some() {
         "RTP/SAVP"
     } else {
@@ -815,7 +1070,7 @@ pub fn build_sdp_offer_with_codecs(
 
     let mut sdp = format!(
         "v=0\r\n\
-         o=aria {sid} {sid} IN IP4 {ip}\r\n\
+         o=aria {sid} 1 IN IP4 {ip}\r\n\
          s=Aria Call\r\n\
          c=IN IP4 {ip}\r\n\
          t=0 0\r\n\
@@ -1350,7 +1605,7 @@ mod tests {
         assert!(saved.contains("m=audio 40000 RTP/AVP 0 101\r\n"));
         assert!(!saved.contains("G729"));
 
-        let answer = build_sdp_answer("m=audio 20000 RTP/AVP 18 0\r\n", "10.0.0.2".to_string(), 30000);
+        let answer = build_sdp_answer("m=audio 20000 RTP/AVP 18 0\r\n", "10.0.0.2".to_string(), 30000).unwrap();
         assert!(answer.contains("m=audio 30000 RTP/AVP 0\r\n"));
     }
 
@@ -1452,7 +1707,7 @@ mod tests {
     #[test]
     fn sdp_answer_has_correct_format() {
         let remote_sdp = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 20000 RTP/AVP 0 8 101\r\na=rtpmap:0 PCMU/8000\r\n";
-        let answer = build_sdp_answer(remote_sdp, "192.168.1.100".to_string(), 30000);
+        let answer = build_sdp_answer(remote_sdp, "192.168.1.100".to_string(), 30000).unwrap();
         assert!(answer.contains("v=0\r\n"));
         assert!(answer.contains("c=IN IP4 192.168.1.100"));
         assert!(answer.contains("m=audio 30000 RTP/AVP"));
@@ -1561,7 +1816,7 @@ mod tests {
                      a=rtpmap:0 PCMU/8000\r\n\
                      a=rtpmap:97 telephone-event/48000\r\n\
                      a=rtpmap:98 telephone-event/8000\r\n";
-        let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000);
+        let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000).unwrap();
         assert!(answer.contains("m=audio 30000 RTP/AVP 96 0 97 98\r\n"), "{answer}");
         assert!(answer.contains("a=rtpmap:96 opus/48000/2\r\na=fmtp:96 minptime=10;useinbandfec=1\r\n"));
         assert!(answer.contains("a=rtpmap:0 PCMU/8000\r\n"));
@@ -1585,16 +1840,177 @@ mod tests {
         let offer = "m=audio 20000 RTP/AVP 111 9 18 8 101\r\n\
                      a=rtpmap:111 speex/16000\r\n\
                      a=rtpmap:9 G722/8000\r\n";
-        let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000);
+        let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000).unwrap();
         assert!(answer.contains("m=audio 30000 RTP/AVP 8 101\r\n"));
         assert!(!answer.contains("G729"), "G.729 is not carried");
         assert!(answer.contains("a=rtpmap:8 PCMA/8000\r\n"));
         assert!(answer.contains("a=rtpmap:101 telephone-event/8000\r\n"));
         assert!(!answer.contains("speex") && !answer.contains("G722"));
 
-        // Nothing usable at all: PCMU is the fallback.
+        // Nothing usable at all: no answer (the caller sends 488), never a
+        // PCMU the offer did not name.
         let none = build_sdp_answer("m=audio 20000 RTP/AVP 9\r\na=rtpmap:9 G722/8000\r\n", "10.0.0.2".to_string(), 30000);
-        assert!(none.contains("m=audio 30000 RTP/AVP 0\r\n"), "{none}");
+        assert_eq!(none, None);
+    }
+
+    fn prefs(list: &[(rtp_engine::CodecType, bool)]) -> Vec<super::super::account::CodecPreference> {
+        list.iter()
+            .enumerate()
+            .map(|(i, &(codec, enabled))| super::super::account::CodecPreference {
+                codec,
+                enabled,
+                priority: i as u8 + 1,
+            })
+            .collect()
+    }
+
+    /// The first payload type on the answer's m= line.
+    fn first_answered_pt(answer: &str) -> u8 {
+        let m = answer.lines().find(|l| l.starts_with("m=audio ")).expect("an m= line");
+        m.split_whitespace().nth(3).and_then(|pt| pt.parse().ok()).expect("a payload type")
+    }
+
+    /// M1: a Yealink offers G.722 first. The session used to run G.722 (PT 9)
+    /// while the answer said PCMU, so neither side heard the other. The
+    /// session's codec and the answer's first payload type now come from one
+    /// negotiation.
+    #[test]
+    fn g722_first_offer_runs_the_session_on_the_answers_first_codec() {
+        use rtp_engine::CodecType;
+        let offer = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 9 0 8 101\r\n\
+                     a=rtpmap:9 G722/8000\r\na=rtpmap:101 telephone-event/8000\r\n";
+        let telephony = prefs(&[(CodecType::Pcmu, true), (CodecType::Pcma, true)]);
+        for user in [None, Some(crate::sip::account::default_codec_preferences()), Some(telephony)] {
+            let user = user.as_deref();
+            let got = negotiate_audio(offer, user).expect("a codec in common");
+            assert_eq!(got, NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 });
+            let answer = build_sdp_answer_with(
+                offer,
+                &AnswerOptions { ip: "10.0.0.2".into(), rtp_port: 30000, crypto_b64_key: None, codecs: user, origin: None },
+            )
+            .expect("an answer");
+            assert!(answer.contains("m=audio 30000 RTP/AVP 0 8 101\r\n"), "{answer}");
+            assert_eq!(first_answered_pt(&answer), got.pt);
+        }
+    }
+
+    /// The user's order wins over the offer's: PCMA ranked above PCMU is
+    /// answered and run first, and a codec the user turned off is neither.
+    #[test]
+    fn the_users_codec_order_and_choices_are_respected() {
+        use rtp_engine::CodecType;
+        let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0 8 101\r\n";
+        let user = prefs(&[(CodecType::Pcma, true), (CodecType::Pcmu, true)]);
+        assert_eq!(negotiate_audio(offer, Some(&user)), Some(NegotiatedAudio { codec: CodecType::Pcma, pt: 8 }));
+        let answer = build_sdp_answer_with(
+            offer,
+            &AnswerOptions { ip: "10.0.0.2".into(), rtp_port: 30000, crypto_b64_key: None, codecs: Some(&user), origin: None },
+        )
+        .unwrap();
+        assert!(answer.contains("m=audio 30000 RTP/AVP 8 0 101\r\n"), "{answer}");
+
+        let no_pcmu = prefs(&[(CodecType::Pcmu, false), (CodecType::Pcma, true)]);
+        assert_eq!(negotiate_audio(offer, Some(&no_pcmu)).map(|n| n.pt), Some(8));
+        let pcmu_only_offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0 101\r\n";
+        assert_eq!(negotiate_audio(pcmu_only_offer, Some(&no_pcmu)), None);
+
+        // A list with nothing enabled is a broken setting, not "refuse all".
+        let none_enabled = prefs(&[(CodecType::Pcmu, false)]);
+        assert_eq!(negotiate_audio(pcmu_only_offer, Some(&none_enabled)).map(|n| n.pt), Some(0));
+    }
+
+    /// `18 0`: G.729 is offered first and is never what the session runs.
+    #[test]
+    fn g729_first_offer_runs_pcmu() {
+        use rtp_engine::CodecType;
+        let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 18 0\r\n";
+        assert_eq!(negotiate_audio(offer, None), Some(NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 }));
+        let defaults = crate::sip::account::default_codec_preferences();
+        assert_eq!(negotiate_audio(offer, Some(&defaults)).map(|n| n.codec), Some(CodecType::Pcmu));
+    }
+
+    /// Only codecs this phone cannot carry: nothing to negotiate, no answer.
+    #[test]
+    fn an_offer_of_only_unsupported_codecs_has_no_answer() {
+        let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 9 18 101\r\na=rtpmap:9 G722/8000\r\n";
+        assert_eq!(negotiate_audio(offer, None), None);
+        let defaults = crate::sip::account::default_codec_preferences();
+        assert_eq!(negotiate_audio(offer, Some(&defaults)), None);
+        assert_eq!(build_sdp_answer(offer, "10.0.0.2".into(), 30000), None);
+        // And so no 200 OK either: the caller declines with 488.
+        let invite = format!(
+            "INVITE sip:1001@pbx SIP/2.0\r\nVia: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK1\r\n\
+             From: <sip:200@pbx>;tag=caller\r\nTo: <sip:1001@pbx>\r\nCall-ID: c1\r\nCSeq: 1 INVITE\r\n\
+             Content-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{}",
+            offer.len(),
+            offer
+        );
+        assert_eq!(build_200_ok_invite_srtp(&invite, addr(), 30000, "t", None, None, None), None);
+    }
+
+    /// The UAC side: the answer to our offer is read with the same filter, in
+    /// the answerer's order.
+    #[test]
+    fn the_answer_to_our_offer_runs_its_first_carried_codec() {
+        use rtp_engine::CodecType;
+        let answer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 96 0 101\r\n\
+                      a=rtpmap:96 opus/48000/2\r\na=rtpmap:101 telephone-event/8000\r\n";
+        assert_eq!(negotiate_audio(answer, None), Some(NegotiatedAudio { codec: CodecType::Opus, pt: 96 }));
+        let pcma_first = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 8 0\r\n";
+        assert_eq!(negotiate_audio(pcma_first, None).map(|n| n.pt), Some(8));
+    }
+
+    /// RFC 3264 §6.1: the answer mirrors the offer's direction.
+    #[test]
+    fn the_answer_mirrors_the_offers_direction() {
+        let base = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0\r\n";
+        for (offered, answered) in [
+            ("a=sendonly\r\n", "a=recvonly\r\n"),
+            ("a=recvonly\r\n", "a=sendonly\r\n"),
+            ("a=inactive\r\n", "a=inactive\r\n"),
+            ("a=sendrecv\r\n", "a=sendrecv\r\n"),
+            ("", "a=sendrecv\r\n"),
+        ] {
+            let answer = build_sdp_answer(&format!("{base}{offered}"), "10.0.0.2".into(), 30000).unwrap();
+            assert!(answer.contains(answered), "{offered:?} answered:\n{answer}");
+            assert_eq!(answer.matches("a=sendrecv").count() + answer.matches("a=sendonly").count()
+                + answer.matches("a=recvonly").count() + answer.matches("a=inactive").count(), 1);
+        }
+        // Session-level attribute, and the RFC 2543 hold address.
+        let session = "v=0\r\nc=IN IP4 10.0.0.1\r\na=sendonly\r\nm=audio 20000 RTP/AVP 0\r\n";
+        assert_eq!(offer_direction(session), Direction::SendOnly);
+        let old_hold = "v=0\r\nc=IN IP4 0.0.0.0\r\nm=audio 20000 RTP/AVP 0\r\n";
+        assert_eq!(offer_direction(old_hold), Direction::SendOnly);
+        // A media-level attribute wins over the session's.
+        let both = "v=0\r\na=sendonly\r\nc=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0\r\na=sendrecv\r\n";
+        assert_eq!(offer_direction(both), Direction::SendRecv);
+    }
+
+    /// The `o=` line: a stable id per Call-ID, the version as given, and an
+    /// offer that starts the dialog's SDP at version 1 with the same id.
+    #[test]
+    fn sdp_origin_is_stable_per_dialog() {
+        assert_eq!(sdp_session_id("abc@host"), sdp_session_id("abc@host"));
+        assert_ne!(sdp_session_id("abc@host"), sdp_session_id("abd@host"));
+        let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0\r\n";
+        let answer = build_sdp_answer_with(
+            offer,
+            &AnswerOptions {
+                ip: "10.0.0.2".into(),
+                rtp_port: 30000,
+                crypto_b64_key: None,
+                codecs: None,
+                origin: Some(SdpOrigin { id: 42, version: 7 }),
+            },
+        )
+        .unwrap();
+        assert!(answer.contains("o=aria 42 7 IN IP4 10.0.0.2\r\n"), "{answer}");
+        let restamped = with_sdp_origin(&answer, SdpOrigin { id: 42, version: 8 });
+        assert!(restamped.contains("o=aria 42 8 IN IP4 10.0.0.2\r\n"), "{restamped}");
+        assert_eq!(sdp_without_origin(&answer), sdp_without_origin(&restamped));
+
+        let ours = build_sdp_offer_with_origin("10.0.0.2".into(), 30000, None, &crate::sip::account::default_codec_preferences(), 99);
+        assert!(ours.contains("o=aria 99 1 IN IP4 10.0.0.2\r\n"), "{ours}");
     }
 
     /// Given a key and a SAVP offer, the 200 OK answers RTP/SAVP with a crypto

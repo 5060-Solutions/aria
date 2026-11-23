@@ -34,9 +34,8 @@ pub use account::AccountConfig;
 pub use transport::TransportType;
 
 use self::builder::{
-    build_200_ok_invite_srtp, build_bye_with_routes, build_cancel, build_options, build_refer,
+    build_bye_with_routes, build_cancel, build_options, build_refer,
     build_refer_with_replaces, build_register, build_subscribe, extract_header, extract_via_branch, is_request,
-    parse_sdp_connection,
 };
 use self::diagnostics::DiagnosticLog;
 use self::media::MediaSessionExt;
@@ -1818,7 +1817,7 @@ impl SipManager {
     }
 
     pub async fn answer(&self, call_id: &str) -> Result<(), String> {
-        let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport, srtp_mode) = {
+        let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport, srtp_mode, codec_prefs) = {
             let s = self.state.read().await;
             let (account, call) = s.find_call(call_id).ok_or("Call not found")?;
             if !call.is_incoming() {
@@ -1841,6 +1840,7 @@ impl SipManager {
                 account_id,
                 transport,
                 account.config.srtp_mode,
+                account.config.codecs.clone(),
             )
         };
 
@@ -1850,30 +1850,26 @@ impl SipManager {
         // had an unanswered call, so hangup answered 486 to a finished
         // transaction and the caller sat in silence. A call we cannot carry
         // audio for is declined instead.
-        let sdp = raw_invite.split("\r\n\r\n").nth(1).unwrap_or("");
-        let Some((ip, port)) = parse_sdp_connection(sdp) else {
+        let sdp = builder::request_body(&raw_invite);
+        // The codec comes from the same negotiation the answer's payload
+        // list is built from, in the user's preference order. Taking it from
+        // rtp-engine's own pick ran a Yealink call (G.722 first) on G.722
+        // while the answer said PCMU: no audio either way.
+        let Some(remote) = media::remote_media(sdp, Some(&codec_prefs)) else {
             self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here").await;
-            return Err("The caller offered no media".into());
+            return Err("The caller offered no media this phone can carry".into());
         };
-        let remote_rtp: SocketAddr = match format!("{}:{}", ip, port).parse() {
-            Ok(addr) => addr,
-            Err(e) => {
-                self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here").await;
-                return Err(format!("Bad RTP addr: {}", e));
-            }
-        };
-        let negotiated_codec = codec::negotiate_codec(sdp);
-        log::info!("Negotiated codec for inbound: {:?}", negotiated_codec);
+        let remote_rtp = remote.addr;
+        log::info!("Negotiated codec for inbound: {:?} on payload type {}", remote.audio.codec, remote.audio.pt);
 
         // SRTP answer: when the account offers SDES and the caller's offer is
         // RTP/SAVP with a key, generate our own key, answer encrypted, and run
         // the session with both contexts. Inbound calls used to be answered
         // RTP/AVP whatever the offer said, so a call to an SRTP extension was
         // always plaintext — and a PBX that requires SRTP rejected it.
-        let remote_srtp_key = builder::parse_sdp_crypto(sdp);
         let use_srtp = srtp_mode == crate::sip::account::SrtpMode::Sdes
             && builder::sdp_offers_savp(sdp)
-            && remote_srtp_key.is_some();
+            && remote.srtp_key.is_some();
         let our_srtp_key = if use_srtp {
             match rtp_engine::srtp::SrtpContext::generate() {
                 Ok((_, key)) => Some(key),
@@ -1885,56 +1881,27 @@ impl SipManager {
         } else {
             None
         };
-        // Encrypt only when we have both a key to send and the context pair built.
-        let answer_crypto = our_srtp_key.clone();
 
         let (input_dev, output_dev) = {
             let s = self.state.read().await;
             (s.preferred_input_device.clone(), s.preferred_output_device.clone())
         };
 
-        let media_result = match (&our_srtp_key, &remote_srtp_key) {
-            (Some(our_key), Some(their_key)) => {
-                match (
-                    rtp_engine::srtp::SrtpContext::from_base64(our_key),
-                    rtp_engine::srtp::SrtpContext::from_base64(their_key),
-                ) {
-                    (Ok(tx), Ok(rx)) => {
-                        log::info!("Answering incoming call with SRTP");
-                        media::MediaSession::start_with_srtp_keys_and_devices(
-                            rtp_port, remote_rtp, negotiated_codec, tx, rx, input_dev, output_dev,
-                        )
-                        .await
-                    }
-                    _ => {
-                        log::error!("Could not build SRTP contexts; answering plain");
-                        media::MediaSession::start_with_devices(
-                            rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
-                        )
-                        .await
-                    }
-                }
-            }
-            _ => {
-                media::MediaSession::start_with_devices(
-                    rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev,
-                )
-                .await
-            }
+        let plan = media::MediaPlan {
+            local_port: rtp_port,
+            remote,
+            local_srtp_key: our_srtp_key.clone(),
+            input_device: input_dev,
+            output_device: output_dev,
         };
-        // Encrypted only when both keys were present and both contexts built.
-        let srtp_active = use_srtp && answer_crypto.is_some() && media_result.is_ok();
-        let media = match media_result {
-            Ok(media) => media,
+        let (media, srtp_active) = match media::start_call_media(&plan, sdp).await {
+            Ok(started) => (started.session, started.srtp_active),
             Err(e) => {
                 log::error!("Could not start audio for incoming call {}: {}", call_id, e);
                 self.decline_incoming(call_id, &raw_invite, &to_tag, 480, "Temporarily Unavailable").await;
                 return Err(format!("Could not start audio: {}", e));
             }
         };
-
-        // Audio and DTMF go on the payload types the caller's offer named.
-        media::apply_negotiated_payload_types(&media, sdp);
 
         // Discover public IP via STUN for NAT traversal in SDP
         // A server on a private network is answered with the local address:
@@ -1952,27 +1919,30 @@ impl SipManager {
             }
         };
         let sdp_ip = media::sdp_address(local_addr.ip(), stun_ip, Some(server_addr.ip()));
-        let public_ip = Some(sdp_ip.to_string());
 
         // Our crypto line only when the session actually came up encrypted,
         // so the answer never claims SRTP the media is not using.
-        let answer_crypto = if srtp_active { answer_crypto.as_deref() } else { None };
-        let response = build_200_ok_invite_srtp(
-            &raw_invite,
-            local_addr,
-            rtp_port,
-            &to_tag,
-            Some(&username),
-            public_ip.as_deref(),
-            answer_crypto,
+        let answer_crypto = if srtp_active { our_srtp_key.as_deref() } else { None };
+        let answer_sdp = builder::build_sdp_answer_with(
+            sdp,
+            &builder::AnswerOptions {
+                ip: sdp_ip.to_string(),
+                rtp_port,
+                crypto_b64_key: answer_crypto,
+                codecs: Some(&codec_prefs),
+                origin: None,
+            },
         )
-        .ok_or("Failed to build 200 OK")?;
+        .ok_or("Failed to build the SDP answer")?;
+        // An offer that holds us (sendonly, inactive) is answered recvonly
+        // or inactive, and we then must not send.
+        let remote_hold = !builder::offer_direction(sdp).mirror().sends();
         let invite_cseq = cseq_number(&raw_invite).unwrap_or(1);
 
         // Built when auto-record starts. Emitted after the call-state event
         // below, so the frontend has the call in its list before it is told the
         // call is being recorded.
-        let recording_event = {
+        let (response, recording_event) = {
             let mut s = self.state.write().await;
             let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
             let result = call.process(CallFSMEvent::LocalAnswer { media, remote_rtp });
@@ -1982,9 +1952,23 @@ impl SipManager {
                 // to, and the UI has had its ended event.
                 return Err("Call ended before it could be answered".into());
             }
+            let answer_sdp = call.stamp_local_sdp(&answer_sdp);
+            let response = builder::build_200_ok_invite_with_sdp(
+                &raw_invite,
+                local_addr,
+                &to_tag,
+                Some(&username),
+                &answer_sdp,
+            )
+            .ok_or("Failed to build 200 OK")?;
             call.set_to_tag(to_tag.clone());
             call.pending_2xx = Some(state::Pending2xx { cseq: invite_cseq, response: response.clone() });
             call.srtp_active = srtp_active;
+            call.remote_media = Some(plan.remote.clone());
+            call.set_remote_hold(remote_hold);
+            // The session went in through the FSM, not set_media: a mute
+            // pressed while the call rang applies now.
+            call.apply_mute();
             // Remember our key for the session, so a re-INVITE refresh answers
             // with the same crypto line instead of downgrading to plain RTP.
             if srtp_active {
@@ -1996,9 +1980,11 @@ impl SipManager {
 
             // Only once the session is on the call, so a recording is never
             // started for a call that is already gone.
-            s.find_call(call_id)
+            let recording = s
+                .find_call(call_id)
                 .and_then(|(_, call)| call.media())
-                .and_then(|media| s.start_auto_record(&account_id, call_id, media))
+                .and_then(|media| s.start_auto_record(&account_id, call_id, media));
+            (response, recording)
         };
 
         transport.send_to(response.as_bytes(), server_addr).await?;
@@ -2085,23 +2071,23 @@ impl SipManager {
         Ok(())
     }
 
+    /// The user's Mute button. Stored on the call in any state, so it holds
+    /// across hold and resume and reaches a session that has not started yet
+    /// (a call still ringing); the microphone is open only when the call is
+    /// neither muted nor held.
     pub async fn mute(&self, call_id: &str, mute: bool) -> Result<(), String> {
-        let s = self.state.read().await;
-        if let Some((_, call)) = s.find_call(call_id) {
-            if let Some(media) = call.media() {
-                media.set_mute(mute);
-            }
-            Ok(())
-        } else {
-            Err("Call not found".into())
-        }
+        let mut s = self.state.write().await;
+        let (_, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
+        call.set_user_mute(mute);
+        Ok(())
     }
 
     pub async fn send_dtmf(&self, call_id: &str, digit: &str) -> Result<(), String> {
         log::info!("DTMF: {} on call {}", digit, call_id);
         let s = self.state.read().await;
         let (_, call) = s.find_call(call_id).ok_or("Call not found")?;
-        if let Some(media) = call.media() {
+        // Early media too: an IVR played in a 183 asks for digits.
+        if let Some(media) = call.media_any() {
             media.send_dtmf(digit);
         } else {
             return Err("No active media session".into());
@@ -2387,8 +2373,12 @@ impl SipManager {
         // Enable conference mode on all media sessions
         for call_id in call_ids {
             if let Some((_, call)) = s.find_call_mut(call_id) {
+                // Every leg of a conference is live, so a held one is
+                // resumed; a leg the user muted stays muted.
+                if call.is_held() {
+                    call.unhold();
+                }
                 if let Some(media) = call.media() {
-                    media.set_mute(false);
                     media.set_conference_mode(true);
                 }
             }
@@ -2446,8 +2436,8 @@ impl SipManager {
             if let Some((_, call)) = s.find_call_mut(call_id) {
                 if let Some(media) = call.media() {
                     media.set_conference_mode(false);
-                    media.set_mute(true);
                 }
+                call.hold();
             }
             
             (remaining, ended)

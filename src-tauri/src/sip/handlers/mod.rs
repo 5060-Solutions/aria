@@ -4,6 +4,7 @@
 //! organized by message type.
 
 mod invite;
+mod media_update;
 mod presence;
 mod registration;
 mod request;

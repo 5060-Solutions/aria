@@ -11,7 +11,7 @@ use crate::sip::builder::{
 };
 use crate::sip::state::call::TransitionResult;
 use crate::sip::state::CallFSMEvent;
-use crate::sip::{codec, media, CallEvent, ManagerState, SipEvent};
+use crate::sip::{media, CallEvent, ManagerState, SipEvent};
 
 /// The sequence number in a response's CSeq header.
 fn response_cseq(text: &str) -> Option<u32> {
@@ -125,77 +125,35 @@ pub async fn handle_invite_response(
             let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
             let has_sdp = (status == 180 || status == 181 || status == 183) && !sdp.trim().is_empty() && sdp.contains("m=audio");
 
-            // Extract data needed for early media before taking write lock
-            let early_media_data = if has_sdp {
-                let rtp_target = parse_sdp_connection(sdp);
-                let remote_srtp_key = rtp_engine::srtp::parse_sdp_crypto(sdp);
-                let negotiated_codec = codec::negotiate_codec(sdp);
-
+            // Extract data needed for early media before taking write lock.
+            // The 183's SDP is the answer to our offer: the codec is its first
+            // one we carry, the same pick a 200 would get.
+            let early_media_plan = if has_sdp {
                 let s = state.read().await;
-                s.find_call_by_header(&call_id_header).and_then(|(account, call)| {
+                s.find_call_by_header(&call_id_header).and_then(|(_, call)| {
                     if call.has_early_media() {
                         return None; // Already have early media
                     }
-                    let remote_rtp_addr = rtp_target.and_then(|(ip, port)| {
-                        format!("{}:{}", ip, port).parse::<SocketAddr>().ok()
-                    })?;
-                    let input_dev = s.preferred_input_device.clone();
-                    let output_dev = s.preferred_output_device.clone();
-                    Some((
-                        call.local_rtp_port,
-                        remote_rtp_addr,
-                        negotiated_codec,
-                        call.local_srtp_key.clone(),
-                        remote_srtp_key,
-                        call.id.clone(),
-                        account.config.id.clone(),
-                        input_dev,
-                        output_dev,
-                    ))
+                    let remote = media::remote_media(sdp, None)?;
+                    Some(media::MediaPlan {
+                        local_port: call.local_rtp_port,
+                        remote,
+                        local_srtp_key: call.local_srtp_key.clone(),
+                        input_device: s.preferred_input_device.clone(),
+                        output_device: s.preferred_output_device.clone(),
+                    })
                 })
             } else {
                 None
             };
 
             // Start early media session if we have the data
-            let early_session = if let Some((local_rtp_port, remote_rtp, negotiated_codec, local_srtp_key, remote_srtp_key, _call_id, _account_id, input_dev, output_dev)) = early_media_data {
+            let early_session = if let Some(plan) = early_media_plan {
                 log::info!("Starting early media session for {} response", status);
-                let result = match (&local_srtp_key, &remote_srtp_key) {
-                    (Some(local_key), Some(remote_key)) => {
-                        match (
-                            rtp_engine::srtp::SrtpContext::from_base64(local_key),
-                            rtp_engine::srtp::SrtpContext::from_base64(remote_key),
-                        ) {
-                            (Ok(tx_ctx), Ok(rx_ctx)) => {
-                                media::MediaSession::start_with_srtp_keys_and_devices(
-                                    local_rtp_port, remote_rtp, negotiated_codec, tx_ctx, rx_ctx,
-                                    input_dev, output_dev,
-                                ).await
-                            }
-                            (Err(e), _) | (_, Err(e)) => {
-                                log::error!("Failed to create SRTP context for early media: {:?}", e);
-                                media::MediaSession::start_with_devices(
-                                    local_rtp_port, remote_rtp, negotiated_codec,
-                                    input_dev, output_dev,
-                                ).await
-                            }
-                        }
-                    }
-                    _ => {
-                        media::MediaSession::start_with_devices(
-                            local_rtp_port, remote_rtp, negotiated_codec,
-                            input_dev, output_dev,
-                        ).await
-                    }
-                };
-                match result {
-                    Ok(session) => {
+                match media::start_call_media(&plan, sdp).await {
+                    Ok(started) => {
                         log::info!("Early media session started successfully");
-                        // The 183's SDP is the answer this session runs on,
-                        // and a DTMF sent during early media (an IVR prompt)
-                        // must already be on the negotiated payload type.
-                        media::apply_negotiated_payload_types(&session, sdp);
-                        Some(session)
+                        Some((started, plan.remote))
                     }
                     Err(e) => {
                         log::error!("Failed to start early media: {}", e);
@@ -218,8 +176,15 @@ pub async fn handle_invite_response(
                     TransitionResult::Ok
                 );
 
-                if let Some(session) = early_session {
-                    call.set_early_media(session);
+                if let Some((started, remote)) = early_session {
+                    call.set_early_media(started.session);
+                    if call.has_early_media() {
+                        // Carried to the 200: a call that connects on its
+                        // early media is as encrypted as that session, and a
+                        // later re-INVITE is answered in SRTP to match.
+                        call.srtp_active = started.srtp_active;
+                        call.remote_media = Some(remote);
+                    }
                 }
 
                 let has_early_media = call.has_early_media();
@@ -410,24 +375,55 @@ pub async fn handle_invite_response(
                 // setup below entirely, so a peer that sent a 183 with SDP —
                 // ordinary PSTN ringback — used to connect on the early media
                 // session and was silently never recorded.
+                //
+                // Unless the 200's SDP points somewhere else than the 183's
+                // (another address, codec or SRTP key): then the early session
+                // is talking to the wrong place, and is replaced.
                 if let Some(session) = early_media {
-                    if let Some((_, call)) = s.find_call_by_header_mut(&call_id_header) {
-                        call.set_media(session);
+                    let stale = s.find_call_by_header(&call_id_header).and_then(|(_, call)| {
+                        let early = call.remote_media.as_ref()?;
+                        let answered = media::remote_media(sdp, None)?;
+                        early.needs_restart_for(&answered).then(|| media::MediaPlan {
+                            local_port: call.local_rtp_port,
+                            remote: answered,
+                            local_srtp_key: call.local_srtp_key.clone(),
+                            input_device: s.preferred_input_device.clone(),
+                            output_device: s.preferred_output_device.clone(),
+                        })
+                    });
+                    if let Some(plan) = stale {
+                        log::info!(
+                            "The 200 OK moves call {}'s media from its early-media session; restarting it",
+                            call_internal_id
+                        );
+                        drop(s);
+                        // Saves any recording; outside the lock.
+                        let _ = tokio::task::spawn_blocking(move || drop(session)).await;
+                        tokio::spawn(super::media_update::restart_media_on_offer_port(
+                            Arc::clone(state),
+                            event_tx.clone(),
+                            call_internal_id.clone(),
+                            plan,
+                            sdp.to_string(),
+                        ));
+                    } else {
+                        if let Some((_, call)) = s.find_call_by_header_mut(&call_id_header) {
+                            call.set_media(session);
+                        }
+                        recording_event = s
+                            .find_call_by_header(&call_id_header)
+                            .and_then(|(_, call)| call.media())
+                            .and_then(|media| {
+                                s.start_auto_record(&account_id, &call_internal_id, media)
+                            });
                     }
-                    recording_event = s
-                        .find_call_by_header(&call_id_header)
-                        .and_then(|(_, call)| call.media())
-                        .and_then(|media| {
-                            s.start_auto_record(&account_id, &call_internal_id, media)
-                        });
                 }
             }
 
             if has_media {
                 log::info!("Early media session already active, skipping new media setup");
-            } else if let Some(remote_rtp) = remote_rtp_addr {
-                let negotiated_codec = codec::negotiate_codec(sdp);
-                log::info!("Negotiated codec: {:?}", negotiated_codec);
+            } else if let Some(remote) = media::remote_media(sdp, None) {
+                log::info!("Negotiated codec: {:?} on payload type {}", remote.audio.codec, remote.audio.pt);
 
                 // Get preferred audio devices, and whether this account asked
                 // for encryption. srtp_mode was only ever consulted when
@@ -445,78 +441,39 @@ pub async fn handle_invite_response(
                     )
                 };
 
-                // Start media session with SRTP if both keys are available
-                let media_result = match (&local_srtp_key, &remote_srtp_key) {
-                    (Some(local_key), Some(remote_key)) => {
-                        // NOTE: never log the key material itself — these are the
-                        // SDES-SRTP master keys and would let anyone with the log
-                        // decrypt the call's media.
-                        log::info!("Starting SRTP media session with separate TX/RX keys");
-                        if local_key == remote_key {
-                            log::warn!("TX and RX keys are IDENTICAL - remote echoed our key (symmetric mode)");
-                        }
-                        match (
-                            rtp_engine::srtp::SrtpContext::from_base64(local_key),
-                            rtp_engine::srtp::SrtpContext::from_base64(remote_key),
-                        ) {
-                            (Ok(tx_ctx), Ok(rx_ctx)) => {
-                                media::MediaSession::start_with_srtp_keys_and_devices(
-                                    local_rtp_port, remote_rtp, negotiated_codec, tx_ctx, rx_ctx,
-                                    input_dev.clone(), output_dev.clone(),
-                                ).await
-                            }
-                            (Err(e), _) | (_, Err(e)) => {
-                                log::error!("Failed to create SRTP context: {:?}", e);
-                                log::warn!("This call is NOT encrypted");
-                                media::MediaSession::start_with_devices(
-                                    local_rtp_port, remote_rtp, negotiated_codec,
-                                    input_dev.clone(), output_dev.clone(),
-                                ).await
-                            }
-                        }
+                // We offered a crypto line and the answer had none, or vice
+                // versa. If this account asked for SRTP, that is a downgrade,
+                // and continuing in the clear is the one outcome the user
+                // cannot detect. SRTP is preferred, not required: a peer that
+                // answers without a crypto line still gets a working call.
+                // What must not happen is the UI claiming encryption anyway,
+                // so the outcome is recorded on the call and surfaced.
+                if local_srtp_key.is_none() || remote.srtp_key.is_none() {
+                    if srtp_preferred {
+                        log::warn!(
+                            "SRTP was offered but the peer answered without usable \
+                             key material; this call is NOT encrypted"
+                        );
+                    } else {
+                        log::info!("Starting plain RTP media session (no SRTP keys)");
                     }
-                    _ => {
-                        // We offered a crypto line and the answer had none, or
-                        // vice versa. If this account asked for SRTP, that is a
-                        // downgrade, and continuing in the clear is the one
-                        // outcome the user cannot detect — the call screen would
-                        // still be showing whatever the configuration says.
-                        // SRTP is preferred, not required: a peer that answers
-                        // without a crypto line still gets a working call. What
-                        // must not happen is the UI claiming encryption anyway,
-                        // so the outcome is recorded on the call and surfaced.
-                        if srtp_preferred {
-                            log::warn!(
-                                "SRTP was offered but the peer answered without usable \
-                                 key material; this call is NOT encrypted"
-                            );
-                        } else {
-                            log::info!("Starting plain RTP media session (no SRTP keys)");
-                        }
-                        media::MediaSession::start_with_devices(
-                            local_rtp_port, remote_rtp, negotiated_codec,
-                            input_dev, output_dev,
-                        ).await
-                    }
+                }
+
+                let plan = media::MediaPlan {
+                    local_port: local_rtp_port,
+                    remote,
+                    local_srtp_key: local_srtp_key.clone(),
+                    input_device: input_dev,
+                    output_device: output_dev,
                 };
-
-                // True only when both keys were present and both contexts
-                // built — the same condition the SRTP arm above requires.
-                let srtp_active = matches!(
-                    (&local_srtp_key, &remote_srtp_key),
-                    (Some(_), Some(_))
-                ) && media_result.is_ok();
-
-                match media_result {
-                    Ok(session) => {
-                        // Audio and DTMF go on the payload types the answer
-                        // named, not a hardcoded 111 and 101.
-                        media::apply_negotiated_payload_types(&session, sdp);
+                match media::start_call_media(&plan, sdp).await {
+                    Ok(started) => {
                         let mut s = state.write().await;
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
-                            call.srtp_active = srtp_active;
-                            call.set_remote_rtp(remote_rtp);
-                            call.set_media(session);
+                            call.srtp_active = started.srtp_active;
+                            call.set_remote_rtp(plan.remote.addr);
+                            call.remote_media = Some(plan.remote.clone());
+                            call.set_media(started.session);
                         }
 
                         // Only once the session is on the call. Media startup

@@ -8,7 +8,6 @@ use super::builder::{
     parse_replaces_header, parse_sdp_connection, parse_sipfrag_status,
 };
 use super::state::{CallFSM, CallFSMEvent, InboundCallParams};
-use super::codec;
 use super::media;
 use super::{CallEvent, ManagerState, SipEvent, TransferEvent};
 
@@ -536,18 +535,21 @@ pub async fn handle_invite_with_replaces(
     let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
     if let Some((ip, port)) = parse_sdp_connection(sdp) {
         if let Ok(remote_rtp) = format!("{}:{}", ip, port).parse::<SocketAddr>() {
-            let negotiated_codec = codec::negotiate_codec(sdp);
-            log::info!(
-                "Negotiated codec for INVITE with Replaces: {:?}",
-                negotiated_codec
-            );
+            // The same pick as the answer's first payload type (the 200
+            // above was built from the offer's order).
+            let negotiated = builder::negotiate_audio(sdp, None);
+            log::info!("Negotiated codec for INVITE with Replaces: {:?}", negotiated);
 
             let (input_dev, output_dev) = {
                 let s = state.read().await;
                 (s.preferred_input_device.clone(), s.preferred_output_device.clone())
             };
-            match media::MediaSession::start_with_devices(rtp_port, remote_rtp, negotiated_codec, input_dev, output_dev).await {
+            let codec = negotiated.map_or(media::CodecType::Pcmu, |n| n.codec);
+            match media::MediaSession::start_with_devices(rtp_port, remote_rtp, codec, input_dev, output_dev).await {
                 Ok(session) => {
+                    if let Some(audio) = negotiated {
+                        media::apply_negotiated_payload_types(&session, audio, sdp);
+                    }
                     let mut s = state.write().await;
                     let mut new_call = call;
                     let _ = new_call.process(CallFSMEvent::Answered {
