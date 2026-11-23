@@ -141,7 +141,8 @@ export function Dialer() {
     
     const uri = dialUri(dialInput, activeAccount, defaultCountry);
 
-    // placeCall removes the call again if it could not be placed.
+    // If the call cannot be placed, placeCall removes it and tells the user
+    // in the app toast; nothing more to do here.
     await placeCall({
       uri,
       accountId: activeAccountId,
@@ -549,7 +550,7 @@ export function Dialer() {
           <IconButton
             onClick={handleCall}
             disabled={!dialInput.trim()}
-            aria-label={t("dialer.call", "Call")}
+            aria-label={t("dialer.call")}
             sx={{
               width: 64,
               height: 64,

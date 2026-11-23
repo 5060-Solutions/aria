@@ -141,7 +141,8 @@ export function CallHistory() {
     const fullUri = dialUri(uri, activeAccount, defaultCountry);
 
     const { placeCall } = await import("../../hooks/useSip");
-    // placeCall removes the call again if it could not be placed.
+    // If the call cannot be placed, placeCall removes it and tells the user
+    // in the app toast; nothing more to do here.
     await placeCall({
       uri: fullUri,
       accountId: activeAccountId,

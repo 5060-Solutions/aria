@@ -31,7 +31,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import type { Contact, PresenceState } from "../../types/sip";
-import { usePresence } from "../../hooks/usePresence";
+import { usePresenceReported } from "../../hooks/usePresence";
 import { dialUri } from "../../utils/sipUri";
 
 const inputSx = {
@@ -137,7 +137,7 @@ function ContactDialog({
         <Typography variant="h6" sx={{ fontWeight: 500, fontSize: "1rem" }}>
           {isEdit ? t("contacts.editContact") : t("contacts.newContact")}
         </Typography>
-        <IconButton size="small" onClick={onClose} aria-label={t("common.cancel", "Close")}>
+        <IconButton size="small" onClick={onClose} aria-label={t("common.close")}>
           <CloseIcon fontSize="small" />
         </IconButton>
       </DialogTitle>
@@ -233,36 +233,30 @@ const PRESENCE_COLORS: Record<PresenceState, string> = {
   unknown: "#9E9E9E",      // Gray
 };
 
-const PRESENCE_LABELS: Record<PresenceState, string> = {
-  available: "Available",
-  busy: "Busy",
-  onThePhone: "On the phone",
-  ringing: "Ringing",
-  away: "Away",
-  doNotDisturb: "Do not disturb",
-  offline: "Offline",
-  unknown: "Unknown",
-};
-
 function PresenceDot({ uri }: { uri: string }) {
-  const presence = usePresence(uri);
-
-  // Don't show dot for offline/unknown (no subscription data)
-  if (presence === "offline" || presence === "unknown") return null;
+  const { t } = useTranslation();
+  const theme = useTheme();
+  // Undefined until the server has reported on the extension: no dot. A
+  // reported "offline" (nothing registered) gets a grey one; it used to be
+  // shown as a yellow "Away".
+  const presence = usePresenceReported(uri);
+  if (presence === undefined || presence === "unknown") return null;
 
   const color = PRESENCE_COLORS[presence];
-  const label = PRESENCE_LABELS[presence];
+  const label = t(`presence.${presence}`);
 
   return (
     <Tooltip title={label} placement="top">
       <Box
+        role="img"
+        aria-label={label}
         sx={{
           width: 8,
           height: 8,
           borderRadius: "50%",
           bgcolor: color,
           flexShrink: 0,
-          boxShadow: `0 0 0 2px white`,
+          boxShadow: `0 0 0 2px ${theme.palette.background.paper}`,
         }}
       />
     </Tooltip>
@@ -436,7 +430,8 @@ export function ContactList() {
       const fullUri = dialUri(uri, activeAccount, useAppStore.getState().defaultCountry);
 
       const { placeCall } = await import("../../hooks/useSip");
-      // placeCall removes the call again if it could not be placed.
+      // If the call cannot be placed, placeCall removes it and tells the user
+      // in the app toast; nothing more to do here.
       await placeCall({
         uri: fullUri,
         accountId: activeAccountId,
@@ -570,7 +565,7 @@ export function ContactList() {
               ),
               endAdornment: search ? (
                 <InputAdornment position="end">
-                  <IconButton size="small" onClick={() => setSearch("")} aria-label={t("common.clear", "Clear")}>
+                  <IconButton size="small" onClick={() => setSearch("")} aria-label={t("common.clear")}>
                     <CloseIcon sx={{ fontSize: 14 }} />
                   </IconButton>
                 </InputAdornment>
