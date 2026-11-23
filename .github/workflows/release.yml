@@ -389,9 +389,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y minisign
-          scripts/verify-updater-manifest.sh "${{ github.ref_name }}" "${{ github.repository }}"
+          scripts/verify-updater-manifest.sh "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
 
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false --latest
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
