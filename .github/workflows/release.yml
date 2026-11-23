@@ -89,6 +89,16 @@ jobs:
         shell: pwsh
         run: echo "CARGO_TARGET_DIR=C:/t" >> $env:GITHUB_ENV
 
+      # Windows binaries are Authenticode-signed *inside* `tauri build`
+      # (bundle.windows.signCommand in src-tauri/windows-signing.conf.json),
+      # so the installed aria.exe is signed too and the updater .sig files and
+      # latest.json describe the signed bytes. Signing after the build and
+      # re-uploading with --clobber gave the assets new IDs, which left
+      # latest.json pointing at deleted assets: Windows clients never updated.
+      - name: Install Azure Artifact Signing CLI
+        if: runner.os == 'Windows'
+        run: cargo install artifact-signing-cli --version 0.12.0 --locked
+
       - name: Install frontend dependencies
         run: pnpm install
 
@@ -146,6 +156,10 @@ jobs:
           # silently never see the update.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Read by artifact-signing-cli through signCommand (Windows only).
+          AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Aria ${{ github.ref_name }}'
@@ -157,7 +171,7 @@ jobs:
           # The publish job below releases it once every build succeeds.
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }}${{ runner.os == 'Windows' && ' --config src-tauri/windows-signing.conf.json' || '' }}
 
       - name: Build Tauri app (plain DMG)
         if: steps.tauri_build.outcome == 'failure' && runner.os == 'macOS'
@@ -192,42 +206,28 @@ jobs:
       # the first line of startup, because nothing ever launched it. Launch the
       # artifact here and fail the release if it crashes on startup, so the
       # broken build stays in the draft and never reaches the updater. Runs on
-      # every platform, and before the Windows artifacts are signed and
-      # re-uploaded, so a broken Windows build is never signed.
+      # every platform; Windows launches the signed binary it ships.
       - name: Smoke-launch the built app
         shell: bash
         run: scripts/smoke-launch.sh ${{ matrix.target }}
 
-      - name: Sign Windows artifacts with Azure Trusted Signing
-        if: matrix.platform == 'windows-latest'
-        uses: azure/trusted-signing-action@v2.0.0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: https://wcus.codesigning.azure.net/
-          signing-account-name: FiftySixty-Solutions
-          certificate-profile-name: Aria-Softphone
-          files-folder: ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-msvc/release/bundle
-          files-folder-filter: exe,msi
-          files-folder-depth: 3
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-
-      - name: Re-upload signed Windows artifacts to release
-        if: matrix.platform == 'windows-latest'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Fail the release if any shipped Windows binary is not validly
+      # Authenticode-signed (signCommand failing quietly, or a file skipped).
+      - name: Verify Windows Authenticode signatures
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          tag="${{ github.ref_name }}"
-          bundle="$CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/bundle"
-          for f in "$bundle"/nsis/*.exe "$bundle"/msi/*.msi; do
-            [ -f "$f" ] || continue
-            echo "Uploading signed: $f"
-            gh release upload "$tag" "$f" --clobber
-          done
+          $release = "$env:CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release"
+          $files = @(Get-Item "$release/aria.exe") +
+                   @(Get-ChildItem "$release/bundle/nsis/*.exe") +
+                   @(Get-ChildItem "$release/bundle/msi/*.msi")
+          $bad = 0
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            Write-Host "$($sig.Status) $($f.Name) $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { $bad++ }
+          }
+          if ($files.Count -lt 3 -or $bad -gt 0) { exit 1 }
 
   build-macos-universal:
     runs-on: macos-latest
@@ -379,6 +379,18 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+
+      # Every URL in latest.json must download and pass the updater's
+      # signature check, or installed clients silently stop updating.
+      - name: Verify the updater manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          scripts/verify-updater-manifest.sh "${{ github.ref_name }}" "${{ github.repository }}"
+
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
