@@ -449,15 +449,21 @@ mod tests {
         (status, "application/json", body.as_bytes().to_vec())
     }
 
+    /// A fresh SIP password per test, so no secret is written down anywhere.
+    fn test_password() -> String {
+        format!("pw-{}", uuid::Uuid::new_v4())
+    }
+
     /// The PBX as the mobile apps see it. `tokens` is the sequence of JWTs
     /// successive logins mint; only the last one is accepted afterwards, so a
-    /// stub with two tokens treats the first as expired.
-    fn pbx(tokens: &'static [&'static str]) -> Handler {
+    /// stub with two tokens treats the first as expired. `password` is what
+    /// the login must carry.
+    fn pbx(tokens: &'static [&'static str], password: String) -> Handler {
         let logins = Arc::new(Mutex::new(0usize));
         Arc::new(move |req: &Seen| {
             if req.method == "POST" && req.path == "/api/v1/auth/extension-login" {
                 let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
-                if body["password"] != "s3cret" || body["extension_number"] != "1001" || body["tenant_domain"] != "test.ariaroute.com" {
+                if body["password"] != password.as_str() || body["extension_number"] != "1001" || body["tenant_domain"] != "test.ariaroute.com" {
                     return json(401, r#"{"error":"invalid credentials"}"#);
                 }
                 let mut n = logins.lock().unwrap();
@@ -491,9 +497,10 @@ mod tests {
 
     #[tokio::test]
     async fn lists_messages_after_logging_in_with_the_sip_credentials() {
-        let stub = Stub::start(pbx(&["jwt-1"])).await;
+        let pass = test_password();
+        let stub = Stub::start(pbx(&["jwt-1"], pass.clone())).await;
         let state = VoicemailState::new();
-        let messages = state.list(&mailbox(&stub), "s3cret").await.unwrap();
+        let messages = state.list(&mailbox(&stub), &pass).await.unwrap();
 
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].id, "m2");
@@ -509,7 +516,7 @@ mod tests {
         assert_eq!(seen[0].path, "/api/v1/auth/extension-login");
         let login: serde_json::Value = serde_json::from_str(&seen[0].body).unwrap();
         assert_eq!(login["extension_number"], "1001");
-        assert_eq!(login["password"], "s3cret");
+        assert_eq!(login["password"], &pass);
         assert_eq!(login["tenant_domain"], "test.ariaroute.com");
         assert!(seen[1..].iter().all(|r| r.authorization.as_deref() == Some("Bearer jwt-1")), "{seen:?}");
         assert_eq!(seen[1].path, "/api/v1/extensions/ext-1/voicemail");
@@ -518,10 +525,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_list_reuses_the_session_and_the_box() {
-        let stub = Stub::start(pbx(&["jwt-1"])).await;
+        let pass = test_password();
+        let stub = Stub::start(pbx(&["jwt-1"], pass.clone())).await;
         let state = VoicemailState::new();
-        state.list(&mailbox(&stub), "s3cret").await.unwrap();
-        state.list(&mailbox(&stub), "s3cret").await.unwrap();
+        state.list(&mailbox(&stub), &pass).await.unwrap();
+        state.list(&mailbox(&stub), &pass).await.unwrap();
         let seen = stub.seen();
         assert_eq!(seen.iter().filter(|r| r.path == "/api/v1/auth/extension-login").count(), 1, "{seen:?}");
         assert_eq!(seen.iter().filter(|r| r.path == "/api/v1/extensions/ext-1/voicemail").count(), 1, "{seen:?}");
@@ -530,10 +538,11 @@ mod tests {
 
     #[tokio::test]
     async fn an_expired_token_logs_in_again_once_and_retries() {
+        let pass = test_password();
         // The first login's token is already stale when it is used.
-        let stub = Stub::start(pbx(&["jwt-1", "jwt-2"])).await;
+        let stub = Stub::start(pbx(&["jwt-1", "jwt-2"], pass.clone())).await;
         let state = VoicemailState::new();
-        let messages = state.list(&mailbox(&stub), "s3cret").await.unwrap();
+        let messages = state.list(&mailbox(&stub), &pass).await.unwrap();
         assert_eq!(messages.len(), 2);
         let seen = stub.seen();
         assert_eq!(seen.iter().filter(|r| r.path == "/api/v1/auth/extension-login").count(), 2, "{seen:?}");
@@ -542,16 +551,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_wrong_password_is_refused_without_a_retry_loop() {
-        let stub = Stub::start(pbx(&["jwt-1"])).await;
+        let pass = test_password();
+        let stub = Stub::start(pbx(&["jwt-1"], pass.clone())).await;
         let state = VoicemailState::new();
-        let err = state.list(&mailbox(&stub), "wrong").await.unwrap_err();
+        let err = state.list(&mailbox(&stub), &format!("not-{pass}")).await.unwrap_err();
         assert!(matches!(err, VoicemailError::Unauthorized), "{err:?}");
         assert_eq!(stub.seen().len(), 1);
     }
 
     #[tokio::test]
     async fn an_extension_without_a_mailbox_is_said_so() {
-        let inner = pbx(&["jwt-1"]);
+        let pass = test_password();
+        let inner = pbx(&["jwt-1"], pass.clone());
         let handler: Handler = Arc::new(move |req: &Seen| {
             if req.path == "/api/v1/extensions/ext-1/voicemail" && req.authorization.is_some() {
                 return json(404, r#"{"error":"no voicemail box"}"#);
@@ -559,14 +570,15 @@ mod tests {
             inner(req)
         });
         let stub = Stub::start(handler).await;
-        let err = VoicemailState::new().list(&mailbox(&stub), "s3cret").await.unwrap_err();
+        let err = VoicemailState::new().list(&mailbox(&stub), &pass).await.unwrap_err();
         assert!(matches!(err, VoicemailError::NoMailbox), "{err:?}");
     }
 
     #[tokio::test]
     async fn audio_is_fetched_with_the_bearer_token() {
-        let stub = Stub::start(pbx(&["jwt-1"])).await;
-        let bytes = VoicemailState::new().audio(&mailbox(&stub), "s3cret", "m2").await.unwrap();
+        let pass = test_password();
+        let stub = Stub::start(pbx(&["jwt-1"], pass.clone())).await;
+        let bytes = VoicemailState::new().audio(&mailbox(&stub), &pass, "m2").await.unwrap();
         assert_eq!(bytes, b"RIFFwav");
         let last = stub.seen().pop().unwrap();
         assert_eq!(last.path, "/api/v1/voicemail/messages/m2/audio");
@@ -575,10 +587,11 @@ mod tests {
 
     #[tokio::test]
     async fn mark_read_and_delete_use_their_routes() {
-        let stub = Stub::start(pbx(&["jwt-1"])).await;
+        let pass = test_password();
+        let stub = Stub::start(pbx(&["jwt-1"], pass.clone())).await;
         let state = VoicemailState::new();
-        state.mark_read(&mailbox(&stub), "s3cret", "m2").await.unwrap();
-        state.delete(&mailbox(&stub), "s3cret", "m2").await.unwrap();
+        state.mark_read(&mailbox(&stub), &pass, "m2").await.unwrap();
+        state.delete(&mailbox(&stub), &pass, "m2").await.unwrap();
         let seen = stub.seen();
         assert!(seen.iter().any(|r| r.method == "PATCH" && r.path == "/api/v1/voicemail/messages/m2/read"), "{seen:?}");
         assert!(seen.iter().any(|r| r.method == "DELETE" && r.path == "/api/v1/voicemail/messages/m2"), "{seen:?}");
@@ -586,8 +599,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_message_id_is_a_path_segment_not_a_path() {
-        let stub = Stub::start(pbx(&["jwt-1"])).await;
-        let err = VoicemailState::new().delete(&mailbox(&stub), "s3cret", "m2/read?x=../..").await.unwrap_err();
+        let pass = test_password();
+        let stub = Stub::start(pbx(&["jwt-1"], pass.clone())).await;
+        let err = VoicemailState::new().delete(&mailbox(&stub), &pass, "m2/read?x=../..").await.unwrap_err();
         assert!(matches!(err, VoicemailError::Status(404)), "{err:?}");
         let last = stub.seen().pop().unwrap();
         assert_eq!(last.method, "DELETE");
@@ -654,7 +668,7 @@ mod tests {
     fn errors_name_the_problem_without_the_secret() {
         let shown = format!("{}", VoicemailError::Unauthorized);
         assert!(shown.to_lowercase().contains("password") || shown.to_lowercase().contains("sign"), "{shown}");
-        assert!(!format!("{}", VoicemailError::Network("boom s3cret".into())).is_empty());
+        assert!(!format!("{}", VoicemailError::Network("boom".into())).is_empty());
         assert!(format!("{}", VoicemailError::NoMailbox).to_lowercase().contains("mailbox"));
     }
 }
