@@ -72,6 +72,8 @@
 #                       an extension with a mailbox and no phone, so its
 #                       greeting answers (`*97` plays nothing for an
 #                       extension without voicemail)
+#   ARIA_E2E_VOICEMAIL_HOLD_SECS  how long that call stays up (default 3); 15 or
+#                       more gets past the greeting and leaves a message
 #
 set -euo pipefail
 

@@ -84,11 +84,13 @@ function sameNumber(a: string, b: string): boolean {
 
 /**
  * What to call the caller: a matching contact's name, else the caller id the
- * PBX recorded, else `null` for a withheld or missing number (the UI shows
- * "Unknown caller").
+ * PBX recorded (a SIP URI reduced to its user part), else `null` for a
+ * withheld or missing number (the UI shows "Unknown caller").
  */
 export function callerLabel(callerId: string, contacts: ReadonlyArray<Contact>): string | null {
-  const id = callerId.trim();
+  // An internal caller arrives as `sip:1932@tenant.example`; the user part is
+  // what a person recognises and what a call back dials.
+  const id = uriUser(callerId.trim());
   if (WITHHELD.has(id.toLowerCase())) return null;
   const wanted = digits(id);
   if (wanted) {

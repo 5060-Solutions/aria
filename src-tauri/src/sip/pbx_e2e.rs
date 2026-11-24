@@ -547,6 +547,9 @@ async fn sdes_offer_is_answered_by_the_pbx() {
 ///
 /// The default is 1001 rather than `*97`: `*97` answers but plays nothing for
 /// an extension without a mailbox, and the throwaway extensions have none.
+/// `ARIA_E2E_VOICEMAIL_HOLD_SECS` (default 3) is how long A stays on the
+/// line; long enough to get past the greeting and it leaves a message, which
+/// the visual voicemail test can then list.
 #[ignore = "needs a live PBX, two extensions and audio devices; see scripts/pbx-e2e.sh"]
 #[tokio::test(flavor = "multi_thread")]
 async fn outbound_call_to_voicemail() {
@@ -563,7 +566,11 @@ async fn outbound_call_to_voicemail() {
             eprintln!("[A] dialing {} as call {call}", env.uri(&target));
             let connected = a.next_call_event(Some(&call), &["connected"], Duration::from_secs(15)).await?;
             check!(connected.direction == "outbound", "A: direction {:?}", connected.direction);
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            let hold = std::env::var("ARIA_E2E_VOICEMAIL_HOLD_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3);
+            tokio::time::sleep(Duration::from_secs(hold)).await;
             a.assert_media_flowing(&call).await?;
             a.mgr.hangup(&call).await.map_err(|e| format!("A: hangup failed: {e}"))?;
             a.wait_state(&call, "ended", Duration::from_secs(5)).await?;

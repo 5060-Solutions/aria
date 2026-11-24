@@ -86,6 +86,13 @@ describe("callerLabel", () => {
     expect(callerLabel("15551230002", contacts)).toBe("Sam Rivera");
   });
 
+  it("shows a SIP URI caller as its user part, matching contacts by it", () => {
+    // The Aria PBX records an internal caller as a full URI.
+    expect(callerLabel("sip:1002@regular-test.ariaroute.com", contacts)).toBe("Pat Lee");
+    expect(callerLabel("sip:1932@test.ariaroute.com", contacts)).toBe("1932");
+    expect(callerLabel("sips:+15559990000@pbx.example", contacts)).toBe("+15559990000");
+  });
+
   it("falls back to the caller id, and to null when there is none", () => {
     expect(callerLabel("+15559990000", contacts)).toBe("+15559990000");
     expect(callerLabel("", contacts)).toBeNull();

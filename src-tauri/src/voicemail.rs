@@ -637,8 +637,17 @@ mod tests {
             let audio = state.audio(&mailbox, &pass, &m.id).await.expect("audio");
             assert!(audio.len() > 44, "{} bytes of audio for {}", audio.len(), m.id);
         }
-        // The second call must not sign in again.
-        state.list(&mailbox, &pass).await.expect("second list");
+        // Marking the newest unread message read sticks on the PBX.
+        if let Some(unread) = messages.iter().find(|m| !m.read) {
+            state.mark_read(&mailbox, &pass, &unread.id).await.expect("mark read");
+            let again = state.list(&mailbox, &pass).await.expect("second list");
+            let now = again.iter().find(|m| m.id == unread.id).expect("message still listed");
+            assert!(now.read, "{} should be read after mark_read", unread.id);
+            eprintln!("voicemail e2e: marked {} read", unread.id);
+        } else {
+            // The second call must not sign in again.
+            state.list(&mailbox, &pass).await.expect("second list");
+        }
     }
 
     #[test]
