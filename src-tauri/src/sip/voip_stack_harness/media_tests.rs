@@ -140,12 +140,31 @@ async fn a_g722_first_offer_is_answered_and_run_on_the_same_codec() {
     assert_eq!(session(&mgr, &call_id).await.expect("media").codec, CodecType::Pcmu);
 }
 
+/// A G.729-only offer, as a bandwidth-limited PBX or trunk sends, is answered
+/// on G.729 and the session runs on it.
+#[tokio::test]
+async fn a_g729_only_offer_is_answered_and_run_on_g729() {
+    let (mgr, mut rx, seen, sock, pbx, client) = client(SrtpMode::Disabled, InviteReply::Busy).await;
+    let offer = pbx_sdp(
+        40000,
+        "RTP/AVP",
+        "18 101",
+        "a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\na=rtpmap:101 telephone-event/8000\r\n",
+    );
+    let (call_id, ok) = answered(&mgr, &mut rx, &seen, &sock, (pbx, client), "media-g729@pbx", &offer).await;
+
+    assert!(ok.starts_with("SIP/2.0 200"), "{ok}");
+    let (_, pts) = m_line(body(&ok));
+    assert_eq!(pts, vec![18, 101], "{ok}");
+    assert_eq!(session(&mgr, &call_id).await.expect("media").codec, CodecType::G729);
+}
+
 /// An offer of nothing this phone carries is declined 488, not answered
 /// with a PCMU nobody offered.
 #[tokio::test]
 async fn an_offer_with_no_codec_in_common_is_declined_488() {
     let (mgr, mut rx, seen, sock, pbx, client) = client(SrtpMode::Disabled, InviteReply::Busy).await;
-    let offer = pbx_sdp(40000, "RTP/AVP", "9 18", "a=rtpmap:9 G722/8000\r\n");
+    let offer = pbx_sdp(40000, "RTP/AVP", "9", "a=rtpmap:9 G722/8000\r\n");
     sock.send_to(invite(pbx, client, "media-none@pbx", 1, None, &offer).as_bytes(), client).await.unwrap();
     let call_id = wait_for_call_state(&mut rx, "incoming").await;
     assert!(mgr.answer(&call_id).await.is_err());

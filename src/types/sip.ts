@@ -10,10 +10,11 @@ export function normalizeSrtpMode(mode: string | undefined): SrtpMode {
 }
 
 /**
- * Audio codec types supported by Aria. No G.729: rtp-engine's G.729 is not
- * ITU-T G.729 compatible, so the softphone does not offer it.
+ * Audio codec types supported by Aria. The list mirrors `SUPPORTED_CODECS`
+ * in `src-tauri/src/sip/builder.rs`: a codec named here is offered and
+ * answered; anything else saved in an account is dropped on load.
  */
-export type CodecType = "pcmu" | "pcma" | "opus";
+export type CodecType = "pcmu" | "pcma" | "g729" | "opus";
 
 /** Codec configuration with priority ordering */
 export interface CodecConfig {
@@ -30,19 +31,22 @@ export const DEFAULT_CODECS: CodecConfig[] = [
   { codec: "opus", enabled: true, priority: 1 },
   { codec: "pcmu", enabled: true, priority: 2 },
   { codec: "pcma", enabled: true, priority: 3 },
+  { codec: "g729", enabled: true, priority: 4 },
 ];
 
 /** Codec display information */
 export const CODEC_INFO: Record<CodecType, { name: string; bitrate: string; description: string }> = {
   pcmu: { name: "G.711 μ-law", bitrate: "64 kbps", description: "Universal compatibility" },
   pcma: { name: "G.711 A-law", bitrate: "64 kbps", description: "Common in Europe" },
+  g729: { name: "G.729", bitrate: "8 kbps", description: "Low bandwidth" },
   opus: { name: "Opus", bitrate: "~32 kbps", description: "Modern, high quality" },
 };
 
 /**
- * Saved codec preferences as the softphone can use them: codecs it no longer
- * carries (a stored "g729") are dropped and the rest renumbered in order. The
- * defaults stand in when nothing usable was saved.
+ * Saved codec preferences as the softphone can use them: codecs it does not
+ * carry are dropped, codecs added since the account was saved are appended
+ * after the user's own order, enabled as the defaults have them, and the
+ * list is renumbered. The defaults stand in when nothing usable was saved.
  */
 export function normalizeCodecs(
   saved: ReadonlyArray<{ codec: string; enabled: boolean; priority: number }> | null | undefined,
@@ -50,9 +54,10 @@ export function normalizeCodecs(
   const usable = (saved ?? [])
     .filter((c): c is CodecConfig => c.codec in CODEC_INFO)
     .slice()
-    .sort((a, b) => a.priority - b.priority)
-    .map((c, index) => ({ codec: c.codec, enabled: c.enabled, priority: index + 1 }));
-  return usable.length > 0 ? usable : DEFAULT_CODECS.map((c) => ({ ...c }));
+    .sort((a, b) => a.priority - b.priority);
+  if (usable.length === 0) return DEFAULT_CODECS.map((c) => ({ ...c }));
+  const missing = DEFAULT_CODECS.filter((d) => !usable.some((c) => c.codec === d.codec));
+  return [...usable, ...missing].map((c, index) => ({ codec: c.codec, enabled: c.enabled, priority: index + 1 }));
 }
 
 export type RegistrationState =

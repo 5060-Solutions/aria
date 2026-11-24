@@ -385,13 +385,16 @@ mod remote_media_tests {
     }
 
     /// The far end's media from its SDP uses the same negotiation as the
-    /// answer: G.722 first runs PCMU, and nothing in common is `None`.
+    /// answer: G.722 first runs PCMU, G.722 then G.729 runs G.729, and nothing
+    /// in common is `None`.
     #[test]
     fn remote_media_negotiates_like_the_answer() {
         let yealink = sdp("10.0.0.1", 40000, "9 0 8 101", "a=rtpmap:9 G722/8000\r\n");
         let got = remote_media(&yealink, Some(&crate::sip::account::default_codec_preferences())).unwrap();
         assert_eq!(got.audio, NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 });
-        assert!(remote_media(&sdp("10.0.0.1", 40000, "9 18", ""), None).is_none());
+        let narrow = remote_media(&sdp("10.0.0.1", 40000, "9 18", ""), None).unwrap();
+        assert_eq!(narrow.audio, NegotiatedAudio { codec: CodecType::G729, pt: 18 });
+        assert!(remote_media(&sdp("10.0.0.1", 40000, "9", ""), None).is_none());
     }
 }
 

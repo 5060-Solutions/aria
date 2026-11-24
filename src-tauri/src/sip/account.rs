@@ -46,15 +46,17 @@ impl Default for CodecPreference {
     }
 }
 
-/// Default codec preferences (Opus > PCMU > PCMA).
+/// Default codec preferences (Opus > PCMU > PCMA > G.729).
 ///
-/// No G.729: rtp-engine's G.729 is not ITU-T G.729 compatible, so it is not
-/// offered (see `SUPPORTED_CODECS` in `sip::builder`).
+/// G.729 is last: at 8 kbps it is the one to reach for when bandwidth is
+/// short, not for quality, so it runs only when the peer offers nothing
+/// better (see `SUPPORTED_CODECS` in `sip::builder`).
 pub fn default_codec_preferences() -> Vec<CodecPreference> {
     vec![
         CodecPreference { codec: CodecType::Opus, enabled: true, priority: 1 },
         CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
         CodecPreference { codec: CodecType::Pcma, enabled: true, priority: 3 },
+        CodecPreference { codec: CodecType::G729, enabled: true, priority: 4 },
     ]
 }
 
