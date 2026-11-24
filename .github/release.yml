@@ -1,0 +1,15 @@
+# Categories for the "Generate release notes" button and the API.
+changelog:
+  exclude:
+    labels: [skip-changelog]
+  categories:
+    - title: Breaking changes
+      labels: [breaking]
+    - title: New
+      labels: [enhancement]
+    - title: Fixed
+      labels: [bug, regression]
+    - title: Dependencies
+      labels: [dependencies]
+    - title: Other
+      labels: ["*"]
