@@ -16,7 +16,12 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import DownloadIcon from "@mui/icons-material/Download";
 import CloseIcon from "@mui/icons-material/Close";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTranslation } from "react-i18next";
+import { log } from "../../utils/log";
+
+/** Where the work to ship transcription in the release builds is tracked. */
+const TRANSCRIPTION_STATUS_URL = "https://github.com/5060-Solutions/aria/issues/84";
 
 interface AiModel {
   id: string;
@@ -174,10 +179,22 @@ export function Transcription() {
 
   if (!supported) {
     return (
-      <Box sx={{ p: 2 }}>
+      <Box sx={{ p: 2, display: "flex", flexDirection: "column", gap: 1.5, alignItems: "flex-start" }}>
         <Typography variant="body2" sx={{ color: "text.secondary" }}>
           {t("transcription.unsupported")}
         </Typography>
+        <Typography variant="body2" sx={{ color: "text.secondary" }}>
+          {t("transcription.unsupportedWhy")}
+        </Typography>
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={() => {
+            openUrl(TRANSCRIPTION_STATUS_URL).catch((e) => log.error("[Transcription] Could not open link:", e));
+          }}
+        >
+          {t("transcription.unsupportedFollow")}
+        </Button>
       </Box>
     );
   }
