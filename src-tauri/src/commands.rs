@@ -88,7 +88,7 @@ fn csv_field(value: &str) -> String {
     }
 }
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 use crate::audio_test::AudioTestManager;
@@ -370,6 +370,16 @@ pub async fn sip_register_now(
 ) -> Result<String, String> {
     let account = account_from_config(config)?;
     manager.register_now(account).await
+}
+
+/// Sign out and back in (refresh only during a call). See `SipManager::reregister`.
+#[tauri::command]
+pub async fn sip_reregister(
+    config: SipAccountConfig,
+    manager: State<'_, SipManager>,
+) -> Result<String, String> {
+    let account = account_from_config(config)?;
+    manager.reregister(account).await
 }
 
 /// The backend's view of an account from what the UI holds.
@@ -808,38 +818,41 @@ pub fn app_build_info() -> BuildInfo {
 
 #[tauri::command]
 pub async fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
-    // Check if window already exists
-    if let Some(window) = app.get_webview_window("debug") {
-        window
-            .set_focus()
-            .map_err(|e| format!("Focus error: {}", e))?;
-        return Ok(());
-    }
+    crate::diagnostics_window::open(&app)
+}
 
-    // Position flush to the right of the main window, same vertical origin.
-    // outer_position/outer_size return physical pixels; divide by scale factor
-    // to get logical coordinates that the window builder expects.
-    let (x, y) = app
-        .get_webview_window("main")
-        .and_then(|w| {
-            let scale = w.scale_factor().ok()?;
-            let pos = w.outer_position().ok()?;
-            let size = w.outer_size().ok()?;
-            let x = (pos.x as f64 + size.width as f64) / scale + 8.0;
-            let y = pos.y as f64 / scale;
-            Some((x, y))
-        })
-        .unwrap_or((100.0, 100.0));
+#[tauri::command]
+pub async fn diagnostics_docked(state: State<'_, crate::diagnostics_window::DiagnosticsWindow>) -> Result<bool, String> {
+    Ok(state.docked())
+}
 
-    tauri::WebviewWindowBuilder::new(&app, "debug", tauri::WebviewUrl::App("/".into()))
-        .title("Aria — Developer")
-        .inner_size(520.0, 700.0)
-        .min_inner_size(400.0, 500.0)
-        .position(x, y)
-        .build()
-        .map_err(|e| format!("Failed to open debug window: {}", e))?;
-
+#[tauri::command]
+pub async fn diagnostics_set_docked(app: tauri::AppHandle, docked: bool) -> Result<(), String> {
+    crate::diagnostics_window::set_docked(&app, docked);
     Ok(())
+}
+
+/// What the diagnostics header shows about this build.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    pub version: String,
+    pub os: &'static str,
+    pub arch: &'static str,
+    pub profile: &'static str,
+    /// Whether on-device transcription is compiled in.
+    pub transcription: bool,
+}
+
+#[tauri::command]
+pub fn get_app_info() -> AppInfo {
+    AppInfo {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        os: std::env::consts::OS,
+        arch: std::env::consts::ARCH,
+        profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+        transcription: cfg!(feature = "ai"),
+    }
 }
 
 #[tauri::command]

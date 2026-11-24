@@ -53,7 +53,9 @@
       "auth": "Le PBX a refusé les identifiants. Vérifiez le nom d'utilisateur, le nom d'authentification et le mot de passe ; si le PBX utilise un autre realm, définissez-le dans les paramètres avancés du compte. Les tentatives automatiques s'arrêtent sur cet échec.",
       "forbidden_ip": "Le PBX a refusé cette adresse. La cause habituelle est un blocage de type fail2ban après des échecs précédents ; il se lève de lui-même à la fin de la période de bannissement.",
       "server_error": "Le PBX a répondu mais n'a pas pu vous enregistrer pour l'instant. Le problème est côté serveur ; l'application continue de réessayer."
-    }
+    },
+    "unregister": "Se désinscrire",
+    "register": "S'inscrire"
   },
   "dialer": {
     "searchCountry": "Rechercher un pays...",
@@ -315,7 +317,7 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "version": "Aria v0.3.2",
+    "version": "Aria {{version}}",
     "connection": "Connexion",
     "registered": "Enregistré",
     "registering": "Enregistrement...",
@@ -365,7 +367,21 @@
     "rx": "RX",
     "messageView": "Liste des messages",
     "ladderView": "Diagramme de flux d'appel",
-    "reconnecting": "Reconnexion..."
+    "reconnecting": "Reconnexion...",
+    "dock": "Ancrer à côté du téléphone",
+    "undock": "Détacher",
+    "follow": "Suivre les nouveaux messages",
+    "search": "Rechercher des messages…",
+    "noMatches": "Aucun message ne correspond.",
+    "copyMessage": "Copier le message",
+    "copiedMessage": "Copié",
+    "status": "État",
+    "appEvent": "Aria",
+    "filterByCall": "N'afficher que cet appel",
+    "clearCallFilter": "Afficher tous les appels",
+    "callOnly": "Appel {{tag}}",
+    "jumpToNewest": "Aller au plus récent",
+    "transcriptionOn": "transcription intégrée"
   },
   "common": {
     "cancel": "Annuler",

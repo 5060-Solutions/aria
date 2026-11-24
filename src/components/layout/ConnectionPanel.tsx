@@ -19,7 +19,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
-import { retryNow } from "../../hooks/useSip";
+import { registerAccounts, reregister, retryNow, unregisterNow } from "../../hooks/useSip";
 import { stateColors, stateLabelsKeys } from "./statusChip";
 import {
   accountLine,
@@ -108,6 +108,18 @@ export function ConnectionPanel({ anchorEl, open, onClose, accountId }: Props) {
   const handleRetry = () => {
     void retryNow(accountId).catch((e) => log.error("[ConnectionPanel] retry failed:", e));
   };
+  const handleReregister = () => {
+    void reregister(accountId).catch((e) => log.error("[ConnectionPanel] re-register failed:", e));
+  };
+  const handleUnregister = () => {
+    void unregisterNow(accountId).catch((e) => log.error("[ConnectionPanel] unregister failed:", e));
+  };
+  const handleRegister = () => {
+    const account = useAppStore.getState().accounts.find((a) => a.id === accountId);
+    if (account) void registerAccounts([account]).catch((e) => log.error("[ConnectionPanel] register failed:", e));
+  };
+  const up =
+    registrationState === "registered" || registrationState === "registering" || registrationState === "reconnecting";
 
   const handleCopy = async () => {
     if (!report) return;
@@ -216,15 +228,38 @@ export function ConnectionPanel({ anchorEl, open, onClose, accountId }: Props) {
       )}
 
       <Box sx={{ display: "flex", gap: 1, alignItems: "center", mt: 1.5 }}>
-        <Button
-          variant="contained"
-          size="small"
-          onClick={handleRetry}
-          disabled={busy}
-          sx={{ borderRadius: "10px", whiteSpace: "nowrap" }}
-        >
-          {report?.outcome === "registered" ? t("connection.reregister") : t("connection.retryNow")}
-        </Button>
+        {up ? (
+          <>
+            <Button
+              variant="contained"
+              size="small"
+              onClick={handleReregister}
+              disabled={busy}
+              sx={{ borderRadius: "10px", whiteSpace: "nowrap" }}
+            >
+              {t("connection.reregister")}
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={handleUnregister}
+              disabled={busy}
+              sx={{ borderRadius: "10px", whiteSpace: "nowrap" }}
+            >
+              {t("connection.unregister")}
+            </Button>
+          </>
+        ) : (
+          <Button
+            variant="contained"
+            size="small"
+            onClick={registrationState === "unregistered" ? handleRegister : handleRetry}
+            disabled={busy}
+            sx={{ borderRadius: "10px", whiteSpace: "nowrap" }}
+          >
+            {registrationState === "unregistered" ? t("connection.register") : t("connection.retryNow")}
+          </Button>
+        )}
         <Button
           variant="outlined"
           size="small"

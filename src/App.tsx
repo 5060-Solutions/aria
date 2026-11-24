@@ -149,7 +149,7 @@ export function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      {isDebugWindow ? <DiagnosticPanel isDetached /> : <MainApp />}
+      {isDebugWindow ? <DiagnosticPanel /> : <MainApp />}
     </ThemeProvider>
   );
 }

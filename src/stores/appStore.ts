@@ -21,7 +21,7 @@ import { storeCredential, getCredential, deleteCredential } from "../utils/crede
 import { log } from "../utils/log";
 import { DARK_MODE_KEY, initialDarkMode } from "../utils/preferences";
 
-type View = "dialer" | "history" | "contacts" | "voicemail" | "settings" | "diagnostics";
+type View = "dialer" | "history" | "contacts" | "voicemail" | "settings";
 
 /**
  * Echo cancellation and noise suppression default to on: a desktop softphone

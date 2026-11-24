@@ -13,7 +13,6 @@ import { CallHistory } from "../history/CallHistory";
 import { ContactList } from "../contacts/ContactList";
 import { Voicemail } from "../voicemail/Voicemail";
 import { Settings } from "../settings/Settings";
-import { DiagnosticPanel } from "../diagnostics/DiagnosticPanel";
 
 const views = {
   dialer: Dialer,
@@ -21,7 +20,6 @@ const views = {
   contacts: ContactList,
   voicemail: Voicemail,
   settings: Settings,
-  diagnostics: DiagnosticPanel,
 };
 
 export function AppShell() {
@@ -37,7 +35,6 @@ export function AppShell() {
   // has to be visible and hangupable wherever they are. The exception is the
   // diagnostics panel, which exists to watch a call's signalling.
   const showCallScreen =
-    currentView !== "diagnostics" &&
     activeCall &&
     activeCall.state !== "idle" &&
     activeCall.state !== "ended";
