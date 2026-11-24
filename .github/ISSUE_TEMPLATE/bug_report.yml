@@ -1,0 +1,85 @@
+name: Bug report
+description: Something in Aria does not work the way it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The more of the SIP side you can show us, the faster this goes:
+        **Settings → Diagnostics** has the live SIP log, RTP stats and a PCAP export. Passwords and
+        digest responses are already redacted there; still remove anything you consider private.
+  - type: input
+    id: version
+    attributes:
+      label: Aria version
+      description: From **About Aria** (⌘, then About) or the title of the release you installed.
+      placeholder: "0.7.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS version
+      placeholder: "macOS 26.1 / Windows 11 24H2 / Ubuntu 24.04 (GNOME, Wayland)"
+    validations:
+      required: true
+  - type: input
+    id: pbx
+    attributes:
+      label: PBX or provider
+      description: What Aria is registered to, as precisely as you know it.
+      placeholder: "FreePBX 17 (Asterisk 21) / 3CX / ariaroute / a Teliax trunk"
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - Auto (SRV)
+        - UDP
+        - TCP
+        - TLS
+        - Not sure
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you saw, including the exact text of any error.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Register an account over TLS
+        2. Receive a call from an external number
+        3. Press Hold, then Resume
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: trace
+    attributes:
+      label: SIP trace, logs or PCAP
+      description: Paste the relevant part of the Diagnostics log, or attach the PCAP export. Code blocks keep it readable.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I am on the latest release (Aria updates itself; **Check for updates** is in the app menu).
+        - label: I searched the open issues and did not find this one.

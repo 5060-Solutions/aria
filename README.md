@@ -11,6 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/5060-Solutions/aria/releases/latest"><img src="https://img.shields.io/github/v/release/5060-Solutions/aria?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/5060-Solutions/aria/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/5060-Solutions/aria/ci.yml?branch=main&style=flat-square&label=CI" alt="CI" /></a>
+  <a href="https://github.com/5060-Solutions/aria/security/code-scanning"><img src="https://img.shields.io/badge/CodeQL-enabled-2ea44f?style=flat-square" alt="CodeQL" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-non--commercial-blue?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform" />
 </p>
@@ -18,7 +20,9 @@
 <p align="center">
   <a href="https://aria-softphone.com"><strong>Download</strong></a> ·
   <a href="https://github.com/5060-Solutions/aria/releases">Releases</a> ·
-  <a href="https://github.com/5060-Solutions/aria/issues">Report a bug</a>
+  <a href="https://github.com/5060-Solutions/aria/issues/new?template=bug_report.yml">Report a bug</a> ·
+  <a href="https://github.com/5060-Solutions/aria/discussions">Discussions</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
 ---
@@ -159,6 +163,33 @@ pnpm tauri build --features ai                    # with on-device transcription
 
 Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed.
 
+## Testing
+
+Every push and pull request runs the same checks on macOS, Linux and Windows
+(`.github/workflows/ci.yml`): `eslint`, `tsc`, the Vitest suite, `cargo clippy
+-- -D warnings` and `cargo test`. CodeQL scans the Rust, TypeScript and
+workflow code weekly and on every PR, and Dependabot opens grouped update PRs
+on Mondays.
+
+What the tests cover, and where to add yours:
+
+| Layer | Where | What it proves |
+|-------|-------|----------------|
+| SIP and media logic | `#[test]`s beside the code in `src-tauri/src/sip/` | Parsing, SDP negotiation, auth, transactions, registration and call state machines |
+| Whole calls | `src-tauri/src/sip/voip_stack_harness/` | The real `SipManager` against a fake PBX over loopback: registration, codec negotiation, hold/mute, re-INVITEs, SRTP rekeys, retransmissions |
+| MCP, provisioning, menus | `src-tauri/src/mcp/`, `provision/`, `menu.rs` | Tool permissions and consent, provisioning links, menu state |
+| Frontend logic | `src/**/*.test.ts` (Vitest) | Pure utilities and store logic: SIP URIs, hints, codecs, provisioning flow, locale parity |
+| Live PBX | `src-tauri/src/sip/pbx_e2e.rs`, `#[ignore]`d | Real calls through a real PBX, on demand (below) |
+
+```bash
+pnpm check && pnpm test                                   # frontend
+cd src-tauri && cargo clippy -- -D warnings && cargo test --lib   # Rust, ~1 min warm
+```
+
+React components have no automated tests yet; UI changes are checked by hand
+and with screenshots in the PR. Logic that needs testing is kept out of
+components, in `src/utils` or the stores, where Vitest can reach it.
+
 ### End-to-end test against a PBX
 
 `src-tauri/src/sip/pbx_e2e.rs` registers two real `SipManager`s on two
@@ -184,6 +215,15 @@ The header of `scripts/pbx-e2e.sh` lists every variable. A failing test prints
 both endpoints' SIP traces. Extensions can also be created with the aria-pbx
 MCP server's `create_extension` tool and removed with
 `call_api extensions delete <id>`.
+
+## Contributing
+
+Bug reports and feature requests use the [issue templates](https://github.com/5060-Solutions/aria/issues/new/choose);
+questions go to [Discussions](https://github.com/5060-Solutions/aria/discussions).
+[CONTRIBUTING.md](CONTRIBUTING.md) has the house rules (conventional commits,
+every string in four locales, lint fixed in code), [SECURITY.md](SECURITY.md)
+says how to report a vulnerability privately, and the
+[code of conduct](CODE_OF_CONDUCT.md) applies everywhere the project meets.
 
 ## License
 

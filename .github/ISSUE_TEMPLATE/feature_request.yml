@@ -1,0 +1,27 @@
+name: Feature request
+description: Something Aria should do, or do differently.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not the solution. What happens today, and what does it cost you?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Aria to do?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Your setup
+      description: PBX or provider, platform, and anything about how you use the phone that matters here.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do instead today?
+      description: Another phone, a workaround, nothing.

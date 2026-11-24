@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://github.com/5060-Solutions/aria/discussions
+    about: "Setup questions, PBX quirks, \"is this expected?\" — ask in Discussions."
+  - name: Security issue
+    url: https://github.com/5060-Solutions/aria/security/policy
+    about: Please report vulnerabilities privately, not in a public issue.
+  - name: Download Aria
+    url: https://aria-softphone.com
+    about: Installers for macOS, Windows and Linux.
+  - name: Commercial licensing
+    url: mailto:sales@5060solutions.com
+    about: Aria is free for non-commercial use; commercial use needs a license.
