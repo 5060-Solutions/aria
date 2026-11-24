@@ -239,8 +239,9 @@ export function DiagnosticPanel() {
       )}
       {anyRegistering && <LinearProgress sx={{ height: 2, mx: 1.5, borderRadius: 1 }} />}
 
-      {/* Status cards, collapsible */}
-      <Box sx={{ px: 1.5, pt: 0.5 }}>
+      {/* Status cards, collapsible; never more than a third of the window,
+          so the trace keeps its room with a call up. */}
+      <Box sx={{ px: 1.5, pt: 0.5, maxHeight: "36%", display: "flex", flexDirection: "column", minHeight: 0 }}>
         <Box
           onClick={store.toggleStatus}
           sx={{ display: "flex", alignItems: "center", gap: 0.5, cursor: "pointer", color: "text.secondary", userSelect: "none" }}
@@ -264,7 +265,7 @@ export function DiagnosticPanel() {
             </Typography>
           )}
         </Box>
-        <Collapse in={store.showStatus}>
+        <Collapse in={store.showStatus} sx={{ overflow: "auto", minHeight: 0 }}>
           {selected ? (
             <>
               <ConnectionCard account={selected} latencyMs={store.status?.latencyMs ?? null} actions={actions} />
