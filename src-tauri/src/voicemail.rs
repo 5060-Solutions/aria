@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(seen[0].path, "/api/v1/auth/extension-login");
         let login: serde_json::Value = serde_json::from_str(&seen[0].body).unwrap();
         assert_eq!(login["extension_number"], "1001");
-        assert_eq!(login["password"], &pass);
+        assert_eq!(login["password"], pass.as_str());
         assert_eq!(login["tenant_domain"], "test.ariaroute.com");
         assert!(seen[1..].iter().all(|r| r.authorization.as_deref() == Some("Bearer jwt-1")), "{seen:?}");
         assert_eq!(seen[1].path, "/api/v1/extensions/ext-1/voicemail");
