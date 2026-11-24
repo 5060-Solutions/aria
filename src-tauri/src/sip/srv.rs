@@ -87,32 +87,94 @@ pub trait DnsResolver: Send + Sync {
     fn ips<'a>(&'a self, host: &'a str) -> BoxFut<'a, Result<IpAnswer, String>>;
 }
 
+/// Where the resolver configuration comes from: the operating system, or a
+/// test's stand-in.
+type ConfigSource = Box<
+    dyn Fn() -> Result<(hickory_resolver::config::ResolverConfig, hickory_resolver::config::ResolverOpts), String>
+        + Send
+        + Sync,
+>;
+
 /// SRV through hickory on the system's resolver configuration, addresses
-/// through the OS. Built on first use, so the manager can be constructed with
-/// no Tokio runtime.
-#[derive(Default)]
+/// through the OS.
+///
+/// The hickory resolver is built from the configuration *as it is at the
+/// time of the lookup*. Built once at startup, it kept the nameservers of
+/// whatever network the app was started on; after a change of network those
+/// were unreachable, every SRV lookup failed, and nothing short of a restart
+/// recovered. Now the configuration is read before each lookup (cheap: a
+/// file on Unix, the registry on Windows) and the resolver is rebuilt when it
+/// differs; a lookup that fails drops the resolver too, so the next one
+/// starts fresh even when the configuration reads the same.
 pub struct SystemResolver {
-    inner: tokio::sync::OnceCell<Option<Arc<hickory_resolver::TokioResolver>>>,
+    source: ConfigSource,
+    /// The configuration's fingerprint and the resolver built from it.
+    cached: tokio::sync::Mutex<Option<(String, Arc<hickory_resolver::TokioResolver>)>>,
+    builds: std::sync::atomic::AtomicUsize,
+}
+
+impl Default for SystemResolver {
+    /// The system's own resolver configuration. There is no fallback to a
+    /// public resolver: a name that only a corporate or VPN resolver knows
+    /// must not be sent to one that does not.
+    fn default() -> Self {
+        Self::with_config_source(|| {
+            hickory_resolver::system_conf::read_system_conf().map_err(|e| e.to_string())
+        })
+    }
 }
 
 impl SystemResolver {
-    /// The system's own resolver configuration, or an error. There is no
-    /// fallback to a public resolver: a name that only a corporate or VPN
-    /// resolver knows must not be sent to one that does not.
-    async fn resolver(&self) -> Result<Arc<hickory_resolver::TokioResolver>, String> {
-        use hickory_resolver::{ResolverBuilder, TokioResolver};
+    pub fn with_config_source(
+        source: impl Fn() -> Result<(hickory_resolver::config::ResolverConfig, hickory_resolver::config::ResolverOpts), String>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            source: Box::new(source),
+            cached: tokio::sync::Mutex::new(None),
+            builds: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
 
-        self.inner
-            .get_or_init(|| async {
-                TokioResolver::builder_tokio()
-                    .and_then(ResolverBuilder::build)
-                    .map(Arc::new)
-                    .map_err(|e| log::error!("no usable system DNS configuration for SRV: {e}"))
-                    .ok()
-            })
-            .await
-            .clone()
-            .ok_or_else(|| "no usable system DNS configuration for SRV lookups".to_string())
+    /// How many resolvers have been built; what the tests observe.
+    #[cfg(test)]
+    fn builds(&self) -> usize {
+        self.builds.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// A resolver for the configuration as it is now: the cached one when the
+    /// configuration has not changed, a new one otherwise.
+    async fn resolver(&self) -> Result<Arc<hickory_resolver::TokioResolver>, String> {
+        use hickory_resolver::TokioResolver;
+
+        let (config, opts) =
+            (self.source)().map_err(|e| format!("no usable system DNS configuration for SRV lookups: {e}"))?;
+        let fingerprint = format!("{config:?}");
+        let mut cached = self.cached.lock().await;
+        if let Some((known, resolver)) = cached.as_ref() {
+            if *known == fingerprint {
+                return Ok(resolver.clone());
+            }
+            log::info!("system DNS configuration changed; rebuilding the SRV resolver");
+        }
+        let resolver = TokioResolver::builder_with_config(config, hickory_resolver::net::runtime::TokioRuntimeProvider::default())
+            .with_options(opts)
+            .build()
+            .map(Arc::new)
+            .map_err(|e| {
+                log::error!("no usable system DNS configuration for SRV: {e}");
+                format!("no usable system DNS configuration for SRV lookups: {e}")
+            })?;
+        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *cached = Some((fingerprint, resolver.clone()));
+        Ok(resolver)
+    }
+
+    /// Drop the resolver so the next lookup builds a fresh one.
+    async fn forget(&self) {
+        *self.cached.lock().await = None;
     }
 }
 
@@ -128,7 +190,13 @@ impl DnsResolver for SystemResolver {
             let resolver = self.resolver().await?;
             let lookup = match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.srv_lookup(name)).await
             {
-                Err(_) => return Err(format!("SRV lookup for {name} timed out")),
+                // A resolver that cannot get an answer may be talking to the
+                // nameservers of a network this machine has left: let the
+                // next lookup build one from the current configuration.
+                Err(_) => {
+                    self.forget().await;
+                    return Err(format!("SRV lookup for {name} timed out"));
+                }
                 // NXDOMAIN and "no data" are an answer, not a failure.
                 Ok(Err(e)) if e.is_no_records_found() => {
                     return Ok(SrvAnswer {
@@ -136,7 +204,10 @@ impl DnsResolver for SystemResolver {
                         ttl: MIN_TTL,
                     });
                 }
-                Ok(Err(e)) => return Err(format!("SRV lookup for {name} failed: {e}")),
+                Ok(Err(e)) => {
+                    self.forget().await;
+                    return Err(format!("SRV lookup for {name} failed: {e}"));
+                }
                 Ok(Ok(l)) => l,
             };
             let records = lookup
@@ -1434,5 +1505,76 @@ mod tests {
         for c in [200, 401, 403, 404, 423, 480, 600] {
             assert!(!Failure::is_failover_status(c), "{c}");
         }
+    }
+}
+
+#[cfg(test)]
+mod system_resolver_tests {
+    use super::*;
+    use hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    /// A configuration naming one nameserver, with a short timeout and one
+    /// attempt so a lookup that gets no answer fails fast.
+    fn conf(ip: &str) -> (ResolverConfig, ResolverOpts) {
+        let mut config = ResolverConfig::default();
+        config.add_name_server(NameServerConfig::udp(ip.parse().unwrap()));
+        let mut opts = ResolverOpts::default();
+        opts.timeout = Duration::from_millis(200);
+        opts.attempts = 1;
+        (config, opts)
+    }
+
+    /// Switching networks swaps the nameservers. The resolver follows the
+    /// system configuration as it is now, not as it was at startup, which is
+    /// what left the app unable to resolve anything until it was restarted.
+    #[tokio::test]
+    async fn a_changed_system_configuration_rebuilds_the_resolver() {
+        let current = Arc::new(Mutex::new("192.0.2.1".to_string()));
+        let source = current.clone();
+        let resolver = SystemResolver::with_config_source(move || Ok(conf(&source.lock().unwrap())));
+
+        resolver.resolver().await.unwrap();
+        resolver.resolver().await.unwrap();
+        assert_eq!(resolver.builds(), 1, "the same configuration keeps its resolver");
+
+        *current.lock().unwrap() = "192.0.2.2".to_string();
+        resolver.resolver().await.unwrap();
+        assert_eq!(resolver.builds(), 2, "new nameservers get a new resolver");
+    }
+
+    /// A lookup that fails drops the resolver, so the next one starts from
+    /// the current configuration even when it reads the same: a VPN or a
+    /// captive portal can change what is reachable without changing the list.
+    #[tokio::test]
+    async fn a_failed_lookup_drops_the_resolver() {
+        // TEST-NET-1 never answers (and the name is not one hickory settles locally).
+        let resolver = SystemResolver::with_config_source(|| Ok(conf("192.0.2.1")));
+        assert!(resolver.srv("_sip._udp.pbx.aria-dns-test.net").await.is_err());
+        assert_eq!(resolver.builds(), 1);
+        assert!(resolver.srv("_sip._udp.pbx.aria-dns-test.net").await.is_err());
+        assert_eq!(resolver.builds(), 2, "rebuilt after the failure");
+    }
+
+    /// An unreadable configuration fails this lookup, not every later one.
+    #[tokio::test]
+    async fn an_unreadable_configuration_is_read_again_next_time() {
+        let broken = Arc::new(AtomicBool::new(true));
+        let flag = broken.clone();
+        let resolver = SystemResolver::with_config_source(move || {
+            if flag.load(Ordering::SeqCst) {
+                Err("resolv.conf is missing".to_string())
+            } else {
+                Ok(conf("192.0.2.1"))
+            }
+        });
+        let err = resolver.resolver().await.unwrap_err();
+        assert!(err.contains("resolv.conf is missing"), "{err}");
+        assert_eq!(resolver.builds(), 0);
+
+        broken.store(false, Ordering::SeqCst);
+        resolver.resolver().await.unwrap();
+        assert_eq!(resolver.builds(), 1);
     }
 }
