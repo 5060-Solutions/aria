@@ -61,6 +61,35 @@ pub enum VoicemailError {
     Status(u16),
     /// A 2xx whose body was not what the API documents.
     Malformed,
+    /// The account has no saved password to sign in with.
+    NoPassword,
+}
+
+impl VoicemailError {
+    /// A stable name the frontend can switch on; the Display text is for people.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::InvalidUrl => "invalidUrl",
+            Self::Unauthorized => "unauthorized",
+            Self::NoMailbox => "noMailbox",
+            Self::Network(_) => "network",
+            Self::Status(_) => "status",
+            Self::Malformed => "malformed",
+            Self::NoPassword => "noPassword",
+        }
+    }
+}
+
+/// Over IPC an error is `{ "kind": ..., "message": ... }`, so the UI can tell
+/// "no mailbox" from "the PBX is down" without parsing prose.
+impl Serialize for VoicemailError {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("VoicemailError", 2)?;
+        s.serialize_field("kind", self.kind())?;
+        s.serialize_field("message", &self.to_string())?;
+        s.end()
+    }
 }
 
 impl fmt::Display for VoicemailError {
@@ -72,6 +101,7 @@ impl fmt::Display for VoicemailError {
             Self::Network(e) => write!(f, "Could not reach the PBX: {e}"),
             Self::Status(s) => write!(f, "The PBX answered with HTTP {s}."),
             Self::Malformed => write!(f, "The PBX sent a reply Aria could not read."),
+            Self::NoPassword => write!(f, "This account has no saved password to sign in to the PBX with."),
         }
     }
 }
@@ -577,6 +607,38 @@ mod tests {
         assert!(validate_api_url("http://127.0.0.1:4000", false).is_err());
         assert!(validate_api_url("ftp://api.ariaroute.com", true).is_err());
         assert!(validate_api_url("api.ariaroute.com", false).is_err());
+    }
+
+    /// Against a real Aria PBX, on demand: `ARIA_E2E_PBX_API` (e.g.
+    /// https://api.ariaroute.com), `ARIA_E2E_PBX_DOMAIN`, `ARIA_E2E_EXT_A`
+    /// and `ARIA_E2E_PASS_A`, the same extension `scripts/pbx-e2e.sh` uses.
+    /// Proves sign-in, mailbox lookup and the message list end to end; prints
+    /// the messages so a human can compare with the PBX admin.
+    #[tokio::test]
+    #[ignore = "needs a live Aria PBX; see ARIA_E2E_PBX_API in the doc comment"]
+    async fn lists_the_mailbox_of_a_live_pbx() {
+        let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let (Some(api), Some(domain), Some(ext), Some(pass)) =
+            (var("ARIA_E2E_PBX_API"), var("ARIA_E2E_PBX_DOMAIN"), var("ARIA_E2E_EXT_A"), var("ARIA_E2E_PASS_A"))
+        else {
+            eprintln!("voicemail e2e: ARIA_E2E_PBX_API, ARIA_E2E_PBX_DOMAIN, ARIA_E2E_EXT_A, ARIA_E2E_PASS_A not all set");
+            return;
+        };
+        let mailbox = Mailbox { account_id: "e2e".into(), api_url: api, extension: ext, domain };
+        let state = VoicemailState::new();
+        let messages = state.list(&mailbox, &pass).await.expect("mailbox listed");
+        eprintln!("voicemail e2e: {} message(s)", messages.len());
+        for m in &messages {
+            eprintln!(
+                "  {} from {} {}s read={} at {} transcription={}",
+                m.id, m.caller_id, m.duration_secs, m.read, m.created_at, m.transcription.is_some()
+            );
+            // Audio must come back for every listed message.
+            let audio = state.audio(&mailbox, &pass, &m.id).await.expect("audio");
+            assert!(audio.len() > 44, "{} bytes of audio for {}", audio.len(), m.id);
+        }
+        // The second call must not sign in again.
+        state.list(&mailbox, &pass).await.expect("second list");
     }
 
     #[test]

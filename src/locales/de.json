@@ -3,7 +3,8 @@
     "dialer": "Wähltasten",
     "history": "Verlauf",
     "contacts": "Kontakte",
-    "settings": "Einstellungen"
+    "settings": "Einstellungen",
+    "voicemail": "Mailbox"
   },
   "status": {
     "connected": "Verbunden",
@@ -15,7 +16,8 @@
     "clickForDetails": "Klicken für Verbindungsdetails",
     "voicemail": "Mailbox",
     "voicemailWaiting": "{{count}} neue Sprachnachricht(en) – zum Abhören klicken",
-    "callVoicemail": "Mailbox anrufen"
+    "callVoicemail": "Mailbox anrufen",
+    "openVoicemail": "Mailbox öffnen"
   },
   "connection": {
     "title": "Verbindung",
@@ -405,6 +407,28 @@
     "noSpeech": "In diesem Anruf wurde keine Sprache erkannt.",
     "narrowband": "Dieser Anruf wurde mit 8 kHz übertragen, daher ist das Transkript ungenauer.",
     "close": "Schließen"
+  },
+  "voicemail": {
+    "title": "Mailbox",
+    "refresh": "Aktualisieren",
+    "empty": "Keine Nachrichten in der Mailbox.",
+    "noMailbox": "Diese Nebenstelle hat keine Mailbox auf der PBX.",
+    "loadFailed": "Die Mailbox konnte nicht geladen werden.",
+    "signInFailed": "Die PBX hat das Passwort dieser Nebenstelle nicht akzeptiert.",
+    "retry": "Erneut versuchen",
+    "unknownCaller": "Unbekannter Anrufer",
+    "newMessage": "Neu",
+    "callBack": "Zurückrufen",
+    "delete": "Löschen",
+    "deleteTitle": "Diese Nachricht löschen?",
+    "deleteBody": "Die Nachricht wird auf der PBX für alle Telefone dieser Nebenstelle entfernt. Das lässt sich nicht rückgängig machen.",
+    "transcription": "Transkription",
+    "noTranscription": "Für diese Nachricht gibt es keine Transkription.",
+    "loadingAudio": "Audio wird geladen…",
+    "audioFailed": "Das Audio konnte nicht geladen werden.",
+    "unread_one": "{{count}} neue Nachricht",
+    "unread_other": "{{count}} neue Nachrichten",
+    "back": "Zurück"
   },
   "mcp": {
     "title": "Assistenten (MCP)",

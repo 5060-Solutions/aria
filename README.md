@@ -49,6 +49,7 @@ stays light.
 **Everyday use**
 - Contacts with favorites and search, plus macOS Contacts import
 - Presence (BLF) for colleagues' extensions, shown live in Contacts
+- Visual voicemail on an Aria PBX: see who called, play the message in the app, read its transcription, call back or delete. Other PBXes keep the one-click dial-in.
 - Call history with callback and CSV export
 - Keyboard-driven: ⌘D dialer, ⌘↵ call / answer, ⌘K hang up, ⌘M mute, ⌘H hold, ⌘, settings
 - Dark and light themes; English, Spanish, German and French

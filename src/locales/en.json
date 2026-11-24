@@ -3,7 +3,8 @@
     "dialer": "Dialer",
     "history": "History",
     "contacts": "Contacts",
-    "settings": "Settings"
+    "settings": "Settings",
+    "voicemail": "Voicemail"
   },
   "status": {
     "connected": "Registered",
@@ -15,7 +16,8 @@
     "clickForDetails": "Click for connection details",
     "voicemail": "Voicemail",
     "voicemailWaiting": "{{count}} new voicemail message(s) — click to listen",
-    "callVoicemail": "Call voicemail"
+    "callVoicemail": "Call voicemail",
+    "openVoicemail": "Open voicemail"
   },
   "connection": {
     "title": "Connection",
@@ -405,6 +407,28 @@
     "noSpeech": "No speech was recognised in this call.",
     "narrowband": "This call was carried at 8 kHz, so the transcript is less accurate.",
     "close": "Close"
+  },
+  "voicemail": {
+    "title": "Voicemail",
+    "refresh": "Refresh",
+    "empty": "No voicemail messages.",
+    "noMailbox": "This extension has no voicemail mailbox on the PBX.",
+    "loadFailed": "Could not load voicemail.",
+    "signInFailed": "The PBX did not accept this extension's password.",
+    "retry": "Try again",
+    "unknownCaller": "Unknown caller",
+    "newMessage": "New",
+    "callBack": "Call back",
+    "delete": "Delete",
+    "deleteTitle": "Delete this message?",
+    "deleteBody": "The message is removed from the PBX for every phone on this extension. This cannot be undone.",
+    "transcription": "Transcription",
+    "noTranscription": "No transcription for this message.",
+    "loadingAudio": "Loading audio…",
+    "audioFailed": "Could not load the audio.",
+    "unread_one": "{{count}} new message",
+    "unread_other": "{{count}} new messages",
+    "back": "Back"
   },
   "mcp": {
     "title": "Assistants (MCP)",

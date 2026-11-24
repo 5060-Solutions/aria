@@ -3,7 +3,8 @@
     "dialer": "Clavier",
     "history": "Historique",
     "contacts": "Contacts",
-    "settings": "Paramètres"
+    "settings": "Paramètres",
+    "voicemail": "Messagerie"
   },
   "status": {
     "connected": "Connecté",
@@ -15,7 +16,8 @@
     "clickForDetails": "Cliquez pour les détails de la connexion",
     "voicemail": "Messagerie vocale",
     "voicemailWaiting": "{{count}} nouveau(x) message(s) vocal(aux) – cliquez pour écouter",
-    "callVoicemail": "Appeler la messagerie vocale"
+    "callVoicemail": "Appeler la messagerie vocale",
+    "openVoicemail": "Ouvrir la messagerie vocale"
   },
   "connection": {
     "title": "Connexion",
@@ -405,6 +407,28 @@
     "noSpeech": "Aucune parole reconnue dans cet appel.",
     "narrowband": "Cet appel a été transmis à 8 kHz ; la transcription est donc moins précise.",
     "close": "Fermer"
+  },
+  "voicemail": {
+    "title": "Messagerie vocale",
+    "refresh": "Actualiser",
+    "empty": "Aucun message vocal.",
+    "noMailbox": "Cette extension n'a pas de boîte vocale sur le PBX.",
+    "loadFailed": "Impossible de charger la messagerie vocale.",
+    "signInFailed": "Le PBX n'a pas accepté le mot de passe de cette extension.",
+    "retry": "Réessayer",
+    "unknownCaller": "Appelant inconnu",
+    "newMessage": "Nouveau",
+    "callBack": "Rappeler",
+    "delete": "Supprimer",
+    "deleteTitle": "Supprimer ce message ?",
+    "deleteBody": "Le message est supprimé du PBX pour tous les téléphones de cette extension. Cette action est irréversible.",
+    "transcription": "Transcription",
+    "noTranscription": "Aucune transcription pour ce message.",
+    "loadingAudio": "Chargement de l'audio…",
+    "audioFailed": "Impossible de charger l'audio.",
+    "unread_one": "{{count}} nouveau message",
+    "unread_other": "{{count}} nouveaux messages",
+    "back": "Retour"
   },
   "mcp": {
     "title": "Assistants (MCP)",
