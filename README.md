@@ -36,7 +36,7 @@ stays light.
 - Click `tel:` and `sip:` links anywhere on your system to dial
 
 **Audio**
-- Opus and G.711 (μ-law / A-law)
+- Opus, G.711 (μ-law / A-law) and G.729 (8 kbps, for narrow links; Annex A, with Annex B comfort noise decoded)
 - SRTP media encryption
 - Echo cancellation, noise suppression and automatic gain control
 - Choose input and output devices, and run a mic and speaker test

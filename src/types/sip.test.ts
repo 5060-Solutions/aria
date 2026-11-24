@@ -2,15 +2,14 @@ import { describe, expect, it } from "vitest";
 import { CODEC_INFO, DEFAULT_CODECS, normalizeCodecs } from "./sip";
 
 describe("codecs", () => {
-  it("offers only the codecs the softphone carries, with no G.729", () => {
-    expect(DEFAULT_CODECS.map((c) => c.codec)).toEqual(["opus", "pcmu", "pcma"]);
-    expect(Object.keys(CODEC_INFO).sort()).toEqual(["opus", "pcma", "pcmu"]);
+  it("carries Opus, G.711 and G.729, with G.729 last by default", () => {
+    expect(DEFAULT_CODECS.map((c) => c.codec)).toEqual(["opus", "pcmu", "pcma", "g729"]);
+    expect(Object.keys(CODEC_INFO).sort()).toEqual(["g729", "opus", "pcma", "pcmu"]);
   });
 
-  it("loads a saved preference that still names G.729 by dropping it", () => {
+  it("keeps a saved order and appends the codecs the save predates", () => {
     const saved = [
       { codec: "opus", enabled: true, priority: 1 },
-      { codec: "g729", enabled: true, priority: 2 },
       { codec: "pcmu", enabled: false, priority: 3 },
       { codec: "pcma", enabled: true, priority: 4 },
     ];
@@ -18,11 +17,26 @@ describe("codecs", () => {
       { codec: "opus", enabled: true, priority: 1 },
       { codec: "pcmu", enabled: false, priority: 2 },
       { codec: "pcma", enabled: true, priority: 3 },
+      { codec: "g729", enabled: true, priority: 4 },
+    ]);
+  });
+
+  it("drops a saved codec the softphone does not carry", () => {
+    const saved = [
+      { codec: "ilbc", enabled: true, priority: 1 },
+      { codec: "g729", enabled: true, priority: 2 },
+      { codec: "opus", enabled: true, priority: 3 },
+    ];
+    expect(normalizeCodecs(saved)).toEqual([
+      { codec: "g729", enabled: true, priority: 1 },
+      { codec: "opus", enabled: true, priority: 2 },
+      { codec: "pcmu", enabled: true, priority: 3 },
+      { codec: "pcma", enabled: true, priority: 4 },
     ]);
   });
 
   it("falls back to the defaults when nothing saved is usable", () => {
     expect(normalizeCodecs(undefined)).toEqual(DEFAULT_CODECS);
-    expect(normalizeCodecs([{ codec: "g729", enabled: true, priority: 1 }])).toEqual(DEFAULT_CODECS);
+    expect(normalizeCodecs([{ codec: "ilbc", enabled: true, priority: 1 }])).toEqual(DEFAULT_CODECS);
   });
 });

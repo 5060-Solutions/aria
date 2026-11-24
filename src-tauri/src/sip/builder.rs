@@ -621,12 +621,14 @@ fn classify_payload(pt: u8, rtpmaps: &[RtpMap]) -> Option<OfferedPayload> {
 /// "whatever rtp-engine knows", so a codec added to rtp-engine is not
 /// negotiated until the softphone chooses to carry it.
 ///
-/// No G.729: rtp-engine's G.729 is not ITU-T G.729 compatible (its own
-/// bitstream on G.729's framing), so a real G.729 peer would hear noise both
-/// ways. It comes back only with a conformant implementation.
-const SUPPORTED_CODECS: [rtp_engine::CodecType; 3] = [
+/// G.729 is rtp-engine's Annex A port, bit-exact against the ITU-T test
+/// vectors. Aria declines Annex B (`annexb=no` in every offer and answer) and
+/// never sends silence frames, so its output suits every G.729 peer; a peer
+/// that sends them anyway is decoded as comfort noise.
+const SUPPORTED_CODECS: [rtp_engine::CodecType; 4] = [
     rtp_engine::CodecType::Pcmu,
     rtp_engine::CodecType::Pcma,
+    rtp_engine::CodecType::G729,
     rtp_engine::CodecType::Opus,
 ];
 
@@ -1045,7 +1047,7 @@ pub fn build_sdp_offer_with_origin(
     };
 
     // Build payload type list from enabled codecs in priority order. Only the
-    // codecs the softphone carries: a saved preference may still name G.729.
+    // codecs the softphone carries, whatever a saved preference names.
     let offered: Vec<&super::account::CodecPreference> = codecs
         .iter()
         .filter(|c| c.enabled && SUPPORTED_CODECS.contains(&c.codec))
@@ -1582,16 +1584,19 @@ mod tests {
         assert!(msg.contains(";reg-id=1\r\n"), "{msg}");
     }
 
-    /// rtp-engine's G.729 is not ITU-T G.729, so the softphone neither offers
-    /// it (by default or from a saved preference) nor answers with it.
+    /// G.729 is carried: after the defaults in Aria's own offer, first when a
+    /// saved preference ranks it first, and answered on an offer that names
+    /// it. Annex B is declined (`annexb=no`): Aria never sends silence
+    /// frames, so its output suits every G.729 peer, and a peer that sends
+    /// them anyway is still decoded.
     #[test]
-    fn g729_is_never_offered_or_answered() {
+    fn g729_is_offered_and_answered() {
         use super::super::account::{CodecPreference, default_codec_preferences};
         use rtp_engine::CodecType;
 
         let defaults = build_sdp_offer_with_codecs("10.0.0.2".to_string(), 40000, None, &default_codec_preferences());
-        assert!(defaults.contains("m=audio 40000 RTP/AVP 111 0 8 101 102\r\n"));
-        assert!(!defaults.contains("G729"));
+        assert!(defaults.contains("m=audio 40000 RTP/AVP 111 0 8 18 101 102\r\n"), "{defaults}");
+        assert!(defaults.contains("a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\n"), "{defaults}");
 
         let saved = build_sdp_offer_with_codecs(
             "10.0.0.2".to_string(),
@@ -1602,11 +1607,11 @@ mod tests {
                 CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
             ],
         );
-        assert!(saved.contains("m=audio 40000 RTP/AVP 0 101\r\n"));
-        assert!(!saved.contains("G729"));
+        assert!(saved.contains("m=audio 40000 RTP/AVP 18 0 101\r\n"), "{saved}");
 
         let answer = build_sdp_answer("m=audio 20000 RTP/AVP 18 0\r\n", "10.0.0.2".to_string(), 30000).unwrap();
-        assert!(answer.contains("m=audio 30000 RTP/AVP 0\r\n"));
+        assert!(answer.contains("m=audio 30000 RTP/AVP 18 0\r\n"), "{answer}");
+        assert!(answer.contains("a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\n"), "{answer}");
     }
 
     /// Every codec's rtpmap line, pinned: what the answer and offer carry.
@@ -1841,8 +1846,8 @@ mod tests {
                      a=rtpmap:111 speex/16000\r\n\
                      a=rtpmap:9 G722/8000\r\n";
         let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000).unwrap();
-        assert!(answer.contains("m=audio 30000 RTP/AVP 8 101\r\n"));
-        assert!(!answer.contains("G729"), "G.729 is not carried");
+        assert!(answer.contains("m=audio 30000 RTP/AVP 18 8 101\r\n"), "{answer}");
+        assert!(answer.contains("a=rtpmap:18 G729/8000\r\n"));
         assert!(answer.contains("a=rtpmap:8 PCMA/8000\r\n"));
         assert!(answer.contains("a=rtpmap:101 telephone-event/8000\r\n"));
         assert!(!answer.contains("speex") && !answer.contains("G722"));
@@ -1919,20 +1924,21 @@ mod tests {
         assert_eq!(negotiate_audio(pcmu_only_offer, Some(&none_enabled)).map(|n| n.pt), Some(0));
     }
 
-    /// `18 0`: G.729 is offered first and is never what the session runs.
+    /// `18 0`: G.729 offered first runs when the offer's order stands, and
+    /// loses to PCMU under the default preferences, which rank it last.
     #[test]
-    fn g729_first_offer_runs_pcmu() {
+    fn g729_first_offer_runs_g729_unless_the_preferences_rank_it_lower() {
         use rtp_engine::CodecType;
         let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 18 0\r\n";
-        assert_eq!(negotiate_audio(offer, None), Some(NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 }));
+        assert_eq!(negotiate_audio(offer, None), Some(NegotiatedAudio { codec: CodecType::G729, pt: 18 }));
         let defaults = crate::sip::account::default_codec_preferences();
-        assert_eq!(negotiate_audio(offer, Some(&defaults)).map(|n| n.codec), Some(CodecType::Pcmu));
+        assert_eq!(negotiate_audio(offer, Some(&defaults)), Some(NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 }));
     }
 
     /// Only codecs this phone cannot carry: nothing to negotiate, no answer.
     #[test]
     fn an_offer_of_only_unsupported_codecs_has_no_answer() {
-        let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 9 18 101\r\na=rtpmap:9 G722/8000\r\n";
+        let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 9 101\r\na=rtpmap:9 G722/8000\r\n";
         assert_eq!(negotiate_audio(offer, None), None);
         let defaults = crate::sip::account::default_codec_preferences();
         assert_eq!(negotiate_audio(offer, Some(&defaults)), None);

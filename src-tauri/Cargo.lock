@@ -4856,7 +4856,7 @@ dependencies = [
 [[package]]
 name = "rtp-engine"
 version = "0.1.0"
-source = "git+https://github.com/5060-Solutions/rtp-engine.git#a96e2a0484362665c615025aea725704f52dcd41"
+source = "git+https://github.com/5060-Solutions/rtp-engine.git#4f8f3f9c3a31f795cd69ec7a200d3737b179b92f"
 dependencies = [
  "aes 0.9.4",
  "audioadapter-buffers",
