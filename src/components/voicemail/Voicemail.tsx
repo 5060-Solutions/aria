@@ -351,11 +351,20 @@ export function Voicemail() {
                     </Box>
                   }
                   secondary={
-                    <Box component="span" sx={{ display: "flex", gap: 1, fontSize: "0.8rem" }}>
-                      <span>{formatVoicemailTime(message.createdAt)}</span>
-                      <span>&middot; {formatVoicemailDuration(message.durationSecs)}</span>
+                    // The time and length never wrap; the transcription
+                    // preview takes what is left and is cut with an ellipsis.
+                    <Box component="span" sx={{ display: "flex", gap: 1, fontSize: "0.8rem", minWidth: 0 }}>
+                      <Box component="span" sx={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+                        {formatVoicemailTime(message.createdAt)}
+                      </Box>
+                      <Box component="span" sx={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+                        &middot; {formatVoicemailDuration(message.durationSecs)}
+                      </Box>
                       {message.transcription && (
-                        <Box component="span" sx={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        <Box
+                          component="span"
+                          sx={{ opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+                        >
                           &middot; {message.transcription}
                         </Box>
                       )}
