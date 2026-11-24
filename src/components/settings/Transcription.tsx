@@ -20,8 +20,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useTranslation } from "react-i18next";
 import { log } from "../../utils/log";
 
-/** Where the work to ship transcription in the release builds is tracked. */
-const TRANSCRIPTION_STATUS_URL = "https://github.com/5060-Solutions/aria/issues/84";
+/** The standard downloads, which are built with transcription. */
+const STANDARD_DOWNLOAD_URL = "https://aria-softphone.com";
 
 interface AiModel {
   id: string;
@@ -190,7 +190,7 @@ export function Transcription() {
           size="small"
           variant="outlined"
           onClick={() => {
-            openUrl(TRANSCRIPTION_STATUS_URL).catch((e) => log.error("[Transcription] Could not open link:", e));
+            openUrl(STANDARD_DOWNLOAD_URL).catch((e) => log.error("[Transcription] Could not open link:", e));
           }}
         >
           {t("transcription.unsupportedFollow")}

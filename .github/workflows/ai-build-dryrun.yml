@@ -4,6 +4,10 @@ name: AI build dry run (throwaway)
 
 on:
   workflow_dispatch:
+  # A workflow on a branch cannot be dispatched until it exists on main, so
+  # the dry run fires on pushes to its own branch instead.
+  push:
+    branches: [feat/ship-transcription]
 
 permissions:
   contents: read

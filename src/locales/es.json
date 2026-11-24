@@ -393,8 +393,8 @@
   },
   "transcription": {
     "unsupported": "Esta versión se compiló sin compatibilidad con la transcripción.",
-    "unsupportedWhy": "La transcripción se realiza por completo en este ordenador, lo que requiere un motor de reconocimiento de voz que la descarga estándar aún no incluye. Las aplicaciones móviles ya lo tienen; el estado de la versión de escritorio se sigue en GitHub.",
-    "unsupportedFollow": "Seguir el progreso en GitHub",
+    "unsupportedWhy": "La transcripción se realiza por completo en este ordenador y requiere un motor de reconocimiento de voz que no se incluyó en esta versión. La descarga estándar de aria-softphone.com lo incluye.",
+    "unsupportedFollow": "Obtener la descarga estándar",
     "intro": "Las grabaciones se transcriben en este equipo. No se sube nada.",
     "autoTitle": "Transcribir llamadas grabadas",
     "autoNote": "Cada grabación se transcribe al terminar la llamada.",
