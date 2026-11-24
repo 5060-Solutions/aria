@@ -7,6 +7,7 @@ mod menu;
 mod provision;
 mod sip;
 mod system_contacts;
+mod voicemail;
 
 use tauri::{Emitter, Listener, Manager};
 
@@ -143,6 +144,7 @@ pub fn run() {
         )
         .manage(manager)
         .manage(audio_test_manager)
+        .manage(voicemail::VoicemailState::new())
         .setup(move |app| {
             // Start the manager's sweeper and timers. setup() itself runs on
             // the main thread from the event loop's Ready handler, with no
@@ -370,6 +372,10 @@ pub fn run() {
             commands::ai_clear_insights,
             commands::ai_auto_transcribe,
             commands::ai_set_auto_transcribe,
+            commands::voicemail_list,
+            commands::voicemail_mark_read,
+            commands::voicemail_delete,
+            commands::voicemail_audio,
             mcp::mcp_get_config,
             mcp::mcp_set_config,
             mcp::mcp_get_token,

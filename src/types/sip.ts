@@ -117,6 +117,12 @@ export interface SipAccount {
    * accounts set up by hand. Only that host's links may update it.
    */
   provisionedFrom?: string;
+  /**
+   * The Aria PBX REST API (`https://host[:port]`) for visual voicemail. Set
+   * from the setup link's origin, or by hand in Advanced; unset means the
+   * voicemail button dials the mailbox instead.
+   */
+  pbxApiUrl?: string;
   /** Whether to automatically add country code to dialed numbers */
   autoCountryCode?: boolean;
   /** Prefix to remove from dialed numbers before calling (e.g. "0" or "98") */
@@ -147,6 +153,7 @@ export interface StoredAccount {
   prependPrefix?: string;
   tlsServerName?: string;
   provisionedFrom?: string;
+  pbxApiUrl?: string;
 }
 
 /** Message-waiting state for one account, from the PBX's NOTIFY. */

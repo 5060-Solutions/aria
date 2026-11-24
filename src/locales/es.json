@@ -3,7 +3,8 @@
     "dialer": "Teclado",
     "history": "Historial",
     "contacts": "Contactos",
-    "settings": "Ajustes"
+    "settings": "Ajustes",
+    "voicemail": "Buzón de voz"
   },
   "status": {
     "connected": "Conectado",
@@ -15,7 +16,8 @@
     "clickForDetails": "Haz clic para ver los detalles de la conexión",
     "voicemail": "Buzón de voz",
     "voicemailWaiting": "{{count}} mensaje(s) de voz nuevo(s): haz clic para escuchar",
-    "callVoicemail": "Llamar al buzón de voz"
+    "callVoicemail": "Llamar al buzón de voz",
+    "openVoicemail": "Abrir el buzón de voz"
   },
   "connection": {
     "title": "Conexión",
@@ -217,7 +219,9 @@
       "disabled": "Desactivado",
       "sdes": "SDES"
     },
-    "srtpNoTlsWarning": "Sin TLS, SDES envía la clave de cifrado en texto plano al establecer la llamada, así que cualquiera en la ruta de red puede descifrar el audio. Usa SDES con TLS."
+    "srtpNoTlsWarning": "Sin TLS, SDES envía la clave de cifrado en texto plano al establecer la llamada, así que cualquiera en la ruta de red puede descifrar el audio. Usa SDES con TLS.",
+    "pbxApiUrl": "API de la centralita Aria",
+    "pbxApiUrlHelper": "Permite ver el buzón de voz en la aplicación en lugar de llamar. Lo rellena un enlace de configuración; déjalo vacío con otras centralitas."
   },
   "update": {
     "title": "Actualización disponible",
@@ -403,6 +407,28 @@
     "noSpeech": "No se reconoció voz en esta llamada.",
     "narrowband": "Esta llamada se transmitió a 8 kHz, por lo que la transcripción es menos precisa.",
     "close": "Cerrar"
+  },
+  "voicemail": {
+    "title": "Buzón de voz",
+    "refresh": "Actualizar",
+    "empty": "No hay mensajes en el buzón de voz.",
+    "noMailbox": "Esta extensión no tiene buzón de voz en la centralita.",
+    "loadFailed": "No se pudo cargar el buzón de voz.",
+    "signInFailed": "La centralita no aceptó la contraseña de esta extensión.",
+    "retry": "Reintentar",
+    "unknownCaller": "Llamante desconocido",
+    "newMessage": "Nuevo",
+    "callBack": "Devolver la llamada",
+    "delete": "Eliminar",
+    "deleteTitle": "¿Eliminar este mensaje?",
+    "deleteBody": "El mensaje se elimina de la centralita para todos los teléfonos de esta extensión. Esta acción no se puede deshacer.",
+    "transcription": "Transcripción",
+    "noTranscription": "No hay transcripción para este mensaje.",
+    "loadingAudio": "Cargando audio…",
+    "audioFailed": "No se pudo cargar el audio.",
+    "unread_one": "{{count}} mensaje nuevo",
+    "unread_other": "{{count}} mensajes nuevos",
+    "back": "Atrás"
   },
   "mcp": {
     "title": "Asistentes (MCP)",

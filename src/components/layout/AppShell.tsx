@@ -11,6 +11,7 @@ import { Dialer } from "../dialer/Dialer";
 import { CallScreen } from "../call/CallScreen";
 import { CallHistory } from "../history/CallHistory";
 import { ContactList } from "../contacts/ContactList";
+import { Voicemail } from "../voicemail/Voicemail";
 import { Settings } from "../settings/Settings";
 import { DiagnosticPanel } from "../diagnostics/DiagnosticPanel";
 
@@ -18,6 +19,7 @@ const views = {
   dialer: Dialer,
   history: CallHistory,
   contacts: ContactList,
+  voicemail: Voicemail,
   settings: Settings,
   diagnostics: DiagnosticPanel,
 };

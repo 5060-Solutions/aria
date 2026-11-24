@@ -18,6 +18,7 @@ import { isAuthFailure } from "../utils/authFailure";
 import i18n from "i18next";
 import { errorText, notifyError } from "../stores/toastStore";
 import { blfDiff, blfExtensions, isNotRegistered } from "../utils/blf";
+import { useVoicemailStore } from "../stores/voicemailStore";
 
 interface ConnectionPayload {
   accountId: string;
@@ -474,6 +475,9 @@ export function useSipEvents() {
     const unlistenVoicemail = listen<VoicemailPayload>("sip-voicemail", (event) => {
       const { accountId, hasMessages, newMessages, oldMessages } = event.payload;
       useAppStore.getState().setVoicemailStatus(accountId, { hasMessages, newMessages, oldMessages });
+      // A mailbox already shown in the app reloads, so a new message appears
+      // without a click.
+      useVoicemailStore.getState().onMwi(accountId);
     });
 
     const unlistenTransfer = listen<TransferPayload>("sip-transfer", (event) => {

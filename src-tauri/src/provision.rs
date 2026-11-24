@@ -447,6 +447,10 @@ pub struct ProvisionedLine {
     pub mode: LineMode,
     /// The setup link's `host[:port]`, recorded on the account.
     pub provisioned_from: String,
+    /// The Aria PBX API this line can use for visual voicemail: the setup
+    /// link's origin, `scheme://host[:port]`, since the same server issues
+    /// setup links and serves the API.
+    pub pbx_api_url: String,
     pub tenant_name: String,
     pub display_name: String,
     pub username: String,
@@ -521,6 +525,7 @@ pub async fn redeem_checked(
         ProvisionedLine {
             account_id,
             mode,
+            pbx_api_url: format!("{}://{host}", url.scheme()),
             provisioned_from: host,
             tenant_name: line.tenant_name,
             display_name: line.display_name,

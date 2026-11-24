@@ -28,6 +28,7 @@ const line: ProvisionedLine = {
   accountId: "acc-1",
   mode: "added",
   provisionedFrom: "api.ariaroute.com",
+  pbxApiUrl: "https://api.ariaroute.com",
   tenantName: "Regular Test",
   displayName: "Front Desk",
   username: "1001",
@@ -256,6 +257,7 @@ describe("provisionedAccount", () => {
       outboundProxy: "sip.ariaroute.com:5061",
       tlsServerName: "sip.ariaroute.com",
       provisionedFrom: "api.ariaroute.com",
+      pbxApiUrl: "https://api.ariaroute.com",
       voicemailNumber: "*97",
       enabled: true,
     });
@@ -277,6 +279,7 @@ describe("provisionedAccount", () => {
       stripPrefix: "9",
       prependPrefix: "1",
       provisionedFrom: "api.ariaroute.com",
+      pbxApiUrl: "https://old.example",
     });
     const a = provisionedAccount({ ...line, mode: "updated", displayName: "Server Name" }, existing);
     expect(a).toMatchObject({
@@ -294,6 +297,7 @@ describe("provisionedAccount", () => {
       port: 5061,
       outboundProxy: "sip.ariaroute.com:5061",
       tlsServerName: "sip.ariaroute.com",
+      pbxApiUrl: "https://api.ariaroute.com",
       password: "",
     });
     expect(a.registrar).toBeUndefined();

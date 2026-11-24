@@ -36,6 +36,15 @@ describe("voicemailButton", () => {
     });
   });
 
+  it("is always shown for an Aria PBX account, which opens the mailbox in the app", () => {
+    expect(voicemailButton({ pbxApiUrl: "https://api.ariaroute.com" }, undefined)).toEqual({
+      visible: true,
+      number: "*97",
+      waiting: false,
+    });
+    expect(voicemailButton({ pbxApiUrl: "  " }, undefined).visible).toBe(false);
+  });
+
   it("hides for a hand-made account with nothing waiting, and with no account", () => {
     expect(voicemailButton({}, { hasMessages: false, newMessages: 0 }).visible).toBe(false);
     expect(voicemailButton(undefined, { hasMessages: true, newMessages: 1 }).visible).toBe(false);

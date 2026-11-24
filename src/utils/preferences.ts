@@ -18,13 +18,15 @@ export function initialDarkMode(stored: string | null, systemPrefersDark: boolea
  * appear only while messages were waiting.
  */
 export function voicemailButton(
-  account: { voicemailNumber?: string } | undefined,
+  account: { voicemailNumber?: string; pbxApiUrl?: string } | undefined,
   status: { hasMessages: boolean; newMessages: number } | undefined,
 ): { visible: boolean; number: string; waiting: boolean } {
   const configured = account?.voicemailNumber?.trim();
   const waiting = !!status?.hasMessages;
+  // An Aria PBX account always has somewhere to go: its mailbox in the app.
+  const visual = !!account?.pbxApiUrl?.trim();
   return {
-    visible: !!account && (!!configured || waiting),
+    visible: !!account && (!!configured || waiting || visual),
     // *97 is the Aria PBX's fixed code and a common one elsewhere.
     number: configured || "*97",
     waiting,

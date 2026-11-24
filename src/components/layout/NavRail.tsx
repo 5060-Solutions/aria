@@ -1,10 +1,12 @@
-import { Box, ButtonBase, Tooltip, alpha, useTheme } from "@mui/material";
+import { Badge, Box, ButtonBase, Tooltip, alpha, useTheme } from "@mui/material";
 import DialpadIcon from "@mui/icons-material/Dialpad";
 import HistoryIcon from "@mui/icons-material/History";
 import ContactsIcon from "@mui/icons-material/People";
+import VoicemailIcon from "@mui/icons-material/Voicemail";
 import SettingsIcon from "@mui/icons-material/Settings";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
+import { mailboxFor } from "../../utils/voicemail";
 
 function AriaLogo({ size = 40 }: { size?: number }) {
   return (
@@ -38,6 +40,9 @@ const navItems = [
   { id: "dialer" as const, icon: DialpadIcon, labelKey: "nav.dialer" },
   { id: "history" as const, icon: HistoryIcon, labelKey: "nav.history" },
   { id: "contacts" as const, icon: ContactsIcon, labelKey: "nav.contacts" },
+  // Only for an account on an Aria PBX (it has a PBX API address); anyone
+  // else reaches voicemail by dialling, from the status bar button.
+  { id: "voicemail" as const, icon: VoicemailIcon, labelKey: "nav.voicemail" },
   { id: "settings" as const, icon: SettingsIcon, labelKey: "nav.settings" },
 ];
 
@@ -45,7 +50,13 @@ export function NavRail() {
   const { t } = useTranslation();
   const currentView = useAppStore((s) => s.currentView);
   const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const accounts = useAppStore((s) => s.accounts);
+  const activeAccountId = useAppStore((s) => s.activeAccountId);
+  const voicemail = useAppStore((s) => s.voicemail);
   const theme = useTheme();
+  const hasMailbox = mailboxFor(accounts.find((a) => a.id === activeAccountId)) !== null;
+  const newVoicemail = activeAccountId ? voicemail[activeAccountId]?.newMessages ?? 0 : 0;
+  const items = navItems.filter((item) => item.id !== "voicemail" || hasMailbox);
 
   return (
     <Box
@@ -64,7 +75,7 @@ export function NavRail() {
         <AriaLogo size={36} />
       </Box>
 
-      {navItems.map(({ id, icon: Icon, labelKey }) => {
+      {items.map(({ id, icon: Icon, labelKey }) => {
         const active = currentView === id;
         const label = t(labelKey);
         return (
@@ -108,7 +119,14 @@ export function NavRail() {
                   transition: "all 0.2s ease",
                 }}
               >
-                <Icon fontSize="small" />
+                <Badge
+                  badgeContent={id === "voicemail" ? newVoicemail : 0}
+                  color="error"
+                  max={99}
+                  overlap="circular"
+                >
+                  <Icon fontSize="small" />
+                </Badge>
               </Box>
               <Box
                 sx={{

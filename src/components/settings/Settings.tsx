@@ -116,6 +116,7 @@ interface AccountFormData {
   port: number;
   registrar: string;
   outboundProxy: string;
+  pbxApiUrl: string;
   autoRecord: boolean;
   srtpMode: "disabled" | "sdes";
   codecs: CodecConfig[];
@@ -145,6 +146,7 @@ const emptyForm: AccountFormData = {
   port: 5060,
   registrar: "",
   outboundProxy: "",
+  pbxApiUrl: "",
   autoRecord: false,
   srtpMode: "disabled",
   codecs: [...DEFAULT_CODECS],
@@ -285,6 +287,7 @@ export function Settings() {
           port: editingAccount.port ?? 5060,
           registrar: editingAccount.registrar || "",
           outboundProxy: editingAccount.outboundProxy || "",
+          pbxApiUrl: editingAccount.pbxApiUrl || "",
           autoRecord: editingAccount.autoRecord ?? false,
           srtpMode: normalizeSrtpMode(editingAccount.srtpMode),
           codecs: normalizeCodecs(editingAccount.codecs),
@@ -389,6 +392,7 @@ export function Settings() {
       port: form.port,
       registrar: form.registrar.trim() || undefined,
       outboundProxy: form.outboundProxy.trim() || undefined,
+      pbxApiUrl: form.pbxApiUrl.trim() || undefined,
       authUsername: form.authUsername.trim() || undefined,
       authRealm: form.authRealm.trim() || undefined,
       enabled: editingAccount?.enabled ?? true,
@@ -1644,6 +1648,15 @@ export function Settings() {
                   value={form.outboundProxy}
                   onChange={(e) => update("outboundProxy", e.target.value)}
                   placeholder={t("wizard.outboundProxyPlaceholder")}
+                  sx={inputSx}
+                />
+                <TextField
+                  label={t("settings.pbxApiUrl")}
+                  size="small"
+                  value={form.pbxApiUrl}
+                  onChange={(e) => update("pbxApiUrl", e.target.value)}
+                  placeholder="https://"
+                  helperText={t("settings.pbxApiUrlHelper")}
                   sx={inputSx}
                 />
                 <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", mt: 1 }}>

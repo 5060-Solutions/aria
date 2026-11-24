@@ -1741,3 +1741,63 @@ pub async fn ai_auto_transcribe() -> bool {
 pub async fn ai_set_auto_transcribe(enabled: bool) -> Result<(), String> {
     crate::ai::set_auto_transcribe(enabled)
 }
+
+// ── Visual voicemail (Aria PBX) ─────────────────────────────────────────────
+
+use crate::voicemail::{Mailbox, Message as VoicemailMessage, VoicemailError, VoicemailState};
+
+/// The account's SIP password from the credential store, for signing in to
+/// the PBX API. Read off the main thread like `get_credential`, since the
+/// keychain can block on an unlock prompt.
+async fn voicemail_password(account_id: &str) -> Result<String, VoicemailError> {
+    let id = account_id.to_string();
+    tokio::task::spawn_blocking(move || get_credential_blocking(&id))
+        .await
+        .map_err(|e| VoicemailError::Network(format!("keychain task failed: {e}")))?
+        .map_err(VoicemailError::Network)?
+        .filter(|p| !p.is_empty())
+        .ok_or(VoicemailError::NoPassword)
+}
+
+/// The mailbox's messages, newest first.
+#[tauri::command]
+pub async fn voicemail_list(
+    mailbox: Mailbox,
+    state: State<'_, VoicemailState>,
+) -> Result<Vec<VoicemailMessage>, VoicemailError> {
+    let password = voicemail_password(&mailbox.account_id).await?;
+    state.list(&mailbox, &password).await
+}
+
+#[tauri::command]
+pub async fn voicemail_mark_read(
+    mailbox: Mailbox,
+    message_id: String,
+    state: State<'_, VoicemailState>,
+) -> Result<(), VoicemailError> {
+    let password = voicemail_password(&mailbox.account_id).await?;
+    state.mark_read(&mailbox, &password, &message_id).await
+}
+
+#[tauri::command]
+pub async fn voicemail_delete(
+    mailbox: Mailbox,
+    message_id: String,
+    state: State<'_, VoicemailState>,
+) -> Result<(), VoicemailError> {
+    let password = voicemail_password(&mailbox.account_id).await?;
+    state.delete(&mailbox, &password, &message_id).await
+}
+
+/// The message's audio (WAV) as raw bytes over the binary IPC channel; the
+/// frontend turns it into a `blob:` URL for an `<audio>` element.
+#[tauri::command]
+pub async fn voicemail_audio(
+    mailbox: Mailbox,
+    message_id: String,
+    state: State<'_, VoicemailState>,
+) -> Result<tauri::ipc::Response, VoicemailError> {
+    let password = voicemail_password(&mailbox.account_id).await?;
+    let bytes = state.audio(&mailbox, &password, &message_id).await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}

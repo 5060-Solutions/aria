@@ -12,6 +12,7 @@ import { dialUri } from "../../utils/sipUri";
 import { log } from "../../utils/log";
 import { ConnectionPanel } from "./ConnectionPanel";
 import { voicemailButton } from "../../utils/preferences";
+import { mailboxFor } from "../../utils/voicemail";
 import { stateColors, stateLabelsKeys } from "./statusChip";
 
 export function StatusBar() {
@@ -33,9 +34,17 @@ export function StatusBar() {
 
   const vm = activeAccountId ? voicemail[activeAccountId] : undefined;
   const vmButton = voicemailButton(activeAccount, vm);
+  const visualVoicemail = mailboxFor(activeAccount) !== null;
+  const setCurrentView = useAppStore((s) => s.setCurrentView);
 
   const handleCallVoicemail = async () => {
     if (!activeAccount) return;
+    // On an Aria PBX the mailbox is read through its API: open the list
+    // instead of dialling in.
+    if (visualVoicemail) {
+      setCurrentView("voicemail");
+      return;
+    }
     // Dial the account's voicemail number (from provisioning); fall back to
     // the common *97 feature code when none was configured. A feature code
     // passes through the dialing rules untouched; a plain extension gets them.
@@ -168,14 +177,14 @@ export function StatusBar() {
             title={
               vmButton.waiting
                 ? t("status.voicemailWaiting", { count: vm?.newMessages ?? 0 })
-                : t("status.callVoicemail")
+                : t(visualVoicemail ? "status.openVoicemail" : "status.callVoicemail")
             }
             placement="bottom"
           >
             <IconButton
               onClick={handleCallVoicemail}
               size="small"
-              aria-label={t("status.callVoicemail")}
+              aria-label={t(visualVoicemail ? "status.openVoicemail" : "status.callVoicemail")}
               sx={{
                 WebkitAppRegion: "no-drag",
                 color: vmButton.waiting ? "warning.main" : "text.secondary",

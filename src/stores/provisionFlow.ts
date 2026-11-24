@@ -21,6 +21,8 @@ export interface ProvisionedLine {
   mode: LineMode;
   /** The setup link's `host[:port]`, recorded on the account. */
   provisionedFrom: string;
+  /** The Aria PBX API (`scheme://host[:port]`) this line can use for visual voicemail. */
+  pbxApiUrl: string;
   tenantName: string;
   displayName: string;
   username: string;
@@ -130,6 +132,7 @@ export function provisionedAccount(line: ProvisionedLine, existing: SipAccount |
     tlsServerName: line.tlsServerName ?? undefined,
     authUsername: line.authUsername ?? undefined,
     provisionedFrom: line.provisionedFrom,
+    pbxApiUrl: line.pbxApiUrl,
     srtpMode: provisionedSrtpMode(line, existing),
   };
   if (existing) {
