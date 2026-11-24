@@ -217,7 +217,9 @@
       "disabled": "Aus",
       "sdes": "SDES"
     },
-    "srtpNoTlsWarning": "Ohne TLS überträgt SDES den Schlüssel im Klartext beim Verbindungsaufbau, sodass jeder auf dem Netzwerkpfad das Gespräch entschlüsseln kann. Verwenden Sie SDES zusammen mit TLS."
+    "srtpNoTlsWarning": "Ohne TLS überträgt SDES den Schlüssel im Klartext beim Verbindungsaufbau, sodass jeder auf dem Netzwerkpfad das Gespräch entschlüsseln kann. Verwenden Sie SDES zusammen mit TLS.",
+    "pbxApiUrl": "Aria-PBX-API",
+    "pbxApiUrlHelper": "Zeigt Ihre Voicemail in der App statt per Anruf abzufragen. Wird von einem Einrichtungslink ausgefüllt; bei anderen PBX-Systemen leer lassen."
   },
   "update": {
     "title": "Update verfügbar",

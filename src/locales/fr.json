@@ -217,7 +217,9 @@
       "disabled": "Désactivé",
       "sdes": "SDES"
     },
-    "srtpNoTlsWarning": "Sans TLS, SDES envoie la clé de chiffrement en clair lors de l'établissement de l'appel : toute personne sur le chemin réseau peut déchiffrer l'audio. Utilisez SDES avec TLS."
+    "srtpNoTlsWarning": "Sans TLS, SDES envoie la clé de chiffrement en clair lors de l'établissement de l'appel : toute personne sur le chemin réseau peut déchiffrer l'audio. Utilisez SDES avec TLS.",
+    "pbxApiUrl": "API du PBX Aria",
+    "pbxApiUrlHelper": "Affiche votre messagerie vocale dans l'application au lieu de l'appeler. Rempli par un lien de configuration ; laissez vide avec un autre PBX."
   },
   "update": {
     "title": "Mise à jour disponible",

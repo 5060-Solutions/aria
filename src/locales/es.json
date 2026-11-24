@@ -217,7 +217,9 @@
       "disabled": "Desactivado",
       "sdes": "SDES"
     },
-    "srtpNoTlsWarning": "Sin TLS, SDES envía la clave de cifrado en texto plano al establecer la llamada, así que cualquiera en la ruta de red puede descifrar el audio. Usa SDES con TLS."
+    "srtpNoTlsWarning": "Sin TLS, SDES envía la clave de cifrado en texto plano al establecer la llamada, así que cualquiera en la ruta de red puede descifrar el audio. Usa SDES con TLS.",
+    "pbxApiUrl": "API de la centralita Aria",
+    "pbxApiUrlHelper": "Permite ver el buzón de voz en la aplicación en lugar de llamar. Lo rellena un enlace de configuración; déjalo vacío con otras centralitas."
   },
   "update": {
     "title": "Actualización disponible",

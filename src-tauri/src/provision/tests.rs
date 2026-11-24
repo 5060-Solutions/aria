@@ -499,6 +499,9 @@ async fn a_redeem_matching_a_hand_made_account_adds_a_separate_one() {
     assert_eq!(line.account_id, "new-id");
     assert_eq!(line.mode, LineMode::Separate);
     assert_eq!(line.provisioned_from, format!("127.0.0.1:{}", stub.port));
+    // The PBX API is the origin the setup link came from: the same host
+    // serves provisioning and voicemail.
+    assert_eq!(line.pbx_api_url, format!("http://127.0.0.1:{}", stub.port));
     assert_eq!(password.0, "s3cret-pw");
     assert_eq!(format!("{password:?}"), "Password(..)");
 }

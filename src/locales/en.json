@@ -217,7 +217,9 @@
     "moveUp": "Move up",
     "moveDown": "Move down",
     "syncNow": "Sync now",
-    "srtpNoTlsWarning": "Without TLS, SDES sends the encryption key in plain text during call setup, so anyone on the network path can decrypt the audio. Use TLS with SDES."
+    "srtpNoTlsWarning": "Without TLS, SDES sends the encryption key in plain text during call setup, so anyone on the network path can decrypt the audio. Use TLS with SDES.",
+    "pbxApiUrl": "Aria PBX API",
+    "pbxApiUrlHelper": "Lets Aria show your voicemail in the app instead of dialing in. Filled in by a setup link; leave blank on other PBXes."
   },
   "update": {
     "title": "Update available",
