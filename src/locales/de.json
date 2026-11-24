@@ -393,8 +393,8 @@
   },
   "transcription": {
     "unsupported": "Diese Version wurde ohne Transkriptionsunterstützung erstellt.",
-    "unsupportedWhy": "Die Transkription läuft vollständig auf diesem Computer und braucht dafür eine Spracherkennungs-Engine, die der normale Download noch nicht enthält. Die mobilen Apps haben sie bereits; der Stand für den Desktop wird auf GitHub verfolgt.",
-    "unsupportedFollow": "Fortschritt auf GitHub verfolgen",
+    "unsupportedWhy": "Die Transkription läuft vollständig auf diesem Computer und braucht dafür eine Spracherkennungs-Engine, ohne die diese Version erstellt wurde. Der normale Download von aria-softphone.com enthält sie.",
+    "unsupportedFollow": "Standardversion herunterladen",
     "intro": "Aufzeichnungen werden auf diesem Computer transkribiert. Nichts wird hochgeladen.",
     "autoTitle": "Aufgezeichnete Anrufe transkribieren",
     "autoNote": "Jede Aufzeichnung wird am Ende des Anrufs transkribiert.",

@@ -124,6 +124,10 @@ jobs:
       # and a failed script fails the bundle, so this attempt may fail and
       # the next step then builds the plain DMG exactly as before. A styling
       # failure can cost a rebuild but never the release.
+      # `--features ai` ships on-device transcription: Settings → Transcription
+      # offers speech models to download, and nothing runs until one is
+      # installed and the switch is on. The engine (whisper.cpp) is built from
+      # source here; the models are never part of the installer.
       - name: Build Tauri app
         id: tauri_build
         continue-on-error: ${{ runner.os == 'macOS' }}
@@ -156,7 +160,7 @@ jobs:
           # The publish job below releases it once every build succeeds.
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }}${{ runner.os == 'Windows' && ' --config src-tauri/windows-signing.conf.json' || '' }}
+          args: --target ${{ matrix.target }} --features ai${{ runner.os == 'Windows' && ' --config src-tauri/windows-signing.conf.json' || '' }}
 
       - name: Build Tauri app (plain DMG)
         if: steps.tauri_build.outcome == 'failure' && runner.os == 'macOS'
@@ -184,7 +188,7 @@ jobs:
           # The publish job below releases it once every build succeeds.
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --features ai
 
       # A build "succeeding" only means the bundle was produced. v0.5.0 was
       # built, signed, published and auto-updated to users -- and panicked on
@@ -308,7 +312,7 @@ jobs:
           # The publish job below releases it once every build succeeds.
           releaseDraft: true
           prerelease: false
-          args: --target universal-apple-darwin
+          args: --target universal-apple-darwin --features ai
 
       - name: Build Tauri app (universal binary, plain DMG)
         if: steps.tauri_build.outcome == 'failure'
@@ -336,7 +340,7 @@ jobs:
           # The publish job below releases it once every build succeeds.
           releaseDraft: true
           prerelease: false
-          args: --target universal-apple-darwin
+          args: --target universal-apple-darwin --features ai
 
       # Launch the universal bundle before it can be published. See the matrix
       # build job for why: a built-but-unlaunched binary shipped in v0.5.0.

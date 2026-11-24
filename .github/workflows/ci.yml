@@ -76,20 +76,23 @@ jobs:
       - name: Test frontend
         run: pnpm test
 
+      # `--features ai` is what the release ships (on-device transcription,
+      # whisper.cpp built from source), so CI checks, lints and tests the
+      # same build rather than the smaller one.
       - name: Check Rust
         working-directory: src-tauri
-        run: cargo check
+        run: cargo check --features ai
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
       - name: Clippy
         working-directory: src-tauri
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --features ai -- -D warnings
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
       - name: Test Rust
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --features ai
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
