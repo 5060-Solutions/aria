@@ -150,9 +150,11 @@ export function Dialer() {
     }).catch(() => {});
   }, [dialInput, activeAccountId, activeAccount, defaultCountry, formattedNumber]);
 
+  // Read the store, not the render's dialInput: two deletes before a
+  // re-render must remove two characters.
   const handleBackspace = useCallback(() => {
-    setDialInput(dialInput.slice(0, -1));
-  }, [dialInput, setDialInput]);
+    setDialInput(useAppStore.getState().dialInput.slice(0, -1));
+  }, [setDialInput]);
 
   const backspaceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -436,12 +438,12 @@ export function Dialer() {
             justifyContent: "center",
           }}
         >
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={formattedNumber || "placeholder"}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ duration: 0.08 }}
+          {/* The number is updated in place. It used to be keyed on its value
+              inside AnimatePresence mode="wait", which must finish the old
+              element's exit before mounting the new one; two changes in the
+              same tick (a click and a double-click on Delete) left the exit
+              stuck and the display frozen on a stale number (#80). */}
+          <div
               style={{
                 textAlign: "center",
                 width: "100%",
@@ -473,8 +475,7 @@ export function Dialer() {
               >
                 {formattedNumber || t("dialer.enterNumber")}
               </Box>
-            </motion.div>
-          </AnimatePresence>
+          </div>
 
           <AnimatePresence>
             {dialInput && (
@@ -581,7 +582,6 @@ export function Dialer() {
             <span>
               <IconButton
                 onClick={handleBackspace}
-                onDoubleClick={clearDialInput}
                 onMouseDown={startHoldToClear}
                 onMouseUp={stopHoldToClear}
                 onMouseLeave={stopHoldToClear}
