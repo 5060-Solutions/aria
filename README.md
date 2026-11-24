@@ -157,6 +157,13 @@ pnpm tauri build --target universal-apple-darwin  # macOS universal
 pnpm tauri build --features ai                    # with on-device transcription
 ```
 
+The published installers are built without `ai` for now: the feature pulls
+whisper.cpp into the build and has only been built on macOS, so Settings →
+Transcription in a release says the build was made without it and points at
+[#84](https://github.com/5060-Solutions/aria/issues/84), where shipping it is
+tracked. The mobile apps get transcription from `aria-mobile-core` and already
+have it.
+
 Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed.
 
 ### End-to-end test against a PBX

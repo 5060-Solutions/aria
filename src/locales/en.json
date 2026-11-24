@@ -389,6 +389,8 @@
   },
   "transcription": {
     "unsupported": "This build was made without transcription support.",
+    "unsupportedWhy": "Transcription runs entirely on your computer, which needs a speech engine the standard download does not include yet. The mobile apps already have it; the desktop build is tracked on GitHub.",
+    "unsupportedFollow": "Follow progress on GitHub",
     "intro": "Call recordings are transcribed on this computer. Nothing is uploaded.",
     "autoTitle": "Transcribe recorded calls",
     "autoNote": "Each recording is transcribed when the call ends.",

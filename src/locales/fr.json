@@ -389,6 +389,8 @@
   },
   "transcription": {
     "unsupported": "Cette version a été compilée sans la prise en charge de la transcription.",
+    "unsupportedWhy": "La transcription s'effectue entièrement sur cet ordinateur, ce qui nécessite un moteur de reconnaissance vocale que le téléchargement standard n'inclut pas encore. Les applications mobiles l'ont déjà ; l'avancement pour la version bureau est suivi sur GitHub.",
+    "unsupportedFollow": "Suivre l'avancement sur GitHub",
     "intro": "Les enregistrements sont transcrits sur cet ordinateur. Rien n'est envoyé.",
     "autoTitle": "Transcrire les appels enregistrés",
     "autoNote": "Chaque enregistrement est transcrit à la fin de l'appel.",
