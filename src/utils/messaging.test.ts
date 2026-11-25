@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   attachmentProblem,
   countSegments,
+  editDraft,
+  emptyDraft,
+  failedDraft,
+  isDialable,
   isUnread,
+  reachedServer,
+  sendable,
   newInbound,
   messagingErrorText,
   newestConversationsFirst,
@@ -178,5 +184,45 @@ describe("personLabel", () => {
     const contacts = [{ name: "Dana", uri: "sip:x@y", phone: "+13035550100" }] as never;
     expect(personLabel("+13035550100", contacts)).toBe("Dana");
     expect(personLabel("+13035550111", contacts)).toBe("+1 303 555 0111");
+  });
+});
+
+describe("isDialable", () => {
+  it("takes strict E.164 only", () => {
+    expect(isDialable("+13035550100")).toBe(true);
+    expect(isDialable("+442071838750")).toBe(true);
+    for (const bad of ["12345", "*67", "#31#", "+1303@evil.com", "sip:x@y", "13035550100", "+0123456789", "+1303555010a", "+123456", "+1234567890123456", " +13035550100"]) {
+      expect(isDialable(bad), bad).toBe(false);
+    }
+  });
+});
+
+describe("answers and drafts", () => {
+  it("separates a 4xx answer from a 5xx and from silence", () => {
+    expect(wasAnswered({ kind: "rejected", message: "" })).toBe(true);
+    expect(wasAnswered({ kind: "server", message: "" })).toBe(false);
+    expect(reachedServer({ kind: "server", message: "" })).toBe(true);
+    expect(reachedServer({ kind: "network", message: "" })).toBe(false);
+  });
+
+  it("renews the key only after a 4xx", () => {
+    const d = { ...emptyDraft(), body: "hi" };
+    expect(failedDraft(d, { kind: "rejected", message: "no" }).key).not.toBe(d.key);
+    expect(failedDraft(d, { kind: "server", message: "no" }).key).toBe(d.key);
+    expect(failedDraft(d, { kind: "network", message: "no" }).key).toBe(d.key);
+    expect(failedDraft(d, { kind: "server", message: "carrier down" }).error).toBe("carrier down");
+  });
+
+  it("renews the key when the body or attachment changes and clears the old error", () => {
+    const d = { ...emptyDraft(), body: "hi", error: "old" };
+    expect(editDraft(d, { body: "hi" })).toMatchObject({ key: d.key, error: "old" });
+    const edited = editDraft(d, { body: "hi!" });
+    expect(edited.key).not.toBe(d.key);
+    expect(edited.error).toBeNull();
+  });
+
+  it("sends and counts the trimmed text", () => {
+    expect(sendable({ body: "  hi \n" })).toBe("hi");
+    expect(countSegments(sendable({ body: " ".repeat(200) + "a" })).segments).toBe(1);
   });
 });

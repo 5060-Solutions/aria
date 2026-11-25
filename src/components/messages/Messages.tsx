@@ -71,8 +71,23 @@ export function Messages() {
     if (mailbox) void refresh(mailbox);
   }, [mailbox, refresh]);
 
+  // A notification asked for a thread: it wins over the picks until one is made.
+  const requested = useMessagingStore((s) => s.requested);
+  const setRequested = useMessagingStore((s) => s.setRequested);
+  const asked = requested && requested.accountId === mailbox?.accountId ? requested : null;
+  const shownDid = asked?.didId ?? didId;
+  const shownNumber = asked?.number ?? number;
+  const pickInbox = (id: string | null) => {
+    setRequested(null);
+    setDidId(id);
+  };
+  const pickNumber = (n: string | null) => {
+    setRequested(null);
+    setNumber(n);
+  };
+
   const inboxes = entry?.inboxes ?? [];
-  const inbox = inboxes.find((i) => i.did_id === didId) ?? inboxes[0];
+  const inbox = inboxes.find((i) => i.did_id === shownDid) ?? inboxes[0];
   const conversations = useMemo(
     () => newestConversationsFirst(inbox ? (entry?.conversations[inbox.did_id] ?? []) : []),
     [entry?.conversations, inbox],
@@ -92,7 +107,7 @@ export function Messages() {
     setComposeOpen(false);
     setComposeText("");
     setComposeError(false);
-    setNumber(e164);
+    pickNumber(e164);
   };
 
   const notice = (text: string, action?: { label: string; onClick: () => void }) => (
@@ -110,11 +125,12 @@ export function Messages() {
     return <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>{notice(t("messages.noNumbers"))}</Box>;
   }
 
-  if (inbox && number) {
-    return <Thread key={`${inbox.did_id}|${number}`} mailbox={mailbox} account={account} inbox={inbox} number={number} onBack={() => setNumber(null)} />;
+  if (inbox && shownNumber) {
+    return <Thread key={`${inbox.did_id}|${shownNumber}`} mailbox={mailbox} account={account} inbox={inbox} number={shownNumber} onBack={() => pickNumber(null)} />;
   }
 
-  const error = entry?.error;
+  const inboxError = inbox ? entry?.inboxErrors[inbox.did_id] : undefined;
+  const error = entry?.error ?? inboxError;
   const errorText =
     error?.kind === "unauthorized" || error?.kind === "noPassword"
       ? t("messages.signInFailed")
@@ -126,7 +142,7 @@ export function Messages() {
     const unread = isUnread(c, readAt[`${mailbox.accountId}|${inbox?.did_id}|${c.remote_number}`], entry?.baseline ?? "");
     const label = personLabel(c.remote_number, contacts);
     return (
-      <ListItemButton key={c.remote_number} onClick={() => setNumber(c.remote_number)} sx={{ borderRadius: "16px", mb: 0.5, py: 1 }}>
+      <ListItemButton key={c.remote_number} onClick={() => pickNumber(c.remote_number)} sx={{ borderRadius: "16px", mb: 0.5, py: 1 }}>
         <ListItemAvatar>
           <Avatar sx={{ width: 40, height: 40, bgcolor: alpha(theme.palette.primary.main, unread ? 0.18 : 0.08), color: "primary.main", fontSize: "0.9rem" }}>
             {label.replace(/[^\p{L}\p{N}]/gu, "").substring(0, 2).toUpperCase() || "#"}
@@ -187,7 +203,7 @@ export function Messages() {
                 label={i.enabled ? formatNumber(i.number) : t("messages.numberOff", { number: formatNumber(i.number) })}
                 color={i.did_id === inbox?.did_id ? "primary" : "default"}
                 variant={i.did_id === inbox?.did_id ? "filled" : "outlined"}
-                onClick={() => setDidId(i.did_id)}
+                onClick={() => pickInbox(i.did_id)}
               />
             </Badge>
           ))}

@@ -1759,6 +1759,7 @@ pub async fn ai_set_auto_transcribe(enabled: bool) -> Result<(), String> {
 
 // ── Visual voicemail (Aria PBX) ─────────────────────────────────────────────
 
+use crate::pbx_binding::PbxBindings;
 use crate::voicemail::{Mailbox, Message as VoicemailMessage, VoicemailError, VoicemailState};
 
 /// The account's SIP password from the credential store, for signing in to
@@ -1778,8 +1779,10 @@ async fn voicemail_password(account_id: &str) -> Result<String, VoicemailError> 
 #[tauri::command]
 pub async fn voicemail_list(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<Vec<VoicemailMessage>, VoicemailError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = voicemail_password(&mailbox.account_id).await?;
     state.list(&mailbox, &password).await
 }
@@ -1787,9 +1790,11 @@ pub async fn voicemail_list(
 #[tauri::command]
 pub async fn voicemail_mark_read(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     message_id: String,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<(), VoicemailError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = voicemail_password(&mailbox.account_id).await?;
     state.mark_read(&mailbox, &password, &message_id).await
 }
@@ -1797,9 +1802,11 @@ pub async fn voicemail_mark_read(
 #[tauri::command]
 pub async fn voicemail_delete(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     message_id: String,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<(), VoicemailError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = voicemail_password(&mailbox.account_id).await?;
     state.delete(&mailbox, &password, &message_id).await
 }
@@ -1809,9 +1816,11 @@ pub async fn voicemail_delete(
 #[tauri::command]
 pub async fn voicemail_audio(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     message_id: String,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<tauri::ipc::Response, VoicemailError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = voicemail_password(&mailbox.account_id).await?;
     let bytes = state.audio(&mailbox, &password, &message_id).await?;
     Ok(tauri::ipc::Response::new(bytes))
@@ -1829,8 +1838,10 @@ async fn messaging_password(account_id: &str) -> Result<String, MessagingError> 
 #[tauri::command]
 pub async fn messaging_inboxes(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<serde_json::Value, MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     messaging::inboxes(&state, &mailbox, &password).await
 }
@@ -1838,9 +1849,11 @@ pub async fn messaging_inboxes(
 #[tauri::command]
 pub async fn messaging_conversations(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     did_id: String,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<serde_json::Value, MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     messaging::conversations(&state, &mailbox, &password, &did_id).await
 }
@@ -1848,11 +1861,13 @@ pub async fn messaging_conversations(
 #[tauri::command]
 pub async fn messaging_thread(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     did_id: String,
     number: String,
     before: Option<String>,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<serde_json::Value, MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     messaging::thread(&state, &mailbox, &password, &did_id, &number, before.as_deref()).await
 }
@@ -1861,6 +1876,7 @@ pub async fn messaging_thread(
 #[allow(clippy::too_many_arguments)]
 pub async fn messaging_send(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     did_id: String,
     to: String,
     body: String,
@@ -1868,6 +1884,7 @@ pub async fn messaging_send(
     idempotency_key: String,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<serde_json::Value, MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     let out = Outgoing {
         did_id: &did_id,
@@ -1884,6 +1901,7 @@ pub async fn messaging_send(
 #[tauri::command]
 pub async fn messaging_upload(
     request: tauri::ipc::Request<'_>,
+    bindings_state: State<'_, std::sync::Arc<PbxBindings>>,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<serde_json::Value, MessagingError> {
     let bad = |m: &str| MessagingError { kind: "malformed", message: m.to_string(), status: None, field: None };
@@ -1898,6 +1916,7 @@ pub async fn messaging_upload(
         .map(|n| percent_decode(&n))
         .filter(|n| !n.is_empty())
         .unwrap_or_else(|| "picture".to_string());
+    let mailbox = bindings_state.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     messaging::upload(&state, &mailbox, &password, &file_name, bytes).await
 }
@@ -1923,9 +1942,11 @@ fn percent_decode(s: &str) -> String {
 #[tauri::command]
 pub async fn messaging_attachment(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     id: String,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<tauri::ipc::Response, MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     let bytes = messaging::attachment(&state, &mailbox, &password, &id).await?;
     Ok(tauri::ipc::Response::new(bytes))
@@ -1936,10 +1957,12 @@ pub async fn messaging_attachment(
 #[tauri::command]
 pub async fn messaging_listen(
     mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
     app: tauri::AppHandle,
     state: State<'_, std::sync::Arc<VoicemailState>>,
     live: State<'_, MessagingLive>,
 ) -> Result<(), MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     let account_id = mailbox.account_id.clone();
     let (on_app, live_app, live_id) = (app.clone(), app, account_id.clone());
@@ -1961,4 +1984,49 @@ pub async fn messaging_listen(
 #[tauri::command]
 pub fn messaging_stop(account_id: String, live: State<'_, MessagingLive>) {
     live.stop(&account_id);
+}
+
+// ── Which PBX API an account's password may go to ───────────────────────────
+
+/// Record the PBX API address for an account (from its Settings), after which
+/// voicemail and texting use that address and no other. Binding an account
+/// that has none, or the same address again, is silent; moving it to another
+/// address is asked of the user in a native dialog the webview cannot answer.
+#[tauri::command]
+pub async fn pbx_bind(
+    mailbox: Mailbox,
+    app: tauri::AppHandle,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
+) -> Result<(), VoicemailError> {
+    use crate::pbx_binding::{binding_from, decide, Decision};
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    let wanted = binding_from(&mailbox.api_url, &mailbox.extension, &mailbox.domain)?;
+    let existing = bindings.get(&mailbox.account_id);
+    match decide(existing.as_ref(), &wanted) {
+        Decision::Unchanged => Ok(()),
+        Decision::Add => {
+            bindings.set(&mailbox.account_id, wanted);
+            Ok(())
+        }
+        Decision::NeedsConfirmation => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            app.dialog()
+                .message(format!(
+                    "Send this account's password to {} to sign in for voicemail and texting?\n\nIt was {}.",
+                    wanted.api_url,
+                    existing.map(|b| b.api_url).unwrap_or_default()
+                ))
+                .title("Change the PBX API address?")
+                .buttons(MessageDialogButtons::OkCancelCustom("Change".into(), "Keep the old one".into()))
+                .show(move |ok| {
+                    let _ = tx.send(ok);
+                });
+            if rx.await.unwrap_or(false) {
+                bindings.set(&mailbox.account_id, wanted);
+                Ok(())
+            } else {
+                Err(VoicemailError::NotBound)
+            }
+        }
+    }
 }

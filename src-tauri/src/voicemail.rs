@@ -63,6 +63,8 @@ pub enum VoicemailError {
     Malformed,
     /// The account has no saved password to sign in with.
     NoPassword,
+    /// No PBX API address is bound to this account in the backend.
+    NotBound,
 }
 
 impl VoicemailError {
@@ -76,6 +78,7 @@ impl VoicemailError {
             Self::Status(_) => "status",
             Self::Malformed => "malformed",
             Self::NoPassword => "noPassword",
+            Self::NotBound => "notBound",
         }
     }
 }
@@ -102,6 +105,7 @@ impl fmt::Display for VoicemailError {
             Self::Status(s) => write!(f, "The PBX answered with HTTP {s}."),
             Self::Malformed => write!(f, "The PBX sent a reply Aria could not read."),
             Self::NoPassword => write!(f, "This account has no saved password to sign in to the PBX with."),
+            Self::NotBound => write!(f, "This account has no PBX API address on record. Save it in the account settings."),
         }
     }
 }

@@ -5,6 +5,7 @@ import { useAppStore } from "../stores/appStore";
 import { useMessagingStore } from "../stores/messagingStore";
 import { messagingMailboxFor } from "../utils/messaging";
 import { log } from "../utils/log";
+import { ensureBound } from "../utils/pbxBinding";
 import type { Mailbox } from "../utils/voicemail";
 
 /** How often texts are checked for while the PBX event stream is down. */
@@ -40,13 +41,27 @@ export function useMessaging(): void {
         if (e.payload.accountId === accountId) setLive(accountId, e.payload.live);
       }),
     ];
-    invoke("messaging_listen", { mailbox }).catch((e) => log.warn("[messaging] event stream not started:", e));
+    ensureBound(mailbox)
+      .then(() => invoke("messaging_listen", { mailbox }))
+      .catch((e) => log.warn("[messaging] event stream not started:", e));
     return () => {
       unlisten.forEach((p) => void p.then((fn) => fn()));
       invoke("messaging_stop", { accountId }).catch(() => {});
       setLive(accountId, false);
     };
   }, [mailbox, refresh, setLive]);
+
+  // A notification's click brings the window forward: the desktop plugin
+  // reports no click on macOS or Windows, so the window gaining focus just
+  // after one is taken as it, and opens that thread (see the store).
+  const setCurrentView = useAppStore((s) => s.setCurrentView);
+  useEffect(() => {
+    const onFocus = () => {
+      if (useMessagingStore.getState().openFromNotification()) setCurrentView("messages");
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [setCurrentView]);
 
   // The first load, and the fallback while there is no stream.
   useEffect(() => {

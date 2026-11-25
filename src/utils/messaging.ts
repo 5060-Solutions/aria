@@ -74,13 +74,23 @@ export function messagingErrorText(e: unknown): string {
 }
 
 /**
- * Whether a failed send reached the PBX and was answered. After an answer the
- * next attempt is a new request and gets a new idempotency key; after none
- * (the network dropped) the same key is kept, so a retry of a send that did go
- * through returns that message and texts nobody twice.
+ * Whether a failed send got a settled answer from the PBX (a 4xx). After one
+ * the next attempt is a new request and gets a new idempotency key. After a
+ * 5xx, or no answer at all (the network dropped), the same key is kept, so a
+ * retry of a send that did go through returns that message and texts nobody
+ * twice.
  */
 export function wasAnswered(e: unknown): boolean {
   return isMessagingError(e) && e.kind === "rejected";
+}
+
+/**
+ * Whether the PBX itself answered, 4xx or 5xx: what a refresh can show. A
+ * carrier that refused a text (502) leaves it in the thread as failed, but the
+ * answer is not a settled one, so the retry keeps its key (`wasAnswered`).
+ */
+export function reachedServer(e: unknown): boolean {
+  return isMessagingError(e) && (e.kind === "rejected" || e.kind === "server");
 }
 
 // ── Segments ────────────────────────────────────────────────────────────────
@@ -248,4 +258,48 @@ export function personLabel(number: string, contacts: ReadonlyArray<Contact>): s
 export function showMessagesNav(state: { loaded: boolean; error: unknown; inboxes: ReadonlyArray<unknown> } | undefined): boolean {
   if (!state || !state.loaded) return false;
   return state.error !== null || state.inboxes.length > 0;
+}
+
+/**
+ * A number safe to hand to the dialer: strict E.164. A short code, a star
+ * code, a `#`, an `@` or a SIP URI that a sender could put in a text's number
+ * never reaches `dialUri`.
+ */
+export function isDialable(number: string): boolean {
+  return /^\+[1-9]\d{6,14}$/.test(number);
+}
+
+// ── Drafts ──────────────────────────────────────────────────────────────────
+
+/** What is being written in one thread, kept across the view coming and going. */
+export interface Draft {
+  body: string;
+  attachment: Attachment | null;
+  /** Idempotency key of the send this draft would make. */
+  key: string;
+  sending: boolean;
+  /** The PBX's sentence for the last failed send. */
+  error: string | null;
+}
+
+export function emptyDraft(): Draft {
+  return { body: "", attachment: null, key: newIdempotencyKey(), sending: false, error: null };
+}
+
+/** An edit: anything that changes what would be sent is a new request, so a new key. */
+export function editDraft(d: Draft, patch: { body?: string; attachment?: Attachment | null }): Draft {
+  const body = patch.body ?? d.body;
+  const attachment = patch.attachment === undefined ? d.attachment : patch.attachment;
+  const changed = body !== d.body || attachment?.id !== d.attachment?.id;
+  return { ...d, body, attachment, key: changed ? newIdempotencyKey() : d.key, error: changed ? null : d.error };
+}
+
+/** The draft after a send failed with `e`. */
+export function failedDraft(d: Draft, e: unknown): Draft {
+  return { ...d, sending: false, error: messagingErrorText(e), key: wasAnswered(e) ? newIdempotencyKey() : d.key };
+}
+
+/** What is sent for a draft: the trimmed body, the one thing the counter must count. */
+export function sendable(d: Pick<Draft, "body">): string {
+  return d.body.trim();
 }

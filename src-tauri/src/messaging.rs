@@ -9,7 +9,8 @@
 //! carries the answer, including the server's own sentence on a refusal, to
 //! the frontend.
 //!
-//! Live updates: one WebSocket per account to `/api/v1/ws?token=<jwt>`, which
+//! Live updates: one WebSocket per account to `/api/v1/ws` (the JWT in an `Authorization`
+//! header), which
 //! the PBX sends `sms_received` events on (ids only, no text). It lives here
 //! rather than in the webview because the webview's CSP allows no sockets and
 //! the JWT never leaves this process. The frontend polls too, so a dropped
@@ -49,6 +50,10 @@ impl From<VoicemailError> for MessagingError {
     }
 }
 
+/// A non-success answer. A 4xx is `rejected`: the PBX read the request and
+/// said no, so the next attempt is a new request. A 5xx is `server`: it may or
+/// may not have acted (a carrier that refused leaves the text stored as
+/// failed), so the caller keeps its idempotency key for the retry.
 fn rejected(status: u16, body: &[u8]) -> MessagingError {
     let parsed: Option<Value> = serde_json::from_slice(body).ok();
     let text = |key: &str| parsed.as_ref().and_then(|v| v.get(key)).and_then(Value::as_str).map(str::to_string);
@@ -57,7 +62,8 @@ fn rejected(status: u16, body: &[u8]) -> MessagingError {
         .or_else(|| text("message"))
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| format!("The PBX answered with HTTP {status}."));
-    MessagingError { kind: "rejected", message, status: Some(status), field: text("field") }
+    let kind = if status >= 500 { "server" } else { "rejected" };
+    MessagingError { kind, message, status: Some(status), field: text("field") }
 }
 
 type Build<'a> = &'a (dyn Fn(&reqwest::Client, &reqwest::Url, &Session) -> reqwest::RequestBuilder + Send + Sync);
@@ -207,11 +213,12 @@ pub fn parse_sms_event(account_id: &str, frame: &str) -> Option<SmsArrived> {
     })
 }
 
-/// `https://host/` as the event stream's `wss://host/api/v1/ws?token=...`.
-pub fn ws_url(api: &reqwest::Url, jwt: &str) -> Option<reqwest::Url> {
+/// `https://host/` as the event stream's `wss://host/api/v1/ws`. The session
+/// goes in an `Authorization` header, never the address: a URL is logged by
+/// proxies and servers.
+pub fn ws_url(api: &reqwest::Url) -> Option<reqwest::Url> {
     let mut url = route(api, &["api", "v1", "ws"]);
     url.set_scheme(if api.scheme() == "https" { "wss" } else { "ws" }).ok()?;
-    url.query_pairs_mut().append_pair("token", jwt);
     Some(url)
 }
 
@@ -268,8 +275,10 @@ async fn run_once(
 
     let api = crate::voicemail::validate_api_url(&mailbox.api_url, cfg!(debug_assertions)).map_err(|e| e.to_string())?;
     let session = state.session(&api, mailbox, password).await.map_err(|e| e.to_string())?;
-    let url = ws_url(&api, &session.jwt).ok_or("bad event stream address")?;
-    let request = url.as_str().into_client_request().map_err(|e| e.to_string())?;
+    let url = ws_url(&api).ok_or("bad event stream address")?;
+    let mut request = url.as_str().into_client_request().map_err(|e| e.to_string())?;
+    let bearer = format!("Bearer {}", session.jwt).parse().map_err(|_| "unusable session token".to_string())?;
+    request.headers_mut().insert("Authorization", bearer);
     let connector = tls_connector()?;
     let mut socket = match tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector)).await {
         Ok((socket, _)) => socket,
@@ -347,6 +356,14 @@ mod tests {
     }
 
     #[test]
+    fn a_server_error_is_not_a_refusal() {
+        assert_eq!(rejected(502, b"{\"error\":\"carrier\"}").kind, "server");
+        assert_eq!(rejected(500, b"").kind, "server");
+        assert_eq!(rejected(429, b"").kind, "rejected");
+        assert_eq!(rejected(404, b"").kind, "rejected");
+    }
+
+    #[test]
     fn parses_only_sms_received_events() {
         let frame = r#"{"type":"sms_received","tenant_id":"t","did_id":"d1","message_id":"m1","remote_number":"+13035550100","extension_ids":["e"]}"#;
         assert_eq!(
@@ -365,9 +382,9 @@ mod tests {
     #[test]
     fn the_event_stream_address_follows_the_api_scheme() {
         let https = reqwest::Url::parse("https://api.ariaroute.com/").unwrap();
-        assert_eq!(ws_url(&https, "a.b.c").unwrap().as_str(), "wss://api.ariaroute.com/api/v1/ws?token=a.b.c");
+        assert_eq!(ws_url(&https).unwrap().as_str(), "wss://api.ariaroute.com/api/v1/ws");
         let http = reqwest::Url::parse("http://127.0.0.1:4000/").unwrap();
-        assert_eq!(ws_url(&http, "x").unwrap().as_str(), "ws://127.0.0.1:4000/api/v1/ws?token=x");
+        assert_eq!(ws_url(&http).unwrap().as_str(), "ws://127.0.0.1:4000/api/v1/ws");
     }
 
     #[test]

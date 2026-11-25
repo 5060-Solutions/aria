@@ -22,15 +22,20 @@ import {
   isImage,
   MAX_SEGMENTS,
   messagingErrorText,
-  newIdempotencyKey,
+  emptyDraft,
+  isDialable,
+  sendable,
+  threadKey,
   oldestFirst,
   personLabel,
   showsStatus,
-  wasAnswered,
   type Attachment,
   type Inbox,
   type SmsMessage,
 } from "../../utils/messaging";
+
+/** What a thread with nothing typed shows. */
+const NO_DRAFT = emptyDraft();
 
 /** How often an open thread asks again, so a delivery report shows up. */
 const THREAD_POLL_MS = 15_000;
@@ -142,18 +147,21 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
   const defaultCountry = useAppStore((s) => s.defaultCountry);
   const thread = useMessagingStore((s) => s.byAccount[mailbox.accountId]?.threads[threadId(inbox.did_id, number)]);
   const loadThread = useMessagingStore((s) => s.loadThread);
-  const send = useMessagingStore((s) => s.send);
+  const sendDraft = useMessagingStore((s) => s.sendDraft);
+  const setDraft = useMessagingStore((s) => s.setDraft);
   const upload = useMessagingStore((s) => s.upload);
   const markRead = useMessagingStore((s) => s.markRead);
   const setOpen = useMessagingStore((s) => s.setOpen);
 
-  const [body, setBody] = useState("");
-  const [attachment, setAttachment] = useState<Attachment | null>(null);
+  // The draft lives in the store, so leaving the thread and coming back (or
+  // the list re-rendering it) keeps the text, the picture and the idempotency
+  // key of a send that may still be in flight.
+  const draftKey = threadKey(mailbox.accountId, inbox.did_id, number);
+  const draft = useMessagingStore((s) => s.drafts[draftKey]) ?? NO_DRAFT;
+  const { body, attachment, sending } = draft;
   const [uploading, setUploading] = useState(false);
-  const [sending, setSending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const key = useRef(newIdempotencyKey());
   const fileInput = useRef<HTMLInputElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -185,12 +193,15 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
   }, [latest, mailbox.accountId, inbox.did_id, number, markRead]);
 
   const label = personLabel(number, contacts);
-  const count = countSegments(body);
+  // Counted as sent: the PBX is given the trimmed text, so that is what costs segments.
+  const count = countSegments(sendable(draft));
   const optedOut = thread?.opted_out ?? false;
   const canSend = inbox.enabled && !optedOut;
-  const canSubmit = canSend && !sending && !uploading && !count.overLimit && (body.trim().length > 0 || attachment !== null);
+  const canSubmit = canSend && !sending && !uploading && !count.overLimit && (sendable(draft).length > 0 || attachment !== null);
+  const dialable = isDialable(number);
 
   const call = () => {
+    if (!dialable) return;
     placeCall({ uri: dialUri(number, account, defaultCountry), accountId: account.id, remoteName: label !== formatNumber(number) ? label : undefined }).catch((e) =>
       notifyError(messagingErrorText(e)),
     );
@@ -206,7 +217,7 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
     setProblem(null);
     setUploading(true);
     try {
-      setAttachment(await upload(mailbox, file));
+      setDraft(draftKey, { attachment: await upload(mailbox, file) });
     } catch (e) {
       setProblem(t("messages.attachFailed", { error: messagingErrorText(e) }));
     } finally {
@@ -214,29 +225,9 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
     }
   };
 
-  const submit = async () => {
-    setSending(true);
+  const submit = () => {
     setProblem(null);
-    try {
-      await send(mailbox, {
-        didId: inbox.did_id,
-        to: number,
-        body: body.trim(),
-        attachmentIds: attachment ? [attachment.id] : [],
-        idempotencyKey: key.current,
-      });
-      setBody("");
-      setAttachment(null);
-      key.current = newIdempotencyKey();
-    } catch (e) {
-      // The draft stays so it can be sent again. After an answer the retry is
-      // a new request; after none it keeps its key, so a send that did go
-      // through is not sent twice.
-      if (wasAnswered(e)) key.current = newIdempotencyKey();
-      setProblem(t("messages.sendFailed", { error: messagingErrorText(e) }));
-    } finally {
-      setSending(false);
-    }
+    void sendDraft(mailbox, inbox.did_id, number);
   };
 
   return (
@@ -249,15 +240,23 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
           <Typography variant="h6" sx={{ fontWeight: 600 }} noWrap>
             {label}
           </Typography>
-          <Link component="button" type="button" underline="hover" variant="caption" onClick={call} sx={{ color: "text.secondary" }} aria-label={t("messages.call", { number: formatNumber(number) })}>
-            {formatNumber(number)}
-          </Link>
+          {dialable ? (
+            <Link component="button" type="button" underline="hover" variant="caption" onClick={call} sx={{ color: "text.secondary" }} aria-label={t("messages.call", { number: formatNumber(number) })}>
+              {formatNumber(number)}
+            </Link>
+          ) : (
+            <Typography variant="caption" sx={{ color: "text.secondary", display: "block" }}>
+              {number}
+            </Typography>
+          )}
         </Box>
-        <Tooltip title={t("messages.call", { number: formatNumber(number) })}>
-          <IconButton size="small" color="primary" onClick={call} aria-label={t("messages.call", { number: formatNumber(number) })}>
-            <PhoneIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+        {dialable && (
+          <Tooltip title={t("messages.call", { number: formatNumber(number) })}>
+            <IconButton size="small" color="primary" onClick={call} aria-label={t("messages.call", { number: formatNumber(number) })}>
+              <PhoneIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        )}
       </Box>
 
       <Box sx={{ flex: 1, overflow: "auto", px: 2, py: 1, display: "flex", flexDirection: "column", gap: 1 }}>
@@ -277,11 +276,12 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
       <Box sx={{ px: 2, pb: 2, pt: 1, display: "flex", flexDirection: "column", gap: 1 }}>
         {optedOut && <Alert severity="warning">{t("messages.optedOut")}</Alert>}
         {!inbox.enabled && <Alert severity="info">{t("messages.inboxOff")}</Alert>}
+        {draft.error && <Alert severity="error">{t("messages.sendFailed", { error: draft.error })}</Alert>}
         {problem && <Alert severity="error" onClose={() => setProblem(null)}>{problem}</Alert>}
         {attachment && (
           <Box sx={{ display: "flex", alignItems: "center", gap: 1, fontSize: "0.85rem" }}>
             <DescriptionIcon fontSize="small" /> {attachment.content_type} · {Math.max(1, Math.round(attachment.size_bytes / 1024))} KB
-            <IconButton size="small" onClick={() => setAttachment(null)} aria-label={t("messages.removeAttachment")}>
+            <IconButton size="small" onClick={() => setDraft(draftKey, { attachment: null })} aria-label={t("messages.removeAttachment")}>
               <CloseIcon fontSize="small" />
             </IconButton>
           </Box>
@@ -302,20 +302,20 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
             size="small"
             placeholder={t("messages.placeholder")}
             value={body}
-            disabled={!canSend}
-            onChange={(e) => setBody(e.target.value)}
+            disabled={!canSend || sending}
+            onChange={(e) => setDraft(draftKey, { body: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (canSubmit) void submit();
+                if (canSubmit) submit();
               }
             }}
           />
-          <Button variant="contained" endIcon={<SendIcon />} disabled={!canSubmit} onClick={() => void submit()}>
+          <Button variant="contained" endIcon={<SendIcon />} disabled={!canSubmit} onClick={() => submit()}>
             {t("messages.send")}
           </Button>
         </Box>
-        {body.length > 0 && (
+        {sendable(draft).length > 0 && (
           <Typography variant="caption" sx={{ color: count.overLimit ? "error.main" : "text.secondary" }} data-testid="segment-count">
             {t("messages.segments", { count: count.segments })} · {count.encoding === "gsm7" ? t("messages.encodingGsm") : t("messages.encodingUcs")} · {t("messages.left", { count: count.remaining })}
             {count.overLimit ? ` · ${t("messages.tooLong", { max: MAX_SEGMENTS })}` : ""}

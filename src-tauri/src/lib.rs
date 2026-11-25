@@ -6,6 +6,7 @@ mod mcp;
 mod messaging;
 #[cfg(target_os = "macos")]
 mod menu;
+mod pbx_binding;
 mod provision;
 mod sip;
 mod system_contacts;
@@ -149,6 +150,7 @@ pub fn run() {
         .manage(audio_test_manager)
         .manage(std::sync::Arc::new(voicemail::VoicemailState::new()))
         .manage(messaging::MessagingLive::default())
+        .manage(std::sync::Arc::new(pbx_binding::PbxBindings::load(app_data_root().map(|d| d.join("pbx_bindings.json")))))
         .setup(move |app| {
             // Start the manager's sweeper and timers. setup() itself runs on
             // the main thread from the event loop's Ready handler, with no
@@ -408,6 +410,7 @@ pub fn run() {
             commands::messaging_attachment,
             commands::messaging_listen,
             commands::messaging_stop,
+            commands::pbx_bind,
             mcp::mcp_get_config,
             mcp::mcp_set_config,
             mcp::mcp_get_token,
