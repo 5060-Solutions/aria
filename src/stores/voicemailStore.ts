@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "./toastStore";
 import { log } from "../utils/log";
+import { ensureBound } from "../utils/pbxBinding";
 import { isVoicemailError, type Mailbox, type VoicemailError, type VoicemailMessage } from "../utils/voicemail";
 
 interface MailboxState {
@@ -49,6 +50,7 @@ export const useVoicemailStore = create<VoicemailStoreState>((set, get) => ({
       },
     }));
     try {
+      await ensureBound(mailbox);
       const messages = await invoke<VoicemailMessage[]>("voicemail_list", { mailbox });
       set((s) => ({
         byAccount: { ...s.byAccount, [id]: { mailbox, messages, loading: false, error: null, loaded: true } },

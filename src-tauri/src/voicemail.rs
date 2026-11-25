@@ -63,6 +63,8 @@ pub enum VoicemailError {
     Malformed,
     /// The account has no saved password to sign in with.
     NoPassword,
+    /// No PBX API address is bound to this account in the backend.
+    NotBound,
 }
 
 impl VoicemailError {
@@ -76,6 +78,7 @@ impl VoicemailError {
             Self::Status(_) => "status",
             Self::Malformed => "malformed",
             Self::NoPassword => "noPassword",
+            Self::NotBound => "notBound",
         }
     }
 }
@@ -102,6 +105,7 @@ impl fmt::Display for VoicemailError {
             Self::Status(s) => write!(f, "The PBX answered with HTTP {s}."),
             Self::Malformed => write!(f, "The PBX sent a reply Aria could not read."),
             Self::NoPassword => write!(f, "This account has no saved password to sign in to the PBX with."),
+            Self::NotBound => write!(f, "This account has no PBX API address on record. Save it in the account settings."),
         }
     }
 }
@@ -127,7 +131,7 @@ pub fn validate_api_url(raw: &str, allow_local_http: bool) -> Result<reqwest::Ur
 }
 
 /// `api` plus path segments, each one encoded as a single segment.
-fn route(api: &reqwest::Url, segments: &[&str]) -> reqwest::Url {
+pub(crate) fn route(api: &reqwest::Url, segments: &[&str]) -> reqwest::Url {
     let mut url = api.clone();
     if let Ok(mut path) = url.path_segments_mut() {
         path.pop_if_empty().extend(segments);
@@ -136,9 +140,10 @@ fn route(api: &reqwest::Url, segments: &[&str]) -> reqwest::Url {
 }
 
 #[derive(Debug, Clone)]
-struct Session {
-    jwt: String,
-    extension_id: String,
+pub(crate) struct Session {
+    pub(crate) jwt: String,
+    pub(crate) extension_id: String,
+    pub(crate) tenant_id: String,
     box_id: Option<String>,
 }
 
@@ -146,6 +151,9 @@ struct Session {
 struct LoginReply {
     token: String,
     extension_id: String,
+    /// Business messaging routes are scoped by it.
+    #[serde(default)]
+    tenant_id: String,
 }
 
 #[derive(Deserialize)]
@@ -187,7 +195,7 @@ impl VoicemailState {
             .insert(account_id.to_string(), session);
     }
 
-    fn forget(&self, account_id: &str) {
+    pub(crate) fn forget(&self, account_id: &str) {
         self.sessions.lock().unwrap_or_else(|p| p.into_inner()).remove(account_id);
     }
 
@@ -211,11 +219,11 @@ impl VoicemailState {
             return Err(VoicemailError::Status(status.as_u16()));
         }
         let login: LoginReply = reply.json().await.map_err(|_| VoicemailError::Malformed)?;
-        Ok(Session { jwt: login.token, extension_id: login.extension_id, box_id: None })
+        Ok(Session { jwt: login.token, extension_id: login.extension_id, tenant_id: login.tenant_id, box_id: None })
     }
 
     /// The account's session, signing in when there is none.
-    async fn session(&self, api: &reqwest::Url, mailbox: &Mailbox, password: &str) -> Result<Session, VoicemailError> {
+    pub(crate) async fn session(&self, api: &reqwest::Url, mailbox: &Mailbox, password: &str) -> Result<Session, VoicemailError> {
         if let Some(session) = self.cached(&mailbox.account_id) {
             return Ok(session);
         }
@@ -226,7 +234,7 @@ impl VoicemailState {
 
     /// Send a signed request built by `build`. A 401 drops the session, signs
     /// in again and resends once; a second 401 is the caller's to report.
-    async fn send(
+    pub(crate) async fn send(
         &self,
         mailbox: &Mailbox,
         password: &str,
@@ -326,7 +334,7 @@ impl VoicemailState {
     }
 }
 
-fn status_error(status: reqwest::StatusCode) -> VoicemailError {
+pub(crate) fn status_error(status: reqwest::StatusCode) -> VoicemailError {
     if status == reqwest::StatusCode::UNAUTHORIZED {
         VoicemailError::Unauthorized
     } else {
@@ -336,7 +344,7 @@ fn status_error(status: reqwest::StatusCode) -> VoicemailError {
 
 /// reqwest's Display includes the URL; the API host is not secret, but keep
 /// the habit the rest of the app has and strip it anyway.
-fn net_error(e: reqwest::Error) -> VoicemailError {
+pub(crate) fn net_error(e: reqwest::Error) -> VoicemailError {
     let e = e.without_url();
     if e.is_timeout() {
         VoicemailError::Network("timed out".into())
