@@ -4,7 +4,8 @@
     "history": "Verlauf",
     "contacts": "Kontakte",
     "settings": "Einstellungen",
-    "voicemail": "Mailbox"
+    "voicemail": "Mailbox",
+    "recordings": "Aufnahmen"
   },
   "status": {
     "connected": "Verbunden",
@@ -120,7 +121,9 @@
     "callBack": "Zurückrufen",
     "sipTrace": "SIP-Trace",
     "sipTraceDescription": "Wireshark-kompatible PCAP herunterladen",
-    "account": "Konto"
+    "account": "Konto",
+    "transcript": "Transkript",
+    "openInRecordings": "In Aufnahmen öffnen"
   },
   "contacts": {
     "title": "Kontakte",
@@ -528,5 +531,22 @@
     "record": "Aufnahme konnte nicht geändert werden: {{error}}",
     "merge": "Anrufe konnten nicht verbunden werden: {{error}}",
     "swap": "Anrufe konnten nicht gewechselt werden: {{error}}"
+  },
+  "recordings": {
+    "title": "Aufnahmen",
+    "empty": "Noch keine Aufnahmen. Drücken Sie ⌘R während eines Anrufs oder schalten Sie die automatische Aufnahme für ein Konto in den Einstellungen ein.",
+    "openFolder": "Aufnahmeordner öffnen",
+    "play": "Abspielen",
+    "transcribe": "Transkribieren",
+    "transcribing": "Wird transkribiert…",
+    "transcript": "Transkript",
+    "you": "Sie",
+    "caller": "Anrufer",
+    "noModel": "Zum Transkribieren laden Sie ein Sprachmodell unter Transkription in den",
+    "notBuilt": "Diese Version hat keine Transkription.",
+    "noTranscript": "Kein Transkript für diesen Anruf.",
+    "failed": "Transkription fehlgeschlagen: {{error}}",
+    "count_one": "{{count}} Aufnahme",
+    "count_other": "{{count}} Aufnahmen"
   }
 }
