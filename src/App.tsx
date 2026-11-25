@@ -18,6 +18,7 @@ import { ProvisionLinkDialog } from "./components/provision/ProvisionLinkDialog"
 import { AboutDialog } from "./components/about/AboutDialog";
 import { AppToast } from "./components/layout/AppToast";
 import { useAppMenu } from "./hooks/useAppMenu";
+import { useMessaging } from "./hooks/useMessaging";
 import { provisionFlow } from "./components/provision/provisionApi";
 import "./i18n";
 
@@ -47,6 +48,7 @@ function MainApp() {
   useAutoRegister();
   useNetworkMonitor();
   useAppMenu();
+  useMessaging();
 
   // The engine's audio processing setting lives in memory and resets with the
   // process, so the saved preference has to be pushed down on every launch.

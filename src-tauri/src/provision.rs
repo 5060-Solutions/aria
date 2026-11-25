@@ -577,6 +577,7 @@ pub async fn provision_link_redeem(
     expected: ExpectedLine,
     accounts: Vec<KnownAccount>,
     new_account_id: String,
+    bindings: tauri::State<'_, std::sync::Arc<crate::pbx_binding::PbxBindings>>,
 ) -> Result<ProvisionedLine, String> {
     let url = checked_url(&url)?;
     if !is_account_id(&new_account_id) {
@@ -591,6 +592,13 @@ pub async fn provision_link_redeem(
         .await
         .map_err(|e| ProvisionError::Storage(e.to_string()).user_message())?
         .map_err(|e| ProvisionError::Storage(e).user_message())?;
+    // The setup link's server is the one this account's password may be sent
+    // to for voicemail and texting; recorded here, by the backend, once the
+    // user has confirmed the link.
+    match crate::pbx_binding::binding_from(&line.pbx_api_url, &line.username, &line.domain) {
+        Ok(binding) => bindings.set(&line.account_id, binding),
+        Err(e) => log::warn!("[provision] no PBX API bound for the new line: {e}"),
+    }
     Ok(line)
 }
 

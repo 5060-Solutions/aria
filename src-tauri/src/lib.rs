@@ -3,8 +3,10 @@ mod audio_test;
 mod commands;
 mod diagnostics_window;
 mod mcp;
+mod messaging;
 #[cfg(target_os = "macos")]
 mod menu;
+mod pbx_binding;
 mod provision;
 mod sip;
 mod system_contacts;
@@ -114,6 +116,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         // Signature-verified updates. The frontend asks before installing —
         // never silently restart a softphone, which could drop a live call.
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -145,7 +148,9 @@ pub fn run() {
         )
         .manage(manager)
         .manage(audio_test_manager)
-        .manage(voicemail::VoicemailState::new())
+        .manage(std::sync::Arc::new(voicemail::VoicemailState::new()))
+        .manage(messaging::MessagingLive::default())
+        .manage(std::sync::Arc::new(pbx_binding::PbxBindings::load(app_data_root().map(|d| d.join("pbx_bindings.json")))))
         .setup(move |app| {
             // Start the manager's sweeper and timers. setup() itself runs on
             // the main thread from the event loop's Ready handler, with no
@@ -397,6 +402,15 @@ pub fn run() {
             commands::voicemail_mark_read,
             commands::voicemail_delete,
             commands::voicemail_audio,
+            commands::messaging_inboxes,
+            commands::messaging_conversations,
+            commands::messaging_thread,
+            commands::messaging_send,
+            commands::messaging_upload,
+            commands::messaging_attachment,
+            commands::messaging_listen,
+            commands::messaging_stop,
+            commands::pbx_bind,
             mcp::mcp_get_config,
             mcp::mcp_set_config,
             mcp::mcp_get_token,

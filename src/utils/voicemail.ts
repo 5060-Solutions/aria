@@ -21,7 +21,7 @@ export interface VoicemailMessage {
 
 /** The structured error the voicemail commands reject with. */
 export interface VoicemailError {
-  kind: "invalidUrl" | "unauthorized" | "noMailbox" | "network" | "status" | "malformed" | "noPassword";
+  kind: "invalidUrl" | "unauthorized" | "noMailbox" | "network" | "status" | "malformed" | "noPassword" | "notBound";
   message: string;
 }
 

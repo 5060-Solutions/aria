@@ -1,6 +1,6 @@
 [package]
 name = "aria"
-version = "0.7.0"
+version = "0.8.2"
 description = "Aria - A modern SIP softphone by 5060 Solutions"
 authors = ["5060 Solutions"]
 license = "LicenseRef-Proprietary"
@@ -72,7 +72,11 @@ aria-ai-core = { git = "https://github.com/5060-Solutions/aria-ai-core.git", opt
 ] }
 
 # HTTP client for Google People API
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "multipart"] }
+# The PBX event stream (new-text events), over the same rustls stack as SIP/TLS.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false }
+tauri-plugin-notification = "2"
 rustls-platform-verifier = "0.7.0"
 tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"

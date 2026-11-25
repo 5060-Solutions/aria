@@ -229,7 +229,7 @@ mod enabled {
         }
         let call_id = call_id.to_string();
         let path = wav_path.to_path_buf();
-        std::thread::spawn(move || match transcribe_recording(&call_id, &path) {
+        std::thread::spawn(move || match transcribe_recording(&call_id, &path, "") {
             Ok(i) => log::info!(
                 "Transcribed {call_id}: {} segments ({})",
                 i.segments.len(),
@@ -308,7 +308,7 @@ mod enabled {
     ///
     /// Blocking and slow — seconds to minutes — so callers must run it off the
     /// UI thread. Tauri commands marked `async` already do.
-    pub fn transcribe_recording(call_id: &str, wav_path: &Path) -> Result<AiInsightDto, String> {
+    pub fn transcribe_recording(call_id: &str, wav_path: &Path, remote_label: &str) -> Result<AiInsightDto, String> {
         // Inference takes seconds to minutes. Holding the state lock across it
         // would block every other command — listing models, polling a download
         // — for that whole time, so the lock is only held to hand out the
@@ -372,20 +372,16 @@ mod enabled {
             lost_audio: false,
         };
 
+        let (summary, llm_model_id, status) = summarize_transcript(&transcript, remote_label, duration_secs);
         let insight = aria_ai_core::types::CallInsight {
             call_id: call_id.to_string(),
             created_at: now_secs(),
             duration_secs,
             transcript: Some(transcript),
-            summary: None,
+            summary,
             stt_model_id: Some(stt_id),
-            llm_model_id: None,
-            // A desktop recording is one mixed track with no summariser wired
-            // in yet, so the transcript is the whole result rather than a step
-            // on the way to one.
-            status: aria_ai_core::types::InsightStatus::TranscriptOnly {
-                reason: "summarisation is not enabled on desktop".to_string(),
-            },
+            llm_model_id,
+            status,
         };
 
         // Best effort, for the same reason it is on mobile: the caller already
@@ -400,6 +396,68 @@ mod enabled {
             Ok(())
         });
         Ok(to_dto(&insight))
+    }
+
+    /// The headline and key points for a transcript, from the summary model
+    /// the user installed: a build with `ai-summaries` and a model on disk.
+    /// Anything short of that leaves the transcript as the whole result and
+    /// says why, so the UI can show the text and the reason side by side.
+    #[cfg(feature = "ai-summaries")]
+    fn summarize_transcript(
+        transcript: &aria_ai_core::types::Transcript,
+        remote_label: &str,
+        duration_secs: u32,
+    ) -> (
+        Option<aria_ai_core::types::Summary>,
+        Option<String>,
+        aria_ai_core::types::InsightStatus,
+    ) {
+        use aria_ai_core::llm::{summarize, CallContext, SummaryConfig};
+        use aria_ai_core::types::InsightStatus;
+
+        let only = |reason: String| InsightStatus::TranscriptOnly { reason };
+        let Some(llm_id) = models()
+            .ok()
+            .and_then(|ms| ms.into_iter().find(|m| m.kind == "llm" && m.installed).map(|m| m.id))
+        else {
+            return (None, None, only("no summary model installed".to_string()));
+        };
+        let summarizer = match with(|d| d.engine.summarizer(&llm_id).map_err(|e| e.to_string())) {
+            Ok(s) => s,
+            Err(e) => return (None, Some(llm_id), only(format!("summary model could not be loaded: {e}"))),
+        };
+        let ctx = CallContext {
+            remote_label: remote_label.to_string(),
+            date_label: super::date_label(now_secs()),
+            duration_secs,
+        };
+        match summarize(transcript, summarizer.as_ref(), &ctx, &SummaryConfig::default()) {
+            Ok(outcome) => (Some(outcome.summary), Some(outcome.model_id), InsightStatus::Complete),
+            Err(e @ aria_ai_core::AiError::TranscriptTooShort { .. }) => (None, Some(llm_id), only(e.to_string())),
+            Err(e) => {
+                log::warn!("summary failed: {e}");
+                (None, Some(llm_id), only(format!("summary failed: {e}")))
+            }
+        }
+    }
+
+    #[cfg(not(feature = "ai-summaries"))]
+    fn summarize_transcript(
+        _transcript: &aria_ai_core::types::Transcript,
+        _remote_label: &str,
+        _duration_secs: u32,
+    ) -> (
+        Option<aria_ai_core::types::Summary>,
+        Option<String>,
+        aria_ai_core::types::InsightStatus,
+    ) {
+        (
+            None,
+            None,
+            aria_ai_core::types::InsightStatus::TranscriptOnly {
+                reason: "summarisation is not built into this build".to_string(),
+            },
+        )
     }
 
     pub fn insights(limit: u32, offset: u32) -> Result<Vec<AiInsightSummaryDto>, String> {
@@ -450,7 +508,7 @@ mod enabled {
         })
     }
 
-    fn now_secs() -> i64 {
+fn now_secs() -> i64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
@@ -551,7 +609,7 @@ mod disabled {
         Err(OFF.to_string())
     }
 
-    pub fn transcribe_recording(_call_id: &str, _wav_path: &Path) -> Result<AiInsightDto, String> {
+    pub fn transcribe_recording(_call_id: &str, _wav_path: &Path, _remote_label: &str) -> Result<AiInsightDto, String> {
         Err(OFF.to_string())
     }
 
@@ -569,5 +627,39 @@ mod disabled {
 
     pub const fn clear_insights() -> Result<u64, String> {
         Ok(0)
+    }
+}
+
+/// `YYYY-MM-DD` in UTC for a UNIX time: what the summary prompt calls the
+/// call's date. Howard Hinnant's civil-from-days, so no date crate is needed.
+#[allow(dead_code)]
+pub fn date_label(unix_secs: i64) -> String {
+    let days = unix_secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::date_label;
+
+    /// The date the summary prompt is given, from UNIX time, around the
+    /// awkward edges: epoch, leap day, year end.
+    #[test]
+    fn date_label_is_the_utc_civil_date() {
+        assert_eq!(date_label(0), "1970-01-01");
+        assert_eq!(date_label(1_777_564_800), "2026-04-30");
+        assert_eq!(date_label(1_709_164_800), "2024-02-29");
+        assert_eq!(date_label(1_767_225_599), "2025-12-31");
+        assert_eq!(date_label(1_767_225_600), "2026-01-01");
     }
 }

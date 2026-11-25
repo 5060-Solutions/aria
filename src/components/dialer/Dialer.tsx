@@ -8,6 +8,8 @@ import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { placeCall } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
+import { contactForNumber, dialerMatches, formatNumber, uriUser } from "../../utils/callerDisplay";
+import type { Contact } from "../../types/sip";
 import { DialerButton } from "./DialerButton";
 import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
 
@@ -48,6 +50,10 @@ export function Dialer() {
 
   const accounts = useAppStore((s) => s.accounts);
   const activeAccountId = useAppStore((s) => s.activeAccountId);
+  const contacts = useAppStore((s) => s.contacts);
+  // Letters mean a name: the box searches contacts instead of dialling.
+  const typingName = /[a-z]/i.test(dialInput);
+  const matches = useMemo(() => dialerMatches(dialInput, contacts), [dialInput, contacts]);
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
 
   const [countryPickerOpen, setCountryPickerOpen] = useState(false);
@@ -66,6 +72,7 @@ export function Dialer() {
 
   const formattedNumber = useMemo(() => {
     if (!dialInput) return "";
+    if (/[a-z]/i.test(dialInput)) return dialInput;
     
     // Get just the digits to check length
     const digits = dialInput.replace(/\D/g, "");
@@ -136,9 +143,26 @@ export function Dialer() {
     ? (!dialInput || isInternational || digits.length > 6)
     : isInternational;
 
+  const callContact = useCallback(
+    async (contact: Contact) => {
+      if (!activeAccountId || !activeAccount) return;
+      await placeCall({
+        uri: dialUri(uriUser(contact.uri) || contact.phone || "", activeAccount, defaultCountry),
+        accountId: activeAccountId,
+        remoteName: contact.name,
+      }).catch(() => {});
+      clearDialInput();
+    },
+    [activeAccountId, activeAccount, defaultCountry, clearDialInput],
+  );
+
   const handleCall = useCallback(async () => {
     if (!dialInput.trim() || !activeAccountId || !activeAccount) return;
-    
+    // A name in the box calls the best match; no match, no call.
+    if (typingName) {
+      if (matches[0]) await callContact(matches[0]);
+      return;
+    }
     const uri = dialUri(dialInput, activeAccount, defaultCountry);
 
     // If the call cannot be placed, placeCall removes it and tells the user
@@ -146,9 +170,11 @@ export function Dialer() {
     await placeCall({
       uri,
       accountId: activeAccountId,
-      remoteName: formattedNumber || dialInput,
+      // The contact's name when the number is one we know; otherwise the
+      // call screen formats the number itself.
+      remoteName: contactForNumber(dialInput, contacts)?.name,
     }).catch(() => {});
-  }, [dialInput, activeAccountId, activeAccount, defaultCountry, formattedNumber]);
+  }, [dialInput, activeAccountId, activeAccount, defaultCountry, typingName, matches, callContact, contacts]);
 
   // Read the store, not the render's dialInput: two deletes before a
   // re-render must remove two characters.
@@ -228,6 +254,13 @@ export function Dialer() {
         return;
       }
 
+      // Letters search contacts by name (a space between first and last).
+      if (/^[a-zA-Z]$/.test(key) || (key === " " && /[a-z]/i.test(dialInput))) {
+        e.preventDefault();
+        appendDigit(key);
+        return;
+      }
+
       // Special characters
       if (key === "*" || key === "#") {
         appendDigit(key);
@@ -276,14 +309,21 @@ export function Dialer() {
   return (
     <Box
       sx={{
+        // Key size follows the window: the keypad and the call button must
+        // never be pushed below the bottom edge; the number area gives first.
+        "--dial-key": "76px",
+        "@media (max-height: 760px)": { "--dial-key": "68px" },
+        "@media (max-height: 680px)": { "--dial-key": "60px" },
         height: "100%",
+        minHeight: 0,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "flex-end",
         px: 3,
-        pb: 3,
-        pt: 2,
+        pb: 2,
+        pt: 1,
+        boxSizing: "border-box",
       }}
     >
       {/* Number display with country flag */}
@@ -295,8 +335,9 @@ export function Dialer() {
           alignItems: "center",
           justifyContent: "flex-end",
           width: "100%",
-          minHeight: 60,
-          pb: 1.5,
+          minHeight: 48,
+          overflow: "visible",
+          pb: 1,
         }}
       >
         {/* Country selector - hidden for extensions/short numbers */}
@@ -476,6 +517,80 @@ export function Dialer() {
                 {formattedNumber || t("dialer.enterNumber")}
               </Box>
           </div>
+          {matches.length > 0 && (
+            <Box
+              role="listbox"
+              aria-label={t("dialer.matches")}
+              sx={{
+                // Floats under the number, over the keypad: picking a contact
+                // is the whole point of typing a name, and the keys below are
+                // not needed until it is dismissed.
+                position: "absolute",
+                top: "100%",
+                left: 8,
+                right: 8,
+                zIndex: 3,
+                mt: 0.5,
+                borderRadius: "14px",
+                bgcolor: "background.paper",
+                border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
+                boxShadow: `0 8px 24px ${alpha("#000", theme.palette.mode === "dark" ? 0.5 : 0.15)}`,
+                overflow: "hidden",
+              }}
+            >
+              {matches.map((contact, i) => (
+                <Box
+                  key={contact.id}
+                  role="option"
+                  aria-selected={typingName && i === 0}
+                  tabIndex={0}
+                  onClick={() => void callContact(contact)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      void callContact(contact);
+                    }
+                  }}
+                  sx={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 1.25,
+                    px: 1.5,
+                    py: 0.75,
+                    cursor: "pointer",
+                    bgcolor: typingName && i === 0 ? alpha(theme.palette.primary.main, 0.1) : "transparent",
+                    "&:hover": { bgcolor: alpha(theme.palette.primary.main, 0.14) },
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: 30,
+                      height: 30,
+                      borderRadius: "50%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      bgcolor: alpha(theme.palette.primary.main, 0.14),
+                      color: "primary.main",
+                      fontSize: "0.75rem",
+                      fontWeight: 600,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {contact.name.substring(0, 2).toUpperCase()}
+                  </Box>
+                  <Box sx={{ minWidth: 0, textAlign: "left" }}>
+                    <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+                      {contact.name}
+                    </Typography>
+                    <Typography variant="caption" noWrap sx={{ color: "text.secondary", display: "block" }}>
+                      {formatNumber(uriUser(contact.uri) || contact.phone || "", defaultCountry)}
+                    </Typography>
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          )}
 
           <AnimatePresence>
             {dialInput && (
@@ -518,10 +633,11 @@ export function Dialer() {
       <Box
         sx={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, 76px)",
+          gridTemplateColumns: "repeat(3, var(--dial-key))",
           gap: 1.5,
           justifyContent: "center",
           mb: 2,
+          flexShrink: 0,
         }}
       >
         {keys.map(({ digit, letters }) => (

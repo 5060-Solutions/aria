@@ -4,7 +4,9 @@
     "history": "Historique",
     "contacts": "Contacts",
     "settings": "Paramètres",
-    "voicemail": "Messagerie"
+    "voicemail": "Messagerie",
+    "recordings": "Enregistrements",
+    "messages": "Messages"
   },
   "status": {
     "connected": "Connecté",
@@ -59,12 +61,13 @@
   },
   "dialer": {
     "searchCountry": "Rechercher un pays...",
-    "enterNumber": "Entrer le numéro",
+    "enterNumber": "Numéro ou nom",
     "selectAccount": "Sélectionner un compte",
     "call": "Appeler",
     "clearAll": "Effacer",
     "backspace": "Supprimer le dernier chiffre",
-    "backspaceHold": "Supprimer (maintenir pour tout effacer)"
+    "backspaceHold": "Supprimer (maintenir pour tout effacer)",
+    "matches": "Contacts correspondants"
   },
   "call": {
     "calling": "Appel...",
@@ -120,7 +123,11 @@
     "callBack": "Rappeler",
     "sipTrace": "Trace SIP",
     "sipTraceDescription": "Télécharger PCAP compatible Wireshark",
-    "account": "Compte"
+    "account": "Compte",
+    "transcript": "Transcription",
+    "openInRecordings": "Ouvrir dans Enregistrements",
+    "unknownCaller": "Appelant inconnu",
+    "number": "Numéro"
   },
   "contacts": {
     "title": "Contacts",
@@ -448,6 +455,61 @@
     "unread_other": "{{count}} nouveaux messages",
     "back": "Retour"
   },
+  "messages": {
+    "title": "Messages",
+    "newConversation": "Nouveau message",
+    "refresh": "Actualiser",
+    "retry": "Réessayer",
+    "back": "Retour",
+    "noNumbers": "Aucun numéro d'entreprise n'est attribué à votre poste pour les SMS. Demandez à un administrateur de vous en attribuer un.",
+    "empty": "Aucune conversation pour l'instant. Commencez-en une avec le bouton Nouveau message.",
+    "loadFailed": "Impossible de charger les messages.",
+    "signInFailed": "Le PBX n'a pas accepté le mot de passe de ce poste.",
+    "unread_one": "{{count}} non lu",
+    "unread_other": "{{count}} non lus",
+    "newMessage": "Nouveau",
+    "picture": "Image",
+    "notificationTitle": "SMS de {{from}}",
+    "number": "Numéro",
+    "numberOff": "{{number}} (désactivé)",
+    "call": "Appeler {{number}}",
+    "noThread": "Aucun message pour l'instant. Dites bonjour.",
+    "you": "Vous",
+    "placeholder": "SMS",
+    "send": "Envoyer",
+    "attach": "Joindre une image",
+    "removeAttachment": "Retirer la pièce jointe",
+    "uploading": "Envoi du fichier…",
+    "attachBadType": "Seuls les fichiers JPEG, PNG, GIF, MP4 et PDF peuvent être envoyés.",
+    "attachTooBig": "Un fichier ne peut pas dépasser 5 Mo.",
+    "attachFailed": "Impossible d'envoyer le fichier : {{error}}",
+    "attachmentLoadFailed": "Impossible de charger la pièce jointe.",
+    "segments_one": "{{count}} segment",
+    "segments_other": "{{count}} segments",
+    "encodingGsm": "GSM-7",
+    "encodingUcs": "Unicode (UCS-2)",
+    "left": "{{count}} restants",
+    "tooLong": "Trop long : un SMS peut compter au plus {{max}} segments.",
+    "optedOut": "Cette personne a répondu STOP et s'est désabonnée. Les SMS qui lui sont destinés sont bloqués jusqu'à ce qu'elle réponde START.",
+    "inboxOff": "La messagerie est désactivée pour ce numéro. Vous pouvez lire ses SMS mais pas en envoyer.",
+    "status": {
+      "pending": "Envoi…",
+      "sent": "Envoyé",
+      "delivered": "Remis",
+      "failed": "Échec"
+    },
+    "failedWith": "Échec : {{error}}",
+    "failedNoReason": "Échec de l'envoi.",
+    "sendFailed": "Non envoyé : {{error}}",
+    "newTitle": "Nouveau message",
+    "newNumberLabel": "Numéro de téléphone",
+    "newHelp": "Saisissez le numéro à contacter, avec ou sans indicatif de pays.",
+    "invalidNumber": "Ce n'est pas un numéro de téléphone valide.",
+    "start": "Commencer",
+    "live": "Mises à jour en direct activées",
+    "polling": "Recherche de nouveaux SMS toutes les 15 secondes",
+    "from": "De"
+  },
   "mcp": {
     "title": "Assistants (MCP)",
     "subtitle": "Laisser un assistant IA local lire l'état et les traces",
@@ -528,5 +590,22 @@
     "record": "Impossible de modifier l'enregistrement : {{error}}",
     "merge": "Impossible de fusionner les appels : {{error}}",
     "swap": "Impossible de basculer entre les appels : {{error}}"
+  },
+  "recordings": {
+    "title": "Enregistrements",
+    "empty": "Aucun enregistrement pour l'instant. Appuyez sur ⌘R pendant un appel ou activez l'enregistrement automatique d'un compte dans les Paramètres.",
+    "openFolder": "Ouvrir le dossier des enregistrements",
+    "play": "Lire",
+    "transcribe": "Transcrire",
+    "transcribing": "Transcription en cours…",
+    "transcript": "Transcription",
+    "you": "Vous",
+    "caller": "Correspondant",
+    "noModel": "Pour transcrire les appels, téléchargez un modèle vocal sous Transcription dans",
+    "notBuilt": "Cette version n'a pas de transcription.",
+    "noTranscript": "Aucune transcription pour cet appel.",
+    "failed": "La transcription a échoué : {{error}}",
+    "count_one": "{{count}} enregistrement",
+    "count_other": "{{count}} enregistrements"
   }
 }

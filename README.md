@@ -48,13 +48,14 @@ stays light.
 **Recording**
 - Record any call to WAV with one click (⌘R)
 - Per-account auto-record, off by default
-- Recordings are linked from call history
-- Optional on-device transcription of recorded calls: download a speech model in Settings, nothing is uploaded
+- Recordings have their own place in the left bar, with transcripts beside them when transcription is on
+- Optional on-device transcription and summaries of recorded calls: download the models in Settings, nothing is uploaded
 
 **Everyday use**
 - Contacts with favorites and search, plus macOS Contacts import
 - Presence (BLF) for colleagues' extensions, shown live in Contacts
 - Visual voicemail on an Aria PBX: see who called, play the message in the app, read its transcription, call back or delete. Other PBXes keep the one-click dial-in.
+- Business texting (SMS and MMS) on an Aria PBX: shared inboxes for the numbers assigned to your extension, threads with delivery status, pictures, live updates and desktop notifications
 - Call history with callback and CSV export
 - Keyboard-driven: ⌘D dialer, ⌘↵ call / answer, ⌘K hang up, ⌘M mute, ⌘H hold, ⌘, settings
 - Dark and light themes; English, Spanish, German and French
@@ -160,11 +161,12 @@ Content Security Policy) only shows up in a real build. Check those with
 ```bash
 pnpm tauri build                                  # current platform
 pnpm tauri build --target universal-apple-darwin  # macOS universal
-pnpm tauri build --features ai                    # what releases ship (on-device transcription)
+pnpm tauri build --features ai-summaries          # what releases ship (transcription + summaries)
 ```
 
-The published installers are built with `ai`. Transcription stays off until
-you download a speech model in **Settings → Transcription** and turn the
+The published installers are built with `ai-summaries`: transcription and
+call summaries. Both stay off until you download a speech model (and, for
+summaries, a summary model) in **Settings → Transcription** and turn the
 switch on; the models are never part of the installer, and nothing leaves
 your computer. A build made without the feature shows that section as
 unavailable and points at the standard download.

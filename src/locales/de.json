@@ -4,7 +4,9 @@
     "history": "Verlauf",
     "contacts": "Kontakte",
     "settings": "Einstellungen",
-    "voicemail": "Mailbox"
+    "voicemail": "Mailbox",
+    "recordings": "Aufnahmen",
+    "messages": "Nachrichten"
   },
   "status": {
     "connected": "Verbunden",
@@ -59,12 +61,13 @@
   },
   "dialer": {
     "searchCountry": "Land suchen...",
-    "enterNumber": "Nummer eingeben",
+    "enterNumber": "Nummer oder Name",
     "selectAccount": "Konto auswählen",
     "call": "Anrufen",
     "clearAll": "Leeren",
     "backspace": "Letzte Ziffer löschen",
-    "backspaceHold": "Löschen (halten, um alles zu löschen)"
+    "backspaceHold": "Löschen (halten, um alles zu löschen)",
+    "matches": "Passende Kontakte"
   },
   "call": {
     "calling": "Ruft an...",
@@ -120,7 +123,11 @@
     "callBack": "Zurückrufen",
     "sipTrace": "SIP-Trace",
     "sipTraceDescription": "Wireshark-kompatible PCAP herunterladen",
-    "account": "Konto"
+    "account": "Konto",
+    "transcript": "Transkript",
+    "openInRecordings": "In Aufnahmen öffnen",
+    "unknownCaller": "Unbekannter Anrufer",
+    "number": "Nummer"
   },
   "contacts": {
     "title": "Kontakte",
@@ -448,6 +455,61 @@
     "unread_other": "{{count}} neue Nachrichten",
     "back": "Zurück"
   },
+  "messages": {
+    "title": "Nachrichten",
+    "newConversation": "Neue Nachricht",
+    "refresh": "Aktualisieren",
+    "retry": "Erneut versuchen",
+    "back": "Zurück",
+    "noNumbers": "Ihrer Nebenstelle ist keine Firmennummer für SMS zugewiesen. Bitten Sie einen Administrator, Ihnen eine zuzuweisen.",
+    "empty": "Noch keine Unterhaltungen. Beginnen Sie eine mit der Schaltfläche Neue Nachricht.",
+    "loadFailed": "Nachrichten konnten nicht geladen werden.",
+    "signInFailed": "Die Telefonanlage hat das Passwort dieser Nebenstelle nicht akzeptiert.",
+    "unread_one": "{{count}} ungelesen",
+    "unread_other": "{{count}} ungelesen",
+    "newMessage": "Neu",
+    "picture": "Bild",
+    "notificationTitle": "SMS von {{from}}",
+    "number": "Nummer",
+    "numberOff": "{{number}} (aus)",
+    "call": "{{number}} anrufen",
+    "noThread": "Noch keine Nachrichten. Sagen Sie Hallo.",
+    "you": "Sie",
+    "placeholder": "SMS",
+    "send": "Senden",
+    "attach": "Bild anhängen",
+    "removeAttachment": "Anhang entfernen",
+    "uploading": "Wird hochgeladen…",
+    "attachBadType": "Nur JPEG-, PNG-, GIF-, MP4- und PDF-Dateien können gesendet werden.",
+    "attachTooBig": "Eine Datei darf höchstens 5 MB groß sein.",
+    "attachFailed": "Die Datei konnte nicht hochgeladen werden: {{error}}",
+    "attachmentLoadFailed": "Der Anhang konnte nicht geladen werden.",
+    "segments_one": "{{count}} Segment",
+    "segments_other": "{{count}} Segmente",
+    "encodingGsm": "GSM-7",
+    "encodingUcs": "Unicode (UCS-2)",
+    "left": "{{count}} übrig",
+    "tooLong": "Zu lang: Eine SMS darf höchstens {{max}} Segmente umfassen.",
+    "optedOut": "Diese Person hat mit STOP geantwortet und sich abgemeldet. SMS an sie sind gesperrt, bis sie mit START antwortet.",
+    "inboxOff": "Messaging ist für diese Nummer ausgeschaltet. Sie können ihre SMS lesen, aber nicht senden.",
+    "status": {
+      "pending": "Wird gesendet…",
+      "sent": "Gesendet",
+      "delivered": "Zugestellt",
+      "failed": "Fehlgeschlagen"
+    },
+    "failedWith": "Fehlgeschlagen: {{error}}",
+    "failedNoReason": "Senden fehlgeschlagen.",
+    "sendFailed": "Nicht gesendet: {{error}}",
+    "newTitle": "Neue Nachricht",
+    "newNumberLabel": "Telefonnummer",
+    "newHelp": "Geben Sie die Nummer ein, an die Sie schreiben möchten, mit oder ohne Ländervorwahl.",
+    "invalidNumber": "Das ist keine gültige Telefonnummer.",
+    "start": "Starten",
+    "live": "Live-Aktualisierung aktiv",
+    "polling": "Neue SMS werden alle 15 Sekunden abgefragt",
+    "from": "Von"
+  },
   "mcp": {
     "title": "Assistenten (MCP)",
     "subtitle": "Einem lokalen KI-Assistenten Status und Traces zugänglich machen",
@@ -528,5 +590,22 @@
     "record": "Aufnahme konnte nicht geändert werden: {{error}}",
     "merge": "Anrufe konnten nicht verbunden werden: {{error}}",
     "swap": "Anrufe konnten nicht gewechselt werden: {{error}}"
+  },
+  "recordings": {
+    "title": "Aufnahmen",
+    "empty": "Noch keine Aufnahmen. Drücken Sie ⌘R während eines Anrufs oder schalten Sie die automatische Aufnahme für ein Konto in den Einstellungen ein.",
+    "openFolder": "Aufnahmeordner öffnen",
+    "play": "Abspielen",
+    "transcribe": "Transkribieren",
+    "transcribing": "Wird transkribiert…",
+    "transcript": "Transkript",
+    "you": "Sie",
+    "caller": "Anrufer",
+    "noModel": "Zum Transkribieren laden Sie ein Sprachmodell unter Transkription in den",
+    "notBuilt": "Diese Version hat keine Transkription.",
+    "noTranscript": "Kein Transkript für diesen Anruf.",
+    "failed": "Transkription fehlgeschlagen: {{error}}",
+    "count_one": "{{count}} Aufnahme",
+    "count_other": "{{count}} Aufnahmen"
   }
 }

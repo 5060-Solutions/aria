@@ -4,7 +4,9 @@
     "history": "History",
     "contacts": "Contacts",
     "settings": "Settings",
-    "voicemail": "Voicemail"
+    "voicemail": "Voicemail",
+    "recordings": "Recordings",
+    "messages": "Messages"
   },
   "status": {
     "connected": "Registered",
@@ -59,12 +61,13 @@
   },
   "dialer": {
     "searchCountry": "Search country...",
-    "enterNumber": "Enter number",
+    "enterNumber": "Number or name",
     "selectAccount": "Select account",
     "clearAll": "Clear",
     "backspace": "Delete last digit",
     "backspaceHold": "Delete (hold to clear)",
-    "call": "Call"
+    "call": "Call",
+    "matches": "Matching contacts"
   },
   "call": {
     "calling": "Calling...",
@@ -120,7 +123,11 @@
     "recordingAvailable": "Recording available",
     "callBack": "Call Back",
     "sipTrace": "SIP Trace",
-    "sipTraceDescription": "Download Wireshark-compatible PCAP"
+    "sipTraceDescription": "Download Wireshark-compatible PCAP",
+    "transcript": "Transcript",
+    "openInRecordings": "Open in Recordings",
+    "unknownCaller": "Unknown caller",
+    "number": "Number"
   },
   "contacts": {
     "title": "Contacts",
@@ -448,6 +455,61 @@
     "unread_other": "{{count}} new messages",
     "back": "Back"
   },
+  "messages": {
+    "title": "Messages",
+    "newConversation": "New message",
+    "refresh": "Refresh",
+    "retry": "Try again",
+    "back": "Back",
+    "noNumbers": "No business number is assigned to your extension for texting. Ask an administrator to assign one.",
+    "empty": "No conversations yet. Start one with the New message button.",
+    "loadFailed": "Could not load messages.",
+    "signInFailed": "The PBX did not accept this extension's password.",
+    "unread_one": "{{count}} unread",
+    "unread_other": "{{count}} unread",
+    "newMessage": "New",
+    "picture": "Picture",
+    "notificationTitle": "Text from {{from}}",
+    "number": "Number",
+    "numberOff": "{{number}} (off)",
+    "call": "Call {{number}}",
+    "noThread": "No messages yet. Say hello.",
+    "you": "You",
+    "placeholder": "Text message",
+    "send": "Send",
+    "attach": "Attach a picture",
+    "removeAttachment": "Remove attachment",
+    "uploading": "Uploading…",
+    "attachBadType": "Only JPEG, PNG, GIF, MP4 and PDF files can be sent.",
+    "attachTooBig": "A file can be at most 5 MB.",
+    "attachFailed": "Could not upload the file: {{error}}",
+    "attachmentLoadFailed": "Could not load the attachment.",
+    "segments_one": "{{count}} segment",
+    "segments_other": "{{count}} segments",
+    "encodingGsm": "GSM-7",
+    "encodingUcs": "Unicode (UCS-2)",
+    "left": "{{count}} left",
+    "tooLong": "Too long: a text can take at most {{max}} segments.",
+    "optedOut": "This person replied STOP and opted out. Texts to them are blocked until they reply START.",
+    "inboxOff": "Messaging is off for this number. You can read its texts but not send.",
+    "status": {
+      "pending": "Sending…",
+      "sent": "Sent",
+      "delivered": "Delivered",
+      "failed": "Failed"
+    },
+    "failedWith": "Failed: {{error}}",
+    "failedNoReason": "Failed to send.",
+    "sendFailed": "Not sent: {{error}}",
+    "newTitle": "New message",
+    "newNumberLabel": "Phone number",
+    "newHelp": "Enter the number to text, with or without the country code.",
+    "invalidNumber": "That is not a valid phone number.",
+    "start": "Start",
+    "live": "Live updates on",
+    "polling": "Checking for new texts every 15 seconds",
+    "from": "From"
+  },
   "mcp": {
     "title": "Assistants (MCP)",
     "subtitle": "Let a local AI assistant read status and traces",
@@ -528,5 +590,22 @@
     "record": "Couldn't change recording: {{error}}",
     "merge": "Couldn't merge the calls: {{error}}",
     "swap": "Couldn't swap the calls: {{error}}"
+  },
+  "recordings": {
+    "title": "Recordings",
+    "empty": "No recordings yet. Press ⌘R during a call, or turn on auto-record for an account in Settings.",
+    "openFolder": "Open the recordings folder",
+    "play": "Play",
+    "transcribe": "Transcribe",
+    "transcribing": "Transcribing…",
+    "transcript": "Transcript",
+    "you": "You",
+    "caller": "Caller",
+    "noModel": "To transcribe calls, download a speech model under Transcription in",
+    "notBuilt": "This build has no transcription.",
+    "noTranscript": "No transcript for this call.",
+    "failed": "Transcription failed: {{error}}",
+    "count_one": "{{count}} recording",
+    "count_other": "{{count}} recordings"
   }
 }

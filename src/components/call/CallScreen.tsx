@@ -11,6 +11,8 @@ import { RecordingIndicator } from "./RecordingIndicator";
 import { useCallTimer } from "../../hooks/useCallTimer";
 import type { SrtpMode } from "../../types/sip";
 import { callerInitials } from "../../utils/callerAvatar";
+import { callerDisplay } from "../../utils/callerDisplay";
+import type { CountryCode } from "libphonenumber-js";
 import { mediaSecurity } from "../../utils/callSecurity";
 
 const stateMessageKeys: Record<string, string> = {
@@ -142,14 +144,18 @@ export function CallScreen() {
   const { t } = useTranslation();
   const activeCall = useAppStore((s) => s.activeCall);
   const accounts = useAppStore((s) => s.accounts);
+  const contacts = useAppStore((s) => s.contacts);
+  const defaultCountry = useAppStore((s) => s.defaultCountry) as CountryCode;
   const theme = useTheme();
   const elapsed = useCallTimer(activeCall?.connectTime ?? null);
 
   if (!activeCall) return null;
 
-  const displayName = activeCall.remoteName || activeCall.remoteUri;
-  const cleaned = displayName.replace(/^sip:/, "");
-  const initials = callerInitials(activeCall.remoteName);
+  // A name when one is known, the number underneath; never the SIP host,
+  // which belongs in Diagnostics, not in front of the person on the call.
+  const who = callerDisplay(activeCall, contacts, defaultCountry);
+  const cleaned = activeCall.remoteUri.replace(/^sips?:/i, "");
+  const initials = callerInitials(who.secondary ? who.primary : null);
 
   // `held` is the source of truth for hold; the "held" state exists but the
   // backend never emits it, so a held call stays state "connected" with
@@ -249,8 +255,17 @@ export function CallScreen() {
             "@media (max-height: 680px)": { fontSize: "1.25rem" },
           }}
         >
-          {cleaned}
+          {who.primary}
         </Typography>
+        {who.secondary && (
+          <Typography
+            variant="body2"
+            noWrap
+            sx={{ maxWidth: "100%", flexShrink: 0, color: "text.secondary", mt: -0.5, fontVariantNumeric: "tabular-nums" }}
+          >
+            {who.secondary}
+          </Typography>
+        )}
 
         <Typography
           variant="body2"
