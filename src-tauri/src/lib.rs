@@ -1,6 +1,7 @@
 mod ai;
 mod audio_test;
 mod commands;
+mod diagnostics_window;
 mod mcp;
 #[cfg(target_os = "macos")]
 mod menu;
@@ -275,6 +276,22 @@ pub fn run() {
             // it on; the state is managed either way so Settings can turn it
             // on later. Spawned, not blocked on: binding the port and reading
             // the token from the keychain must not hold up the window.
+            // The Diagnostics window docks to the main window and follows
+            // it; see diagnostics_window.rs.
+            app.manage(diagnostics_window::DiagnosticsWindow::load(app.path().app_data_dir().ok()));
+            if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                main.on_window_event(move |event| match event {
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                        diagnostics_window::reposition(&handle);
+                    }
+                    tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                        diagnostics_window::close(&handle);
+                    }
+                    _ => {}
+                });
+            }
+
             match app.path().app_data_dir() {
                 Ok(data_dir) => {
                     let sip_manager = app.state::<sip::SipManager>().inner().clone();
@@ -329,6 +346,10 @@ pub fn run() {
             commands::get_voice_processing,
             commands::set_voice_processing,
             commands::open_debug_window,
+            commands::diagnostics_docked,
+            commands::diagnostics_set_docked,
+            commands::get_app_info,
+            commands::sip_reregister,
             commands::app_build_info,
             commands::get_sip_diagnostics,
             commands::clear_sip_diagnostics,

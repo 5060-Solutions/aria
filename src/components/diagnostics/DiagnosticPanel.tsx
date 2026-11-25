@@ -1,1287 +1,178 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
-  Typography,
-  IconButton,
   Chip,
-  alpha,
-  useTheme,
-  Tooltip,
+  Collapse,
   Divider,
+  IconButton,
+  InputAdornment,
   LinearProgress,
-  Tabs,
-  Tab,
-  Menu,
-  MenuItem,
   ListItemIcon,
   ListItemText,
+  Menu,
+  MenuItem,
+  Tab,
+  Tabs,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
+  Typography,
+  alpha,
+  useTheme,
 } from "@mui/material";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlineOutlined";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
-import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
-import SignalCellularAltIcon from "@mui/icons-material/SignalCellularAlt";
-import PhoneInTalkIcon from "@mui/icons-material/PhoneInTalk";
-import SwapVertIcon from "@mui/icons-material/SwapVert";
-import TimerOutlinedIcon from "@mui/icons-material/TimerOutlined";
 import FileDownloadOutlinedIcon from "@mui/icons-material/FileDownloadOutlined";
 import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
+import SwapVertIcon from "@mui/icons-material/SwapVert";
 import HistoryIcon from "@mui/icons-material/History";
 import AssessmentOutlinedIcon from "@mui/icons-material/AssessmentOutlined";
 import ViewListIcon from "@mui/icons-material/ViewList";
 import AccountTreeIcon from "@mui/icons-material/AccountTree";
+import PushPinIcon from "@mui/icons-material/PushPin";
+import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
+import VerticalAlignBottomIcon from "@mui/icons-material/VerticalAlignBottom";
+import SearchIcon from "@mui/icons-material/Search";
+import CloseIcon from "@mui/icons-material/Close";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
-import { useAppStore } from "../../stores/appStore";
-import { log } from "../../utils/log";
+import { useAppStore, getAccountWithPassword } from "../../stores/appStore";
+import { useDiagnosticsStore } from "../../stores/diagnosticsStore";
+import { errorText, notifyError } from "../../stores/toastStore";
+import { sipRegister, sipReregister, sipUnregisterAccount } from "../../hooks/useSip";
+import { filterLogs } from "../../utils/diagnosticsFilter";
+import { callIdTag, type MessageCategory } from "../../utils/sipMessage";
+import { log as applog } from "../../utils/log";
+import { AppToast } from "../layout/AppToast";
+import { ActiveCallCard, ConnectionCard, type AccountActions } from "./StatusCards";
+import { registrationColor } from "./registrationColor";
+import { MessageRow } from "./MessageRow";
+import { SipLadderDiagram } from "./SipLadder";
+import { logKey } from "./types";
 
-interface DiagnosticLog {
-  timestamp: number;
-  accountId: string;
-  /** "app" is something Aria did (e.g. an MCP call-control action), not SIP. */
-  direction: "sent" | "received" | "app";
-  remoteAddr: string;
-  summary: string;
-  raw: string;
-}
+const CATEGORIES: { key: MessageCategory; label: string }[] = [
+  { key: "calls", label: "Calls" },
+  { key: "register", label: "Register" },
+  { key: "keepalive", label: "OPTIONS" },
+  { key: "other", label: "Other" },
+];
 
-/** A key that follows a message rather than its position in the list. */
-function logKey(log: DiagnosticLog): string {
-  return `${log.timestamp}-${log.direction}-${log.remoteAddr}-${log.raw.length}`;
-}
-
-interface RtpStats {
-  packetsSent: number;
-  packetsReceived: number;
-  bytesSent: number;
-  bytesReceived: number;
-  packetsLost: number;
-  jitterMs: number;
-  codecName: string;
-}
-
-interface CallStatusInfo {
-  id: string;
-  accountId: string;
-  remoteUri: string;
-  state: string;
-  direction: string;
-  durationSecs: number | null;
-  codec: string | null;
-  rtpStats: RtpStats | null;
-}
-
-interface AccountStatus {
-  accountId: string;
-  username: string;
-  domain: string;
-  registrationState: string;
-  registrationError: string | null;
-  serverAddress: string | null;
-  transportType: string | null;
-  localAddress: string | null;
-  publicAddress: string | null;
-  uptimeSecs: number | null;
-  activeCalls: CallStatusInfo[];
-}
-
-interface SystemStatus {
-  accounts: AccountStatus[];
-  latencyMs: number | null;
-  totalActiveCalls: number;
-}
-
-// --- Subcomponents ---
-
-function StatusDot({ color }: { color: string }) {
-  return (
-    <FiberManualRecordIcon
-      sx={{
-        fontSize: 10,
-        color,
-        filter: `drop-shadow(0 0 3px ${color})`,
-      }}
-    />
-  );
-}
-
-function StatRow({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string | number | null | undefined;
-  mono?: boolean;
-}) {
-  const theme = useTheme();
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        py: 0.3,
-      }}
-    >
-      <Typography
-        variant="caption"
-        sx={{ color: "text.secondary", fontSize: "0.7rem" }}
-      >
-        {label}
-      </Typography>
-      <Typography
-        variant="caption"
-        sx={{
-          fontFamily: mono ? "monospace" : undefined,
-          fontSize: "0.7rem",
-          color: theme.palette.text.primary,
-          fontWeight: 500,
-        }}
-      >
-        {value ?? "-"}
-      </Typography>
-    </Box>
-  );
-}
-
-function SectionCard({
-  children,
-  sx,
-}: {
-  children: React.ReactNode;
-  sx?: object;
-}) {
-  const theme = useTheme();
-  return (
-    <Box
-      sx={{
-        mx: 1.5,
-        mb: 1,
-        p: 1.5,
-        borderRadius: "12px",
-        bgcolor: alpha(theme.palette.background.paper, 0.6),
-        border: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
-        ...sx,
-      }}
-    >
-      {children}
-    </Box>
-  );
-}
-
-function SectionHeader({
-  icon,
-  title,
-  trailing,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  trailing?: React.ReactNode;
-}) {
-  return (
-    <Box
-      sx={{
-        display: "flex",
-        alignItems: "center",
-        gap: 0.75,
-        mb: 0.75,
-      }}
-    >
-      {icon}
-      <Typography
-        variant="caption"
-        sx={{ fontWeight: 600, fontSize: "0.72rem", flex: 1 }}
-      >
-        {title}
-      </Typography>
-      {trailing}
-    </Box>
-  );
-}
-
-function registrationColor(state: string): string {
-  switch (state) {
-    case "registered":
-      return "#4caf50";
-    case "registering":
-    case "reconnecting":
-      return "#ff9800";
-    case "error":
-      return "#f44336";
-    default:
-      return "#9e9e9e";
-  }
-}
-
-function useRegistrationLabel() {
-  const { t } = useTranslation();
-  return useCallback((state: string): string => {
-    switch (state) {
-      case "registered":
-        return t("diagnostics.registered");
-      case "registering":
-        return t("diagnostics.registering");
-      case "reconnecting":
-        return t("diagnostics.reconnecting");
-      case "error":
-        return t("diagnostics.error");
-      default:
-        return t("diagnostics.unregistered");
-    }
-  }, [t]);
-}
-
-function formatUptime(secs: number | null | undefined): string {
-  if (secs == null) return "-";
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
-function formatDuration(secs: number | null | undefined): string {
-  if (secs == null) return "0:00";
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function latencyColor(ms: number | null | undefined): string {
-  if (ms == null) return "#9e9e9e";
-  if (ms < 100) return "#4caf50";
-  if (ms < 250) return "#ff9800";
-  return "#f44336";
-}
-
-function lossPercent(stats: RtpStats): string {
-  const total = stats.packetsReceived + stats.packetsLost;
-  if (total === 0) return "0%";
-  return `${((stats.packetsLost / total) * 100).toFixed(1)}%`;
-}
-
-// --- Connection Card ---
-
-function ConnectionCard({ account, latencyMs }: { account: AccountStatus; latencyMs: number | null }) {
+/**
+ * The Diagnostics window: the account's connection and calls at the top,
+ * the SIP trace below, with millisecond timing, filters, search and
+ * per-dialog views. Docked beside the main window by default; the pin
+ * undocks it. It runs in its own webview, so everything it shows comes from
+ * the backend (polled status, pushed trace), not the main window's store.
+ */
+export function DiagnosticPanel() {
   const { t } = useTranslation();
   const theme = useTheme();
-  const registrationLabel = useRegistrationLabel();
-  const state = account.registrationState ?? "unregistered";
-  const color = registrationColor(state);
-
-  return (
-    <SectionCard>
-      <SectionHeader
-        icon={<SignalCellularAltIcon sx={{ fontSize: 14, color }} />}
-        title={t("diagnostics.connection")}
-        trailing={
-          <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-            <StatusDot color={color} />
-            <Typography
-              variant="caption"
-              sx={{ fontSize: "0.65rem", color, fontWeight: 600 }}
-            >
-              {registrationLabel(state)}
-            </Typography>
-          </Box>
-        }
-      />
-
-      {account.registrationError && (
-        <Typography
-          variant="caption"
-          sx={{
-            color: "error.main",
-            fontSize: "0.65rem",
-            display: "block",
-            mb: 0.5,
-            px: 0.5,
-            py: 0.25,
-            borderRadius: "6px",
-            bgcolor: alpha(theme.palette.error.main, 0.08),
-          }}
-        >
-          {account.registrationError}
-        </Typography>
-      )}
-
-      <StatRow
-        label={t("diagnostics.server")}
-        value={
-          account.domain
-            ? `${account.domain}${account.serverAddress ? ` (${account.serverAddress})` : ""}`
-            : account.serverAddress
-        }
-        mono
-      />
-      <StatRow
-        label={t("diagnostics.transport")}
-        value={account.transportType?.toUpperCase()}
-      />
-      <StatRow label={t("diagnostics.local")} value={account.localAddress} mono />
-      <StatRow label={t("diagnostics.publicNat")} value={account.publicAddress} mono />
-      <StatRow
-        label={t("diagnostics.identity")}
-        value={
-          account.username && account.domain
-            ? `${account.username}@${account.domain}`
-            : undefined
-        }
-        mono
-      />
-
-      <Divider sx={{ my: 0.75, opacity: 0.3 }} />
-
-      <Box
-        sx={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          <TimerOutlinedIcon sx={{ fontSize: 12, color: "text.secondary" }} />
-          <Typography
-            variant="caption"
-            sx={{ fontSize: "0.65rem", color: "text.secondary" }}
-          >
-            {t("diagnostics.uptime")}: {formatUptime(account.uptimeSecs)}
-          </Typography>
-        </Box>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-          <SwapVertIcon
-            sx={{
-              fontSize: 12,
-              color: latencyColor(latencyMs),
-            }}
-          />
-          <Typography
-            variant="caption"
-            sx={{
-              fontSize: "0.65rem",
-              fontFamily: "monospace",
-              color: latencyColor(latencyMs),
-              fontWeight: 600,
-            }}
-          >
-            {latencyMs != null
-              ? `${latencyMs.toFixed(0)}ms`
-              : "-"}
-          </Typography>
-        </Box>
-      </Box>
-    </SectionCard>
-  );
-}
-
-// --- Active Call Card ---
-
-function ActiveCallCard({ call }: { call: CallStatusInfo }) {
-  const { t } = useTranslation();
-  const theme = useTheme();
-  const stats = call.rtpStats;
-  const hasStats = stats != null;
-
-  return (
-    <SectionCard>
-      <SectionHeader
-        icon={
-          <PhoneInTalkIcon sx={{ fontSize: 14, color: "success.main" }} />
-        }
-        title={t("diagnostics.activeCall")}
-        trailing={
-          <Chip
-            label={call.state}
-            size="small"
-            sx={{
-              height: 18,
-              fontSize: "0.6rem",
-              fontWeight: 700,
-              bgcolor: alpha(theme.palette.success.main, 0.12),
-              color: "success.main",
-            }}
-          />
-        }
-      />
-
-      <StatRow label={t("diagnostics.remote")} value={call.remoteUri} mono />
-      <StatRow
-        label={t("diagnostics.direction")}
-        value={call.direction === "inbound" ? t("diagnostics.inbound") : t("diagnostics.outbound")}
-      />
-      <StatRow label={t("diagnostics.duration")} value={formatDuration(call.durationSecs)} />
-      <StatRow label={t("diagnostics.codec")} value={call.codec ?? "-"} />
-
-      {hasStats && (
-        <>
-          <Divider sx={{ my: 0.75, opacity: 0.3 }} />
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: 0.3,
-            }}
-          >
-            <StatRow
-              label={t("diagnostics.txPackets")}
-              value={stats.packetsSent.toLocaleString()}
-              mono
-            />
-            <StatRow
-              label={t("diagnostics.rxPackets")}
-              value={stats.packetsReceived.toLocaleString()}
-              mono
-            />
-            <StatRow label={t("diagnostics.txBytes")} value={formatBytes(stats.bytesSent)} mono />
-            <StatRow
-              label={t("diagnostics.rxBytes")}
-              value={formatBytes(stats.bytesReceived)}
-              mono
-            />
-          </Box>
-          <Divider sx={{ my: 0.5, opacity: 0.2 }} />
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "space-around",
-              mt: 0.25,
-            }}
-          >
-            <Box sx={{ textAlign: "center" }}>
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: "0.9rem",
-                  fontWeight: 700,
-                  fontFamily: "monospace",
-                  color:
-                    stats.packetsLost > 0
-                      ? "warning.main"
-                      : "text.primary",
-                }}
-              >
-                {lossPercent(stats)}
-              </Typography>
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: "0.55rem",
-                  color: "text.secondary",
-                  display: "block",
-                }}
-              >
-                {t("diagnostics.packetLoss")}
-              </Typography>
-            </Box>
-            <Box sx={{ textAlign: "center" }}>
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: "0.9rem",
-                  fontWeight: 700,
-                  fontFamily: "monospace",
-                  color:
-                    stats.jitterMs > 30
-                      ? "warning.main"
-                      : "text.primary",
-                }}
-              >
-                {stats.jitterMs.toFixed(1)}
-              </Typography>
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: "0.55rem",
-                  color: "text.secondary",
-                  display: "block",
-                }}
-              >
-                {t("diagnostics.jitterMs")}
-              </Typography>
-            </Box>
-          </Box>
-        </>
-      )}
-    </SectionCard>
-  );
-}
-
-// --- SIP Log Entry ---
-
-function SipLogEntry({
-  log,
-  isSelected,
-  onToggle,
-}: {
-  log: DiagnosticLog;
-  isSelected: boolean;
-  onToggle: () => void;
-}) {
-  const { t, i18n } = useTranslation();
-  const theme = useTheme();
-  const isSent = log.direction === "sent";
-  
-  const logTimeFormatter = useMemo(() => new Intl.DateTimeFormat(i18n.language, {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }), [i18n.language]);
-
-  const summaryLine = log.summary;
-  // The response's status code, not "does the line contain a 4/5/6": a
-  // request line like "REGISTER sip:pbx:5060" or "INVITE sip:1456@…" was
-  // painted red because it happened to contain those digits.
-  const statusCode = summaryLine.match(/^SIP\/2\.0 (\d{3})/)?.[1];
-  const isError = statusCode ? /^[456]/.test(statusCode) : false;
-  const isSuccess = statusCode === "200" || statusCode === "202";
-  const isAuth = statusCode === "401" || statusCode === "407";
-  const isRinging = statusCode === "180" || statusCode === "183";
-
-  const methodColor = isError
-    ? theme.palette.error.main
-    : isSuccess
-      ? theme.palette.success.main
-      : isAuth
-        ? theme.palette.warning.main
-        : isRinging
-          ? theme.palette.info.main
-          : theme.palette.text.primary;
-
-  return (
-    <Box
-      onClick={onToggle}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onToggle();
-        }
-      }}
-      role="button"
-      tabIndex={0}
-      aria-expanded={isSelected}
-      aria-label={summaryLine}
-      sx={{
-        px: 1,
-        py: 0.6,
-        mb: 0.25,
-        borderRadius: "8px",
-        cursor: "pointer",
-        borderLeft: `2px solid ${isSent ? alpha(theme.palette.info.main, 0.5) : alpha(theme.palette.success.main, 0.5)}`,
-        bgcolor: isSelected
-          ? alpha(theme.palette.primary.main, 0.06)
-          : "transparent",
-        "&:hover": {
-          bgcolor: alpha(theme.palette.text.primary, 0.03),
-        },
-        transition: "background-color 0.15s",
-      }}
-    >
-      <Box
-        sx={{
-          display: "flex",
-          alignItems: "center",
-          gap: 0.5,
-        }}
-      >
-          <Chip
-            label={isSent ? t("diagnostics.tx") : t("diagnostics.rx")}
-            size="small"
-            sx={{
-            height: 16,
-            fontSize: "0.55rem",
-            fontWeight: 700,
-            minWidth: 28,
-            bgcolor: isSent
-              ? alpha(theme.palette.info.main, 0.1)
-              : alpha(theme.palette.success.main, 0.1),
-            color: isSent ? "info.main" : "success.main",
-            "& .MuiChip-label": { px: 0.5 },
-          }}
-        />
-        <Typography
-          variant="caption"
-          sx={{
-            fontFamily: "monospace",
-            fontSize: "0.6rem",
-            color: "text.secondary",
-            opacity: 0.7,
-          }}
-        >
-          {logTimeFormatter.format(new Date(log.timestamp))}
-        </Typography>
-        <Typography
-          variant="caption"
-          sx={{
-            fontFamily: "monospace",
-            fontSize: "0.58rem",
-            color: "text.secondary",
-            ml: "auto",
-            opacity: 0.5,
-          }}
-        >
-          {log.remoteAddr}
-        </Typography>
-      </Box>
-      <Typography
-        variant="body2"
-        sx={{
-          fontSize: "0.7rem",
-          fontFamily: "monospace",
-          mt: 0.2,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          color: methodColor,
-          fontWeight: 500,
-        }}
-      >
-        {summaryLine}
-      </Typography>
-
-      {isSelected && (
-        <Box
-          sx={{
-            mt: 0.75,
-            p: 1,
-            borderRadius: "6px",
-            bgcolor: alpha(theme.palette.text.primary, 0.03),
-            maxHeight: 220,
-            overflow: "auto",
-            "&::-webkit-scrollbar": { width: 3 },
-            "&::-webkit-scrollbar-thumb": {
-              bgcolor: alpha(theme.palette.text.primary, 0.1),
-              borderRadius: 2,
-            },
-          }}
-        >
-          <Typography
-            component="pre"
-            sx={{
-              fontSize: "0.58rem",
-              fontFamily: "monospace",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-all",
-              m: 0,
-              color: "text.secondary",
-              lineHeight: 1.5,
-            }}
-          >
-            {log.raw}
-          </Typography>
-        </Box>
-      )}
-    </Box>
-  );
-}
-
-// --- SIP Ladder Diagram ---
-
-function SipLadderDiagram({ logs }: { logs: DiagnosticLog[] }) {
-  const theme = useTheme();
-  const { t } = useTranslation();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    }
-  }, [logs.length]);
-
-  const logTimeFormatter = useMemo(
-    () =>
-      new Intl.DateTimeFormat("en", {
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }),
-    [],
-  );
-
-  if (logs.length === 0) {
-    return (
-      <Box sx={{ textAlign: "center", py: 4, color: "text.secondary" }}>
-        <Typography variant="caption" sx={{ opacity: 0.5, fontSize: "0.7rem" }}>
-          {t("diagnostics.sipMessagesEmpty")}
-        </Typography>
-      </Box>
-    );
-  }
-
-  // Extract unique remote addresses for columns
-  const remoteAddrs = Array.from(new Set(logs.map((l) => l.remoteAddr)));
-  const colWidth = 140;
-  const localLabel = "Aria";
-  const totalWidth = colWidth * (remoteAddrs.length + 1) + 60; // +60 for timestamp
-
-  const getMethodColor = (summary: string) => {
-    if (summary.match(/\b[4-6]\d\d\b/)) return theme.palette.error.main;
-    if (summary.match(/\b20[02]\b/)) return theme.palette.success.main;
-    if (summary.match(/\b40[17]\b/)) return theme.palette.warning.main;
-    if (summary.match(/\b18[03]\b/)) return theme.palette.info.main;
-    return theme.palette.text.primary;
-  };
-
-  // Extract short label from SIP summary line
-  const getShortLabel = (summary: string) => {
-    // Response: "SIP/2.0 200 OK" -> "200 OK"
-    const respMatch = summary.match(/^SIP\/2\.0\s+(\d+\s+.*)$/);
-    if (respMatch) return respMatch[1];
-    // Request: "REGISTER sip:..." -> "REGISTER"
-    const reqMatch = summary.match(/^(\w+)\s+/);
-    if (reqMatch) return reqMatch[1];
-    return summary;
-  };
-
-  return (
-    <Box ref={scrollRef} sx={{ overflow: "auto", px: 1, pb: 2 }}>
-      <Box sx={{ minWidth: totalWidth }}>
-        {/* Column headers */}
-        <Box
-          sx={{
-            display: "flex",
-            alignItems: "flex-end",
-            position: "sticky",
-            top: 0,
-            bgcolor: "background.default",
-            zIndex: 1,
-            pb: 0.5,
-            borderBottom: `1px solid ${alpha(theme.palette.divider, 0.15)}`,
-          }}
-        >
-          {/* Timestamp column */}
-          <Box sx={{ width: 60, flexShrink: 0 }} />
-          {/* Local column */}
-          <Box sx={{ width: colWidth, textAlign: "center", flexShrink: 0 }}>
-            <Typography
-              variant="caption"
-              sx={{
-                fontWeight: 700,
-                fontSize: "0.65rem",
-                color: theme.palette.info.main,
-              }}
-            >
-              {localLabel}
-            </Typography>
-          </Box>
-          {/* Remote columns */}
-          {remoteAddrs.map((addr) => (
-            <Box
-              key={addr}
-              sx={{ width: colWidth, textAlign: "center", flexShrink: 0 }}
-            >
-              <Typography
-                variant="caption"
-                sx={{
-                  fontWeight: 700,
-                  fontSize: "0.6rem",
-                  fontFamily: "monospace",
-                  color: theme.palette.success.main,
-                }}
-              >
-                {addr}
-              </Typography>
-            </Box>
-          ))}
-        </Box>
-
-        {/* Lifelines + Messages */}
-        {logs.map((entry, i) => {
-          const isSent = entry.direction === "sent";
-          const remoteColIdx = remoteAddrs.indexOf(entry.remoteAddr);
-          const localCol = 0;
-          const remoteCol = remoteColIdx + 1;
-          const fromCol = isSent ? localCol : remoteCol;
-          const toCol = isSent ? remoteCol : localCol;
-          const leftCol = Math.min(fromCol, toCol);
-          const rightCol = Math.max(fromCol, toCol);
-          const label = getShortLabel(entry.summary);
-          const color = getMethodColor(entry.summary);
-          const isExpanded = expandedIdx === i;
-
-          return (
-            <Box key={`${entry.timestamp}-${i}`}>
-              <Box
-                onClick={() => setExpandedIdx(isExpanded ? null : i)}
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  position: "relative",
-                  height: 28,
-                  cursor: "pointer",
-                  "&:hover": {
-                    bgcolor: alpha(theme.palette.text.primary, 0.03),
-                  },
-                }}
-              >
-                {/* Timestamp */}
-                <Box sx={{ width: 60, flexShrink: 0 }}>
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      fontFamily: "monospace",
-                      fontSize: "0.5rem",
-                      color: "text.secondary",
-                      opacity: 0.6,
-                    }}
-                  >
-                    {logTimeFormatter.format(new Date(entry.timestamp))}
-                  </Typography>
-                </Box>
-
-                {/* Lifeline columns with vertical lines */}
-                <Box
-                  sx={{
-                    display: "flex",
-                    position: "relative",
-                    flex: 1,
-                    height: "100%",
-                  }}
-                >
-                  {/* Vertical lifelines */}
-                  {Array.from({ length: remoteAddrs.length + 1 }).map(
-                    (_, colIdx) => (
-                      <Box
-                        key={colIdx}
-                        sx={{
-                          position: "absolute",
-                          left: colIdx * colWidth + colWidth / 2,
-                          top: 0,
-                          bottom: 0,
-                          width: 1,
-                          bgcolor: alpha(theme.palette.divider, 0.15),
-                        }}
-                      />
-                    ),
-                  )}
-
-                  {/* Arrow line */}
-                  <Box
-                    sx={{
-                      position: "absolute",
-                      left: leftCol * colWidth + colWidth / 2,
-                      width: (rightCol - leftCol) * colWidth,
-                      top: "50%",
-                      height: 1.5,
-                      bgcolor: color,
-                      opacity: 0.7,
-                    }}
-                  />
-
-                  {/* Arrow head */}
-                  <Box
-                    sx={{
-                      position: "absolute",
-                      left:
-                        toCol * colWidth +
-                        colWidth / 2 +
-                        (isSent ? -6 : 2),
-                      top: "50%",
-                      transform: "translateY(-50%)",
-                      width: 0,
-                      height: 0,
-                      borderTop: "4px solid transparent",
-                      borderBottom: "4px solid transparent",
-                      ...(isSent
-                        ? { borderLeft: `6px solid ${color}` }
-                        : { borderRight: `6px solid ${color}` }),
-                      opacity: 0.7,
-                    }}
-                  />
-
-                  {/* Label on the arrow */}
-                  <Box
-                    sx={{
-                      position: "absolute",
-                      left:
-                        leftCol * colWidth +
-                        colWidth / 2 +
-                        ((rightCol - leftCol) * colWidth) / 2,
-                      top: 0,
-                      transform: "translateX(-50%)",
-                    }}
-                  >
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontSize: "0.58rem",
-                        fontFamily: "monospace",
-                        fontWeight: 600,
-                        color,
-                        bgcolor: "background.default",
-                        px: 0.5,
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {label}
-                    </Typography>
-                  </Box>
-                </Box>
-              </Box>
-
-              {/* Expanded raw message */}
-              {isExpanded && (
-                <Box
-                  sx={{
-                    mx: 1,
-                    mb: 0.5,
-                    p: 1,
-                    borderRadius: "6px",
-                    bgcolor: alpha(theme.palette.text.primary, 0.03),
-                    maxHeight: 200,
-                    overflow: "auto",
-                    "&::-webkit-scrollbar": { width: 3 },
-                    "&::-webkit-scrollbar-thumb": {
-                      bgcolor: alpha(theme.palette.text.primary, 0.1),
-                      borderRadius: 2,
-                    },
-                  }}
-                >
-                  <Typography
-                    component="pre"
-                    sx={{
-                      fontSize: "0.55rem",
-                      fontFamily: "monospace",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-all",
-                      m: 0,
-                      color: "text.secondary",
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    {entry.raw}
-                  </Typography>
-                </Box>
-              )}
-            </Box>
-          );
-        })}
-      </Box>
-    </Box>
-  );
-}
-
-// --- Account Tab Content ---
-
-function AccountTabContent({
-  account,
-  logs,
-  latencyMs,
-  expandedSet,
-  toggleExpanded,
-}: {
-  account: AccountStatus;
-  logs: DiagnosticLog[];
-  latencyMs: number | null;
-  expandedSet: Set<string>;
-  toggleExpanded: (key: string) => void;
-}) {
-  const { t } = useTranslation();
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    }
-  }, [logs.length]);
-
-  return (
-    <>
-      <ConnectionCard account={account} latencyMs={latencyMs} />
-
-      {account.activeCalls.map((call) => (
-        <ActiveCallCard key={call.id} call={call} />
-      ))}
-
-      <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
-        <Typography
-          variant="caption"
-          sx={{
-            fontWeight: 600,
-            fontSize: "0.68rem",
-            color: "text.secondary",
-            textTransform: "uppercase",
-            letterSpacing: "0.05em",
-          }}
-        >
-          {t("diagnostics.sipMessages", { count: logs.length })}
-        </Typography>
-      </Box>
-      <Box ref={scrollRef} sx={{ px: 0.5 }}>
-        {logs.length === 0 && (
-          <Box
-            sx={{
-              textAlign: "center",
-              py: 3,
-              color: "text.secondary",
-            }}
-          >
-            <Typography
-              variant="caption"
-              sx={{ opacity: 0.5, fontSize: "0.7rem" }}
-            >
-              {t("diagnostics.sipMessagesEmpty")}
-            </Typography>
-          </Box>
-        )}
-        {logs.map((log, i) => (
-          <SipLogEntry
-            key={`${logKey(log)}-${i}`}
-            log={log}
-            isSelected={expandedSet.has(logKey(log))}
-            onToggle={() => toggleExpanded(logKey(log))}
-          />
-        ))}
-      </Box>
-    </>
-  );
-}
-
-// --- Message classification helpers ---
-
-type MessageCategory = "calls" | "register" | "keepalive" | "other";
-
-const CALL_METHODS = new Set(["INVITE", "BYE", "ACK", "CANCEL", "REFER", "INFO", "UPDATE", "PRACK"]);
-
-function getMessageCategory(raw: string): MessageCategory {
-  const cseq = raw.match(/^CSeq:\s*\d+\s+(\w+)/mi);
-  const method = cseq?.[1]?.toUpperCase();
-  if (!method) return "other";
-  if (CALL_METHODS.has(method)) return "calls";
-  if (method === "REGISTER") return "register";
-  if (method === "OPTIONS") return "keepalive";
-  return "other";
-}
-
-// --- Main Panel ---
-
-export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
-  const { t } = useTranslation();
-  const theme = useTheme();
-  const setCurrentView = useAppStore((s) => s.setCurrentView);
-  const [logs, setLogs] = useState<DiagnosticLog[]>([]);
-  const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [selectedTab, setSelectedTab] = useState(0);
-  const [expandedSet, setExpandedSet] = useState<Set<string>>(new Set());
-  const [viewMode, setViewMode] = useState<"messages" | "ladder">("messages");
-  const [activeFilters, setActiveFilters] = useState<Set<MessageCategory>>(
-    () => new Set(["calls", "register", "other"]),
-  );
+  const store = useDiagnosticsStore();
+  const start = useDiagnosticsStore((s) => s.start);
+  const accounts = useAppStore((s) => s.accounts);
   const [exportMenuAnchor, setExportMenuAnchor] = useState<HTMLElement | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  const toggleExpanded = useCallback((key: string) => {
-    setExpandedSet((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  }, []);
+  useEffect(() => start(), [start]);
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      const result = await invoke<SystemStatus | null>("get_system_status");
-      setStatus(result);
-    } catch {
-      // ignore
-    }
-  }, []);
+  const statusAccounts = store.status?.accounts ?? [];
+  const selected =
+    statusAccounts.find((a) => a.accountId === store.selectedAccount) ?? statusAccounts[0] ?? null;
+  const hasMultiple = statusAccounts.length > 1;
+  const anyRegistering = statusAccounts.some((a) => a.registrationState === "registering");
 
-  const syncLogs = useCallback(async () => {
-    try {
-      const existing = await invoke<DiagnosticLog[]>("get_sip_diagnostics");
-      setLogs(existing);
-    } catch {
-      // ignore
-    }
-  }, []);
+  const shown = useMemo(
+    () =>
+      filterLogs(store.logs, {
+        accountId: hasMultiple ? selected?.accountId : undefined,
+        categories: store.categories,
+        search: store.search,
+        callId: store.callId,
+      }),
+    [store.logs, hasMultiple, selected?.accountId, store.categories, store.search, store.callId],
+  );
 
+  // Follow: keep the newest message in view as they arrive.
   useEffect(() => {
-    const initialLogTimer = setTimeout(syncLogs, 0);
-    const logInterval = setInterval(syncLogs, 2000);
+    if (!store.follow) return;
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [shown.length, store.follow, store.view]);
 
-    const unlisten = listen<DiagnosticLog>("sip-diagnostic", () => {
-      syncLogs();
-    });
-
-    const statusInterval = setInterval(fetchStatus, 2000);
-    const initialStatusTimer = setTimeout(fetchStatus, 100);
-
-    return () => {
-      unlisten.then((fn_) => fn_());
-      clearTimeout(initialLogTimer);
-      clearInterval(logInterval);
-      clearInterval(statusInterval);
-      clearTimeout(initialStatusTimer);
-    };
-  }, [fetchStatus, syncLogs]);
-
-  const handleClear = async () => {
+  const run = async (accountId: string, action: () => Promise<unknown>) => {
+    setBusy(accountId);
     try {
-      await invoke("clear_sip_diagnostics");
-    } catch {
-      // ignore
+      await action();
+    } catch (e) {
+      notifyError(errorText(e));
+    } finally {
+      setBusy(null);
     }
-    setLogs([]);
+  };
+  const withPassword = async (accountId: string) => {
+    const account = accounts.find((a) => a.id === accountId);
+    if (!account) throw new Error(t("diagnostics.noAccounts"));
+    return getAccountWithPassword(account);
+  };
+  const actions: AccountActions = {
+    busy,
+    reregister: (id) => void run(id, async () => sipReregister(await withPassword(id))),
+    unregister: (id) => void run(id, () => sipUnregisterAccount(id)),
+    register: (id) => void run(id, async () => sipRegister(await withPassword(id))),
   };
 
   // The backend opens the save dialog itself, so the destination path never
   // passes through the webview. Only the translated labels are sent.
-  const handleExportText = async () => {
+  const exportWith = (command: string, args: Record<string, unknown>) => {
+    setExportMenuAnchor(null);
+    invoke(command, args).catch((e) => applog.error(`[diagnostics] ${command} failed:`, e));
+  };
+  const callHistory = () => {
     try {
-      await invoke("export_sip_log_text", {
-        title: t("diagnostics.exportTextTitle"),
-        filterName: t("diagnostics.textFiles"),
-      });
-    } catch (e) {
-      log.error("Failed to export text:", e);
+      return JSON.parse(localStorage.getItem("aria_call_history") ?? "[]");
+    } catch {
+      return [];
     }
   };
 
-  const handleExportPcap = async () => {
-    try {
-      await invoke("export_sip_log_pcap", {
-        title: t("diagnostics.exportPcapTitle"),
-        filterName: t("diagnostics.pcapFiles"),
-      });
-    } catch (e) {
-      log.error("Failed to export pcap:", e);
-    }
-  };
-
-  const handleExportReport = useCallback(async () => {
-    try {
-      const callHistoryRaw = localStorage.getItem("aria_call_history");
-      const callHistory = callHistoryRaw ? JSON.parse(callHistoryRaw) : [];
-      await invoke("export_diagnostic_report", {
-        callHistory,
-        title: t("diagnostics.exportReportTitle"),
-        filterName: t("diagnostics.jsonFiles"),
-      });
-    } catch (e) {
-      log.error("Failed to export report:", e);
-    }
-    setExportMenuAnchor(null);
-  }, [t]);
-
-  const handleExportCallHistory = useCallback(async () => {
-    try {
-      const callHistoryRaw = localStorage.getItem("aria_call_history");
-      const callHistory = callHistoryRaw ? JSON.parse(callHistoryRaw) : [];
-      await invoke("export_call_history_csv", {
-        callHistory,
-        title: t("diagnostics.exportHistoryTitle"),
-        filterName: t("diagnostics.csvFiles"),
-      });
-    } catch (e) {
-      log.error("Failed to export call history:", e);
-    }
-    setExportMenuAnchor(null);
-  }, [t]);
-
-  const accounts = status?.accounts ?? [];
-  const hasMultipleAccounts = accounts.length > 1;
-  const selectedAccount = accounts[selectedTab] ?? accounts[0];
-  const anyRegistering = accounts.some(a => a.registrationState === "registering");
-
-  // Filter logs by accountId for the selected account
-  const accountLogs = selectedAccount?.accountId
-    ? logs.filter(l => l.accountId === selectedAccount.accountId)
-    : logs;
-
-  const filteredLogs = useMemo(() => {
-    const source = hasMultipleAccounts ? accountLogs : logs;
-    return source.filter(l => activeFilters.has(getMessageCategory(l.raw)));
-  }, [hasMultipleAccounts, accountLogs, logs, activeFilters]);
-
-  const toggleFilter = useCallback((cat: MessageCategory) => {
-    setActiveFilters(prev => {
-      const next = new Set(prev);
-      if (next.has(cat)) {
-        if (next.size > 1) next.delete(cat);
-      } else {
-        next.add(cat);
-      }
-      return next;
-    });
-  }, []);
+  const info = store.appInfo;
+  const pickedTag = store.callId ? callIdTag(store.callId) : null;
 
   return (
-    <Box
-      sx={{
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        bgcolor: "background.default",
-      }}
-    >
-      {/* Header */}
-      <Box
-        sx={{
-          px: 1.5,
-          pt: isDetached ? 1 : 1.5,
-          pb: 0.5,
-          display: "flex",
-          alignItems: "center",
-          gap: 1,
-          ...(isDetached
-            ? {
-                WebkitAppRegion: "drag",
-                userSelect: "none",
-              }
-            : {}),
-        }}
-      >
-        {!isDetached && (
-          <IconButton size="small" onClick={() => setCurrentView("settings")}>
-            <ArrowBackIcon fontSize="small" />
-          </IconButton>
-        )}
-        <Typography
-          variant="subtitle2"
-          sx={{
-            fontWeight: 600,
-            flex: 1,
-            letterSpacing: "-0.01em",
-            fontSize: "0.85rem",
-          }}
-        >
+    <Box sx={{ height: "100vh", display: "flex", flexDirection: "column", bgcolor: "background.default" }}>
+      {/* Title row */}
+      <Box sx={{ px: 1.5, pt: 1, pb: 0.5, display: "flex", alignItems: "center", gap: 1, WebkitAppRegion: "drag", userSelect: "none" }}>
+        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
           {t("diagnostics.title")}
         </Typography>
-        <Typography
-          variant="caption"
-          sx={{
-            fontFamily: "monospace",
-            fontSize: "0.55rem",
-            color: "text.secondary",
-            opacity: 0.5,
-          }}
-        >
-          {t("diagnostics.version")}
-        </Typography>
-        <Tooltip title={t("diagnostics.export")}>
+        {info && (
+          <Tooltip title={`${info.os} ${info.arch} · ${info.profile}${info.transcription ? ` · ${t("diagnostics.transcriptionOn")}` : ""}`}>
+            <Typography variant="caption" sx={{ fontFamily: "monospace", fontSize: "0.62rem", color: "text.secondary" }}>
+              {t("diagnostics.version", { version: info.version })}
+            </Typography>
+          </Tooltip>
+        )}
+        <Box sx={{ flex: 1 }} />
+        <Tooltip title={store.docked ? t("diagnostics.undock") : t("diagnostics.dock")}>
+          <IconButton size="small" onClick={() => void store.setDocked(!store.docked)} sx={{ WebkitAppRegion: "no-drag" }} aria-pressed={store.docked}>
+            {store.docked ? <PushPinIcon sx={{ fontSize: 16 }} /> : <PushPinOutlinedIcon sx={{ fontSize: 16 }} />}
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={t("diagnostics.follow")}>
           <IconButton
             size="small"
-            onClick={(e) => setExportMenuAnchor(e.currentTarget)}
-            sx={{ WebkitAppRegion: "no-drag" }}
+            onClick={() => store.setFollow(!store.follow)}
+            sx={{ WebkitAppRegion: "no-drag", color: store.follow ? "primary.main" : "text.secondary" }}
+            aria-pressed={store.follow}
           >
+            <VerticalAlignBottomIcon sx={{ fontSize: 16 }} />
+          </IconButton>
+        </Tooltip>
+        <Tooltip title={t("diagnostics.export")}>
+          <IconButton size="small" onClick={(e) => setExportMenuAnchor(e.currentTarget)} sx={{ WebkitAppRegion: "no-drag" }}>
             <FileDownloadOutlinedIcon sx={{ fontSize: 16 }} />
           </IconButton>
         </Tooltip>
@@ -1291,86 +182,158 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
           onClose={() => setExportMenuAnchor(null)}
           anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
           transformOrigin={{ vertical: "top", horizontal: "right" }}
-          sx={{
-            "& .MuiPaper-root": {
-              minWidth: 200,
-              bgcolor: "background.paper",
-            },
-          }}
+          sx={{ "& .MuiPaper-root": { minWidth: 220, bgcolor: "background.paper" } }}
         >
-          <MenuItem onClick={() => { handleExportText(); setExportMenuAnchor(null); }}>
+          <MenuItem onClick={() => exportWith("export_sip_log_text", { title: t("diagnostics.exportTextTitle"), filterName: t("diagnostics.textFiles") })}>
             <ListItemIcon><DescriptionOutlinedIcon fontSize="small" /></ListItemIcon>
             <ListItemText primary={t("diagnostics.exportText")} secondary={t("diagnostics.sipLog")} />
           </MenuItem>
-          <MenuItem onClick={() => { handleExportPcap(); setExportMenuAnchor(null); }}>
+          <MenuItem onClick={() => exportWith("export_sip_log_pcap", { title: t("diagnostics.exportPcapTitle"), filterName: t("diagnostics.pcapFiles") })}>
             <ListItemIcon><SwapVertIcon fontSize="small" /></ListItemIcon>
             <ListItemText primary={t("diagnostics.exportPcap")} secondary={t("diagnostics.wiresharkFormat")} />
           </MenuItem>
           <Divider />
-          <MenuItem onClick={handleExportCallHistory}>
+          <MenuItem onClick={() => exportWith("export_call_history_csv", { callHistory: callHistory(), title: t("diagnostics.exportHistoryTitle"), filterName: t("diagnostics.csvFiles") })}>
             <ListItemIcon><HistoryIcon fontSize="small" /></ListItemIcon>
             <ListItemText primary={t("diagnostics.exportHistory")} secondary={t("diagnostics.csvFormat")} />
           </MenuItem>
-          <MenuItem onClick={handleExportReport}>
+          <MenuItem onClick={() => exportWith("export_diagnostic_report", { callHistory: callHistory(), title: t("diagnostics.exportReportTitle"), filterName: t("diagnostics.jsonFiles") })}>
             <ListItemIcon><AssessmentOutlinedIcon fontSize="small" /></ListItemIcon>
             <ListItemText primary={t("diagnostics.exportReport")} secondary={t("diagnostics.fullDiagnostics")} />
           </MenuItem>
         </Menu>
-        <ToggleButtonGroup
-          value={viewMode}
-          exclusive
-          onChange={(_, v) => { if (v) setViewMode(v); }}
-          size="small"
-          sx={{
-            WebkitAppRegion: "no-drag",
-            height: 24,
-            "& .MuiToggleButton-root": {
-              px: 0.75,
-              py: 0,
-              border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-            },
-          }}
-        >
-          <ToggleButton value="messages">
-            <Tooltip title={t("diagnostics.messageView")}>
-              <ViewListIcon sx={{ fontSize: 14 }} />
-            </Tooltip>
-          </ToggleButton>
-          <ToggleButton value="ladder">
-            <Tooltip title={t("diagnostics.ladderView")}>
-              <AccountTreeIcon sx={{ fontSize: 14 }} />
-            </Tooltip>
-          </ToggleButton>
-        </ToggleButtonGroup>
         <Tooltip title={t("diagnostics.clearLog")}>
-          <IconButton
-            size="small"
-            onClick={handleClear}
-            sx={{ WebkitAppRegion: "no-drag" }}
-          >
+          <IconButton size="small" onClick={() => void store.clear()} sx={{ WebkitAppRegion: "no-drag" }}>
             <DeleteOutlineIcon sx={{ fontSize: 16 }} />
           </IconButton>
         </Tooltip>
       </Box>
 
-      {/* Filter chips */}
-      <Box sx={{ display: "flex", gap: 0.5, px: 1.5, py: 0.4, flexWrap: "wrap" }}>
-        {(
-          [
-            { key: "calls", label: "Calls" },
-            { key: "register", label: "Register" },
-            { key: "keepalive", label: "OPTIONS" },
-            { key: "other", label: "Other" },
-          ] as const
-        ).map(({ key, label }) => {
-          const active = activeFilters.has(key);
+      {/* Account tabs */}
+      {hasMultiple && (
+        <Tabs
+          value={selected?.accountId ?? false}
+          onChange={(_, v) => store.selectAccount(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+          sx={{
+            minHeight: 30,
+            mx: 1.5,
+            "& .MuiTabs-indicator": { height: 2, borderRadius: 1 },
+            "& .MuiTab-root": { minHeight: 30, minWidth: 0, py: 0.25, px: 1.25, fontSize: "0.7rem", fontWeight: 500, textTransform: "none" },
+          }}
+        >
+          {statusAccounts.map((account) => (
+            <Tab
+              key={account.accountId}
+              value={account.accountId}
+              label={
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+                  <Box sx={{ width: 6, height: 6, borderRadius: "50%", bgcolor: registrationColor(account.registrationState) }} />
+                  <span>{account.username}@{account.domain}</span>
+                </Box>
+              }
+            />
+          ))}
+        </Tabs>
+      )}
+      {anyRegistering && <LinearProgress sx={{ height: 2, mx: 1.5, borderRadius: 1 }} />}
+
+      {/* Status cards, collapsible; never more than a third of the window,
+          so the trace keeps its room with a call up. */}
+      <Box sx={{ px: 1.5, pt: 0.5, maxHeight: "36%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <Box
+          onClick={store.toggleStatus}
+          sx={{ display: "flex", alignItems: "center", gap: 0.5, cursor: "pointer", color: "text.secondary", userSelect: "none" }}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              store.toggleStatus();
+            }
+          }}
+          aria-expanded={store.showStatus}
+        >
+          {store.showStatus ? <ExpandLessIcon sx={{ fontSize: 14 }} /> : <ExpandMoreIcon sx={{ fontSize: 14 }} />}
+          <Typography variant="caption" sx={{ fontWeight: 600, fontSize: "0.66rem", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            {t("diagnostics.status")}
+          </Typography>
+          {!store.showStatus && selected && (
+            <Typography variant="caption" sx={{ fontSize: "0.66rem", ml: 0.5, color: registrationColor(selected.registrationState), fontWeight: 600 }}>
+              {selected.username}@{selected.domain} · {t(`diagnostics.${selected.registrationState}`, { defaultValue: selected.registrationState })}
+            </Typography>
+          )}
+        </Box>
+        <Collapse in={store.showStatus} sx={{ overflow: "auto", minHeight: 0 }}>
+          {selected ? (
+            <>
+              <ConnectionCard account={selected} latencyMs={store.status?.latencyMs ?? null} actions={actions} />
+              {selected.activeCalls.map((call) => (
+                <ActiveCallCard key={call.id} call={call} />
+              ))}
+            </>
+          ) : (
+            <Typography variant="body2" sx={{ color: "text.secondary", py: 1 }}>
+              {t("diagnostics.noAccounts")}
+            </Typography>
+          )}
+        </Collapse>
+      </Box>
+
+      {/* Trace toolbar */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, px: 1.5, pt: 0.75, pb: 0.5, flexWrap: "wrap" }}>
+        <TextField
+          size="small"
+          value={store.search}
+          onChange={(e) => store.setSearch(e.target.value)}
+          placeholder={t("diagnostics.search")}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon sx={{ fontSize: 14 }} />
+                </InputAdornment>
+              ),
+              endAdornment: store.search ? (
+                <InputAdornment position="end">
+                  <IconButton size="small" onClick={() => store.setSearch("")} aria-label={t("common.clear")}>
+                    <CloseIcon sx={{ fontSize: 12 }} />
+                  </IconButton>
+                </InputAdornment>
+              ) : undefined,
+              sx: { height: 26, fontSize: "0.72rem", borderRadius: "8px" },
+            },
+          }}
+          sx={{ flex: 1, minWidth: 140 }}
+        />
+        <ToggleButtonGroup
+          value={store.view}
+          exclusive
+          onChange={(_, v) => {
+            if (v) store.setView(v);
+          }}
+          size="small"
+          sx={{ height: 26, "& .MuiToggleButton-root": { px: 0.75, py: 0, border: `1px solid ${alpha(theme.palette.divider, 0.2)}` } }}
+        >
+          <ToggleButton value="messages" aria-label={t("diagnostics.messageView")}>
+            <Tooltip title={t("diagnostics.messageView")}><ViewListIcon sx={{ fontSize: 14 }} /></Tooltip>
+          </ToggleButton>
+          <ToggleButton value="ladder" aria-label={t("diagnostics.ladderView")}>
+            <Tooltip title={t("diagnostics.ladderView")}><AccountTreeIcon sx={{ fontSize: 14 }} /></Tooltip>
+          </ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+      <Box sx={{ display: "flex", gap: 0.5, px: 1.5, pb: 0.5, flexWrap: "wrap", alignItems: "center" }}>
+        {CATEGORIES.map(({ key, label }) => {
+          const active = store.categories.has(key);
           return (
             <Chip
               key={key}
               label={label}
               size="small"
               variant={active ? "filled" : "outlined"}
-              onClick={() => toggleFilter(key)}
+              onClick={() => store.toggleCategory(key)}
               sx={{
                 height: 20,
                 fontSize: "0.6rem",
@@ -1378,111 +341,75 @@ export function DiagnosticPanel({ isDetached }: { isDetached?: boolean }) {
                 borderRadius: "10px",
                 "& .MuiChip-label": { px: 0.75 },
                 opacity: active ? 1 : 0.45,
-                bgcolor: active
-                  ? alpha(theme.palette.primary.main, 0.12)
-                  : "transparent",
+                bgcolor: active ? alpha(theme.palette.primary.main, 0.12) : "transparent",
                 color: active ? "primary.main" : "text.secondary",
-                borderColor: active
-                  ? alpha(theme.palette.primary.main, 0.3)
-                  : alpha(theme.palette.divider, 0.3),
-                "&:hover": {
-                  bgcolor: alpha(theme.palette.primary.main, 0.08),
-                  opacity: 1,
-                },
+                borderColor: active ? alpha(theme.palette.primary.main, 0.3) : alpha(theme.palette.divider, 0.3),
               }}
             />
           );
         })}
+        {pickedTag && (
+          <Chip
+            label={t("diagnostics.callOnly", { tag: pickedTag.text })}
+            size="small"
+            onDelete={() => store.setCallId(null)}
+            sx={{ height: 20, fontSize: "0.6rem", fontFamily: "monospace", bgcolor: alpha(`hsl(${pickedTag.hue} 70% 50%)`, 0.18) }}
+          />
+        )}
+        <Typography variant="caption" sx={{ ml: "auto", fontSize: "0.62rem", color: "text.secondary" }}>
+          {t("diagnostics.sipMessages", { count: shown.length })}
+        </Typography>
       </Box>
 
-      {anyRegistering && (
-        <LinearProgress
-          sx={{
-            height: 2,
-            mx: 1.5,
-            borderRadius: 1,
-            mb: 0.5,
-          }}
-        />
-      )}
-
-      {/* Account Tabs (only show if multiple accounts) */}
-      {hasMultipleAccounts && (
-        <Tabs
-          value={selectedTab}
-          onChange={(_, v) => {
-            setSelectedTab(v);
-            setExpandedSet(new Set());
-          }}
-          variant="scrollable"
-          scrollButtons="auto"
-          sx={{
-            minHeight: 32,
-            mx: 1.5,
-            mb: 0.5,
-            "& .MuiTabs-indicator": {
-              height: 2,
-              borderRadius: 1,
-            },
-            "& .MuiTab-root": {
-              minHeight: 32,
-              minWidth: 0,
-              py: 0.5,
-              px: 1.5,
-              fontSize: "0.7rem",
-              fontWeight: 500,
-              textTransform: "none",
-            },
-          }}
-        >
-          {accounts.map((account, idx) => (
-            <Tab
-              key={account.accountId}
-              label={
-                <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
-                  <StatusDot color={registrationColor(account.registrationState)} />
-                  <span>{account.username}@{account.domain}</span>
-                </Box>
-              }
-              value={idx}
-            />
-          ))}
-        </Tabs>
-      )}
-
-      {/* Scrollable content */}
+      {/* Trace */}
       <Box
+        ref={listRef}
         sx={{
           flex: 1,
           overflow: "auto",
+          px: 1,
           pb: 1,
           "&::-webkit-scrollbar": { width: 4 },
-          "&::-webkit-scrollbar-thumb": {
-            bgcolor: alpha(theme.palette.text.primary, 0.08),
-            borderRadius: 2,
-          },
+          "&::-webkit-scrollbar-thumb": { bgcolor: alpha(theme.palette.text.primary, 0.08), borderRadius: 2 },
         }}
       >
-        {selectedAccount ? (
-          viewMode === "ladder" ? (
-            <SipLadderDiagram logs={filteredLogs.filter((l) => l.direction !== "app")} />
-          ) : (
-            <AccountTabContent
-              account={selectedAccount}
-              logs={filteredLogs}
-              latencyMs={status?.latencyMs ?? null}
-              expandedSet={expandedSet}
-              toggleExpanded={toggleExpanded}
-            />
-          )
-        ) : (
-          <Box sx={{ textAlign: "center", py: 4 }}>
-            <Typography variant="body2" sx={{ color: "text.secondary" }}>
-              {t("diagnostics.noAccounts")}
+        {shown.length === 0 ? (
+          <Box sx={{ textAlign: "center", py: 4, color: "text.secondary" }}>
+            <Typography variant="caption" sx={{ opacity: 0.6, fontSize: "0.7rem" }}>
+              {store.logs.length === 0 ? t("diagnostics.sipMessagesEmpty") : t("diagnostics.noMatches")}
             </Typography>
           </Box>
+        ) : store.view === "ladder" ? (
+          <SipLadderDiagram logs={shown.filter((l) => l.direction !== "app")} />
+        ) : (
+          shown.map((entry, i) => {
+            const key = logKey(entry);
+            return (
+              <MessageRow
+                key={`${key}-${i}`}
+                log={entry}
+                previousTimestamp={i > 0 ? shown[i - 1].timestamp : null}
+                expanded={store.expanded.has(key)}
+                onToggle={() => store.toggleExpanded(key)}
+                onPickCall={(callId) => store.setCallId(store.callId === callId ? null : callId)}
+                pickedCall={store.callId !== null && store.callId === entry.callId}
+              />
+            );
+          })
         )}
       </Box>
+      {!store.follow && shown.length > 0 && (
+        <Box sx={{ position: "absolute", bottom: 12, right: 16 }}>
+          <Chip
+            label={t("diagnostics.jumpToNewest")}
+            size="small"
+            color="primary"
+            onClick={() => store.setFollow(true)}
+            icon={<VerticalAlignBottomIcon sx={{ fontSize: 14 }} />}
+          />
+        </Box>
+      )}
+      <AppToast />
     </Box>
   );
 }
