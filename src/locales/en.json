@@ -53,7 +53,9 @@
       "auth": "The PBX rejected the credentials. Check the username, auth username and password; if the PBX uses a different realm, set it under advanced account settings. Automatic retries stop on this failure.",
       "forbidden_ip": "The PBX refused this address. A fail2ban-style block after earlier failures is the usual cause; it clears by itself after the ban period.",
       "server_error": "The PBX answered but could not register you right now. This is on the server side; the app keeps retrying."
-    }
+    },
+    "unregister": "Unregister",
+    "register": "Register"
   },
   "dialer": {
     "searchCountry": "Search country...",
@@ -315,7 +317,7 @@
   },
   "diagnostics": {
     "title": "Diagnostics",
-    "version": "Aria v0.3.2",
+    "version": "Aria {{version}}",
     "connection": "Connection",
     "registered": "Registered",
     "registering": "Registering...",
@@ -365,7 +367,21 @@
     "tx": "TX",
     "rx": "RX",
     "messageView": "Message list",
-    "ladderView": "Call flow diagram"
+    "ladderView": "Call flow diagram",
+    "dock": "Dock beside the phone",
+    "undock": "Undock",
+    "follow": "Follow new messages",
+    "search": "Search messages…",
+    "noMatches": "No messages match.",
+    "copyMessage": "Copy message",
+    "copiedMessage": "Copied",
+    "status": "Status",
+    "appEvent": "Aria",
+    "filterByCall": "Show this call only",
+    "clearCallFilter": "Show every call",
+    "callOnly": "Call {{tag}}",
+    "jumpToNewest": "Jump to newest",
+    "transcriptionOn": "transcription built in"
   },
   "common": {
     "cancel": "Cancel",

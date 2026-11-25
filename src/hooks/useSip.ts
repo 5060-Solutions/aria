@@ -213,6 +213,41 @@ export async function retryNow(accountId: string): Promise<void> {
 }
 
 /**
+ * The connection panel's "Re-register": a real one. The account is signed
+ * out and registered afresh from DNS (a refresh only while a call is up),
+ * so the chip visibly goes through "Connecting…" and a stale binding is
+ * replaced. A failure starts the retry loop like any other.
+ */
+export async function reregister(accountId: string): Promise<void> {
+  cancelRetry(accountId);
+  const store = useAppStore.getState();
+  const account = store.accounts.find((a) => a.id === accountId);
+  if (!account) return;
+  store.setAccountRegistrationState(accountId, "registering");
+  try {
+    await sipReregister(await getAccountWithPassword(account));
+  } catch (e) {
+    log.error(`[register] Re-register for ${accountId} failed:`, e);
+    useAppStore.getState().setAccountRegistrationState(accountId, "error", String(e));
+    void retryRegister(accountId);
+    return;
+  }
+  await applyActiveAccount();
+}
+
+/**
+ * The connection panel's "Unregister": sign the account out and leave it
+ * out until the user registers it again (or the app restarts; the account
+ * stays enabled). Nothing automatic brings it back: the retry loop is
+ * cancelled and the network monitor only retries accounts in error.
+ */
+export async function unregisterNow(accountId: string): Promise<void> {
+  cancelRetry(accountId);
+  await sipUnregisterAccount(accountId);
+  useAppStore.getState().setAccountRegistrationState(accountId, "unregistered");
+}
+
+/**
  * Register `accounts` (default: every enabled account).
  *
  * Accounts are handed over one at a time and the active account is set after
@@ -632,6 +667,11 @@ function toSipConfig(account: SipAccount) {
 /** A fresh registration attempt now: a refresh when registered, else from DNS. */
 export async function sipRegisterNow(account: SipAccount): Promise<string> {
   return invoke("sip_register_now", { config: toSipConfig(account) });
+}
+
+/** Sign out and back in; only a refresh while a call is up. */
+export async function sipReregister(account: SipAccount): Promise<string> {
+  return invoke("sip_reregister", { config: toSipConfig(account) });
 }
 
 export async function sipUnregister(): Promise<void> {

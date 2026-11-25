@@ -63,7 +63,7 @@ stays light.
 **Setup and troubleshooting**
 - Guided setup, or scan a QR code to provision an account
 - Advanced options for PBXes that need them: separate auth username, auth-realm override, custom registrar
-- Diagnostics panel: live SIP message log, RTP stats and PCAP export for your PBX admin
+- Diagnostics window, docked beside the phone or floating: live SIP trace with millisecond timing, per-call filtering, RTP stats, and text, PCAP and report exports for your PBX admin
 
 ## Getting started
 

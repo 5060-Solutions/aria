@@ -53,7 +53,9 @@
       "auth": "La PBX rechazó las credenciales. Revisa el usuario, el usuario de autenticación y la contraseña; si la PBX usa otro realm, configúralo en los ajustes avanzados de la cuenta. Los reintentos automáticos se detienen con este fallo.",
       "forbidden_ip": "La PBX rechazó esta dirección. La causa habitual es un bloqueo tipo fail2ban tras fallos anteriores; se levanta solo al terminar el periodo de bloqueo.",
       "server_error": "La PBX respondió pero no pudo registrarte ahora mismo. Es un problema del lado del servidor; la app sigue reintentando."
-    }
+    },
+    "unregister": "Dar de baja",
+    "register": "Registrar"
   },
   "dialer": {
     "searchCountry": "Buscar país...",
@@ -315,7 +317,7 @@
   },
   "diagnostics": {
     "title": "Diagnósticos",
-    "version": "Aria v0.3.2",
+    "version": "Aria {{version}}",
     "connection": "Conexión",
     "registered": "Registrado",
     "registering": "Registrando...",
@@ -365,7 +367,21 @@
     "rx": "RX",
     "messageView": "Lista de mensajes",
     "ladderView": "Diagrama de flujo de llamada",
-    "reconnecting": "Reconectando..."
+    "reconnecting": "Reconectando...",
+    "dock": "Acoplar junto al teléfono",
+    "undock": "Desacoplar",
+    "follow": "Seguir los mensajes nuevos",
+    "search": "Buscar mensajes…",
+    "noMatches": "Ningún mensaje coincide.",
+    "copyMessage": "Copiar mensaje",
+    "copiedMessage": "Copiado",
+    "status": "Estado",
+    "appEvent": "Aria",
+    "filterByCall": "Mostrar solo esta llamada",
+    "clearCallFilter": "Mostrar todas las llamadas",
+    "callOnly": "Llamada {{tag}}",
+    "jumpToNewest": "Ir al más reciente",
+    "transcriptionOn": "transcripción incluida"
   },
   "common": {
     "cancel": "Cancelar",

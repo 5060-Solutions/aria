@@ -758,6 +758,27 @@ impl SipManager {
         Ok("refreshing".into())
     }
 
+    /// The panel's "Re-register".
+    ///
+    /// An idle account is signed out (Expires: 0) and registered afresh, the
+    /// whole path from DNS: a binding that went stale behind a network change
+    /// or a PBX restart is replaced, not refreshed over a connection that may
+    /// be dead. With a call up it is only refreshed, like [`Self::register_now`]:
+    /// unregistering drops the account and its calls with it.
+    pub async fn reregister(&self, account: AccountConfig) -> Result<String, String> {
+        let busy = {
+            let s = self.state.read().await;
+            s.accounts
+                .get(&account.id)
+                .is_some_and(|a| a.calls.iter().any(|c| !c.is_ended()))
+        };
+        if busy {
+            return self.register_now(account).await;
+        }
+        self.unregister_account(Some(&account.id)).await?;
+        self.register(account).await
+    }
+
     pub async fn register(&self, account: AccountConfig) -> Result<String, String> {
         let account_id = account.id.clone();
         if self

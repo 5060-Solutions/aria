@@ -2351,3 +2351,73 @@ async fn a_retransmitted_invite_for_a_declined_call_gets_the_decline_again() {
         .collect();
     assert_eq!(to_tags[0], to_tags[1], "the same response, To tag included");
 }
+
+/// The panel's "Re-register" on an idle, registered account is a real one:
+/// the old binding is signed out (Expires: 0) and a fresh registration runs
+/// the whole path again, so a stale binding or a changed network is replaced
+/// rather than refreshed over a connection that may be dead.
+#[tokio::test]
+async fn reregister_on_an_idle_account_signs_out_and_back_in() {
+    let (proxy, seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, mut rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    while rx.try_recv().is_ok() {}
+
+    assert_eq!(mgr.reregister(cfg.clone()).await.unwrap(), "registering");
+    wait_registered(&mgr, &cfg.id).await;
+
+    let expires = seen.lock().unwrap().register_expires.clone();
+    assert!(
+        expires.iter().any(|e| e.as_deref() == Some("0")),
+        "an Expires: 0 REGISTER signs the old binding out: {expires:?}"
+    );
+    assert_ne!(expires.last().and_then(|e| e.as_deref()), Some("0"), "and a fresh REGISTER follows: {expires:?}");
+    let mut saw_unregistered = false;
+    let mut registered_after = false;
+    while let Ok(e) = rx.try_recv() {
+        if let super::SipEvent::RegistrationChanged(r) = e {
+            if r.state == super::RegistrationState::Unregistered {
+                saw_unregistered = true;
+            } else if r.state == super::RegistrationState::Registered && saw_unregistered {
+                registered_after = true;
+            }
+        }
+    }
+    assert!(saw_unregistered && registered_after, "the UI sees the sign-out and the new registration");
+}
+
+/// With a call up, "Re-register" only refreshes: signing out would drop the
+/// account and the call with it.
+#[tokio::test]
+async fn reregister_during_a_call_only_refreshes() {
+    let (proxy, seen, _) = start_pbx_with_options(PbxOptions::default()).await;
+    let (mgr, mut rx) = manager_with(fast_timing());
+    let cfg = account(proxy, None, PASSWORD);
+    register(&mgr, cfg.clone()).await.expect("registered");
+    {
+        let mut s = mgr.state.write().await;
+        s.accounts.get_mut(&cfg.id).unwrap().calls.push(super::state::CallFSM::new_outbound(
+            &cfg.id,
+            "sip:200@harness.lan",
+            "call-2".into(),
+            "tag-2".into(),
+            40000,
+            "z9hG4bK-2".into(),
+            "sip:ghostbook@harness.lan".into(),
+        ));
+    }
+    while rx.try_recv().is_ok() {}
+    let before = seen.lock().unwrap().register_ok.len();
+    assert_eq!(mgr.reregister(cfg.clone()).await.unwrap(), "refreshing");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().register_ok.len() == before {
+        assert!(tokio::time::Instant::now() < deadline, "no refresh REGISTER arrived");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    wait_registered(&mgr, &cfg.id).await;
+    let s = mgr.state.read().await;
+    let a = s.accounts.get(&cfg.id).unwrap();
+    assert_eq!(a.calls.len(), 1, "the call survived");
+    assert!(!seen.lock().unwrap().register_expires.iter().any(|e| e.as_deref() == Some("0")), "no sign-out");
+}
