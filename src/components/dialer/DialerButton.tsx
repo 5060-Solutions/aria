@@ -21,8 +21,8 @@ export function DialerButton({ digit, letters, onPress }: DialerButtonProps) {
       <ButtonBase
         onClick={handlePress}
         sx={{
-          width: 76,
-          height: 76,
+          width: "var(--dial-key, 76px)",
+          height: "var(--dial-key, 76px)",
           borderRadius: "50%",
           bgcolor: alpha(theme.palette.text.primary, 0.07),
           color: "text.primary",

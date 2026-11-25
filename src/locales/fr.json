@@ -61,12 +61,13 @@
   },
   "dialer": {
     "searchCountry": "Rechercher un pays...",
-    "enterNumber": "Entrer le numéro",
+    "enterNumber": "Numéro ou nom",
     "selectAccount": "Sélectionner un compte",
     "call": "Appeler",
     "clearAll": "Effacer",
     "backspace": "Supprimer le dernier chiffre",
-    "backspaceHold": "Supprimer (maintenir pour tout effacer)"
+    "backspaceHold": "Supprimer (maintenir pour tout effacer)",
+    "matches": "Contacts correspondants"
   },
   "call": {
     "calling": "Appel...",
@@ -124,7 +125,9 @@
     "sipTraceDescription": "Télécharger PCAP compatible Wireshark",
     "account": "Compte",
     "transcript": "Transcription",
-    "openInRecordings": "Ouvrir dans Enregistrements"
+    "openInRecordings": "Ouvrir dans Enregistrements",
+    "unknownCaller": "Appelant inconnu",
+    "number": "Numéro"
   },
   "contacts": {
     "title": "Contacts",

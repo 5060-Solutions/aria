@@ -768,15 +768,15 @@ export function Settings() {
                   </Typography>
                   <Typography
                     variant="caption"
-                    sx={{
-                      color: "text.secondary",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      display: "block",
-                    }}
+                    sx={{ color: "text.secondary", display: "block", lineHeight: 1.3 }}
                   >
-                    {account.username}@{account.domain} · {account.transport.toUpperCase()}{account.port ? `:${account.port}` : " (SRV)"}
+                    {/* Breaks only after the @ and before the transport, never inside the domain. */}
+                    <Box component="span" sx={{ whiteSpace: "nowrap" }}>{account.username}@</Box>
+                    <wbr />
+                    <Box component="span" sx={{ whiteSpace: "nowrap" }}>{account.domain}</Box>{" "}
+                    <Box component="span" sx={{ whiteSpace: "nowrap" }}>
+                      · {account.transport.toUpperCase()}{account.port ? `:${account.port}` : " (SRV)"}
+                    </Box>
                   </Typography>
                 </Box>
                 {isActive && (status === "error" || status === "unregistered") ? (
@@ -898,15 +898,11 @@ export function Settings() {
                     </Typography>
                     <Typography
                       variant="caption"
-                      sx={{
-                        color: "text.disabled",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        display: "block",
-                      }}
+                      sx={{ color: "text.disabled", display: "block", lineHeight: 1.3 }}
                     >
-                      {account.username}@{account.domain}
+                      <Box component="span" sx={{ whiteSpace: "nowrap" }}>{account.username}@</Box>
+                      <wbr />
+                      <Box component="span" sx={{ whiteSpace: "nowrap" }}>{account.domain}</Box>
                     </Typography>
                   </Box>
                   <IconButton
