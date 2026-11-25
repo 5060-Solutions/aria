@@ -3,11 +3,14 @@ import DialpadIcon from "@mui/icons-material/Dialpad";
 import HistoryIcon from "@mui/icons-material/History";
 import ContactsIcon from "@mui/icons-material/People";
 import VoicemailIcon from "@mui/icons-material/Voicemail";
+import SmsIcon from "@mui/icons-material/Sms";
 import GraphicEqIcon from "@mui/icons-material/GraphicEq";
 import SettingsIcon from "@mui/icons-material/Settings";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { mailboxFor } from "../../utils/voicemail";
+import { showMessagesNav } from "../../utils/messaging";
+import { unreadConversations, useMessagingStore } from "../../stores/messagingStore";
 import { showRecordingsNav } from "../../utils/recordings";
 
 function AriaLogo({ size = 40 }: { size?: number }) {
@@ -45,6 +48,9 @@ const navItems = [
   // Only for an account on an Aria PBX (it has a PBX API address); anyone
   // else reaches voicemail by dialling, from the status bar button.
   { id: "voicemail" as const, icon: VoicemailIcon, labelKey: "nav.voicemail" },
+  // Texting on an Aria PBX: shown unless the PBX has said this extension has
+  // no number to text from.
+  { id: "messages" as const, icon: SmsIcon, labelKey: "nav.messages" },
   // Once a call has been recorded, or an account records every call: where
   // the recordings and their transcripts live.
   { id: "recordings" as const, icon: GraphicEqIcon, labelKey: "nav.recordings" },
@@ -63,8 +69,15 @@ export function NavRail() {
   const hasMailbox = mailboxFor(accounts.find((a) => a.id === activeAccountId)) !== null;
   const hasRecordings = showRecordingsNav(callHistory, accounts);
   const newVoicemail = activeAccountId ? voicemail[activeAccountId]?.newMessages ?? 0 : 0;
+  const texting = useMessagingStore((s) => (activeAccountId ? s.byAccount[activeAccountId] : undefined));
+  const readAt = useMessagingStore((s) => s.readAt);
+  const newTexts = unreadConversations(texting, readAt);
+  const hasMessages = hasMailbox && showMessagesNav(texting);
   const items = navItems.filter(
-    (item) => (item.id !== "voicemail" || hasMailbox) && (item.id !== "recordings" || hasRecordings),
+    (item) =>
+      (item.id !== "voicemail" || hasMailbox) &&
+      (item.id !== "messages" || hasMessages) &&
+      (item.id !== "recordings" || hasRecordings),
   );
 
   return (
@@ -129,7 +142,7 @@ export function NavRail() {
                 }}
               >
                 <Badge
-                  badgeContent={id === "voicemail" ? newVoicemail : 0}
+                  badgeContent={id === "voicemail" ? newVoicemail : id === "messages" ? newTexts : 0}
                   color="error"
                   max={99}
                   overlap="circular"
