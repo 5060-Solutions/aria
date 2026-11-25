@@ -60,12 +60,13 @@
   },
   "dialer": {
     "searchCountry": "Buscar país...",
-    "enterNumber": "Ingrese número",
+    "enterNumber": "Número o nombre",
     "selectAccount": "Seleccionar cuenta",
     "clearAll": "Borrar",
     "backspace": "Borrar último dígito",
     "backspaceHold": "Borrar (mantener para borrar todo)",
-    "call": "Llamar"
+    "call": "Llamar",
+    "matches": "Contactos coincidentes"
   },
   "call": {
     "calling": "Llamando...",
