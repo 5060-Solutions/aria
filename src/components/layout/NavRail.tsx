@@ -3,10 +3,12 @@ import DialpadIcon from "@mui/icons-material/Dialpad";
 import HistoryIcon from "@mui/icons-material/History";
 import ContactsIcon from "@mui/icons-material/People";
 import VoicemailIcon from "@mui/icons-material/Voicemail";
+import GraphicEqIcon from "@mui/icons-material/GraphicEq";
 import SettingsIcon from "@mui/icons-material/Settings";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { mailboxFor } from "../../utils/voicemail";
+import { showRecordingsNav } from "../../utils/recordings";
 
 function AriaLogo({ size = 40 }: { size?: number }) {
   return (
@@ -43,6 +45,9 @@ const navItems = [
   // Only for an account on an Aria PBX (it has a PBX API address); anyone
   // else reaches voicemail by dialling, from the status bar button.
   { id: "voicemail" as const, icon: VoicemailIcon, labelKey: "nav.voicemail" },
+  // Once a call has been recorded, or an account records every call: where
+  // the recordings and their transcripts live.
+  { id: "recordings" as const, icon: GraphicEqIcon, labelKey: "nav.recordings" },
   { id: "settings" as const, icon: SettingsIcon, labelKey: "nav.settings" },
 ];
 
@@ -53,10 +58,14 @@ export function NavRail() {
   const accounts = useAppStore((s) => s.accounts);
   const activeAccountId = useAppStore((s) => s.activeAccountId);
   const voicemail = useAppStore((s) => s.voicemail);
+  const callHistory = useAppStore((s) => s.callHistory);
   const theme = useTheme();
   const hasMailbox = mailboxFor(accounts.find((a) => a.id === activeAccountId)) !== null;
+  const hasRecordings = showRecordingsNav(callHistory, accounts);
   const newVoicemail = activeAccountId ? voicemail[activeAccountId]?.newMessages ?? 0 : 0;
-  const items = navItems.filter((item) => item.id !== "voicemail" || hasMailbox);
+  const items = navItems.filter(
+    (item) => (item.id !== "voicemail" || hasMailbox) && (item.id !== "recordings" || hasRecordings),
+  );
 
   return (
     <Box

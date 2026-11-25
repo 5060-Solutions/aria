@@ -4,7 +4,8 @@
     "history": "Historique",
     "contacts": "Contacts",
     "settings": "Paramètres",
-    "voicemail": "Messagerie"
+    "voicemail": "Messagerie",
+    "recordings": "Enregistrements"
   },
   "status": {
     "connected": "Connecté",
@@ -120,7 +121,9 @@
     "callBack": "Rappeler",
     "sipTrace": "Trace SIP",
     "sipTraceDescription": "Télécharger PCAP compatible Wireshark",
-    "account": "Compte"
+    "account": "Compte",
+    "transcript": "Transcription",
+    "openInRecordings": "Ouvrir dans Enregistrements"
   },
   "contacts": {
     "title": "Contacts",
@@ -528,5 +531,22 @@
     "record": "Impossible de modifier l'enregistrement : {{error}}",
     "merge": "Impossible de fusionner les appels : {{error}}",
     "swap": "Impossible de basculer entre les appels : {{error}}"
+  },
+  "recordings": {
+    "title": "Enregistrements",
+    "empty": "Aucun enregistrement pour l'instant. Appuyez sur ⌘R pendant un appel ou activez l'enregistrement automatique d'un compte dans les Paramètres.",
+    "openFolder": "Ouvrir le dossier des enregistrements",
+    "play": "Lire",
+    "transcribe": "Transcrire",
+    "transcribing": "Transcription en cours…",
+    "transcript": "Transcription",
+    "you": "Vous",
+    "caller": "Correspondant",
+    "noModel": "Pour transcrire les appels, téléchargez un modèle vocal sous Transcription dans",
+    "notBuilt": "Cette version n'a pas de transcription.",
+    "noTranscript": "Aucune transcription pour cet appel.",
+    "failed": "La transcription a échoué : {{error}}",
+    "count_one": "{{count}} enregistrement",
+    "count_other": "{{count}} enregistrements"
   }
 }

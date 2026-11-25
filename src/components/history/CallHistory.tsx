@@ -33,6 +33,7 @@ import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { playRecording, exportCallPcap } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
+import { CallTranscript } from "./CallTranscript";
 import type { CallHistoryEntry } from "../../types/sip";
 import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
 
@@ -424,6 +425,8 @@ export function CallHistory() {
                     </IconButton>
                   </Box>
                 )}
+
+                <CallTranscript entry={selectedEntry} />
 
                 {selectedEntry.sipCallId && (
                   <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
