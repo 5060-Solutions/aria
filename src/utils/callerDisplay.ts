@@ -41,7 +41,11 @@ export interface CallerDisplay {
   primary: string;
   /** The small line under it: the number when the big line is a name. */
   secondary: string | null;
+  /** The caller sent no usable number (anonymous, restricted, empty). */
+  withheld: boolean;
 }
+
+const WITHHELD = new Set(["", "unknown", "anonymous", "restricted", "unavailable", "private", "withheld"]);
 
 /**
  * What the call screen says about the far end. Never the host: a SIP
@@ -54,15 +58,22 @@ export function callerDisplay(
   call: { remoteUri: string; remoteName?: string | null },
   contacts: ReadonlyArray<Contact>,
   defaultCountry: CountryCode,
+  /** What to call a caller who sent no number; the raw id when not given. */
+  unknownLabel?: string,
 ): CallerDisplay {
   const user = uriUser(call.remoteUri.trim());
-  const number = formatNumber(user, defaultCountry);
   const sent = call.remoteName?.trim() ?? "";
+  const withheld = WITHHELD.has(user.toLowerCase());
+  if (withheld) {
+    const label = sent && !WITHHELD.has(sent.toLowerCase()) ? sent : (unknownLabel ?? user);
+    return { primary: label, secondary: null, withheld: true };
+  }
+  const number = formatNumber(user, defaultCountry);
   // A "name" that is the number again (what some PBXes send) is not a name.
   const name =
     sent && digits(sent) !== digits(user) ? sent : (contactForNumber(user, contacts)?.name ?? null);
-  if (name) return { primary: name, secondary: number };
-  return { primary: number, secondary: null };
+  if (name) return { primary: name, secondary: number, withheld: false };
+  return { primary: number, secondary: null, withheld: false };
 }
 
 /**
@@ -82,3 +93,17 @@ export function dialerMatches(input: string, contacts: ReadonlyArray<Contact>, l
     .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name))
     .slice(0, limit);
 }
+
+/** The line under a contact's name. */
+export function contactLine(contact: Pick<Contact, "uri" | "phone">, ownDomain: string, defaultCountry: CountryCode): string {
+  const user = uriUser(contact.uri);
+  const host = contact.uri.replace(/^sips?:/i, "").split("@")[1] ?? "";
+  const number = formatNumber(user, defaultCountry);
+  const foreign = host && ownDomain && host.toLowerCase() !== ownDomain.toLowerCase();
+  const main = foreign ? `${user}@${host}` : number;
+  const phone = contact.phone?.trim();
+  // The same number written another way (no country code, punctuation) is
+  // not a second number.
+  return phone && !sameNumber(digits(phone), digits(user)) ? `${main} · ${phone}` : main;
+}
+

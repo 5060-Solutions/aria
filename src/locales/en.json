@@ -124,7 +124,9 @@
     "sipTrace": "SIP Trace",
     "sipTraceDescription": "Download Wireshark-compatible PCAP",
     "transcript": "Transcript",
-    "openInRecordings": "Open in Recordings"
+    "openInRecordings": "Open in Recordings",
+    "unknownCaller": "Unknown caller",
+    "number": "Number"
   },
   "contacts": {
     "title": "Contacts",

@@ -309,14 +309,21 @@ export function Dialer() {
   return (
     <Box
       sx={{
+        // Key size follows the window: the keypad and the call button must
+        // never be pushed below the bottom edge; the number area gives first.
+        "--dial-key": "76px",
+        "@media (max-height: 760px)": { "--dial-key": "68px" },
+        "@media (max-height: 680px)": { "--dial-key": "60px" },
         height: "100%",
+        minHeight: 0,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "flex-end",
         px: 3,
-        pb: 3,
-        pt: 2,
+        pb: 2,
+        pt: 1,
+        boxSizing: "border-box",
       }}
     >
       {/* Number display with country flag */}
@@ -328,8 +335,9 @@ export function Dialer() {
           alignItems: "center",
           justifyContent: "flex-end",
           width: "100%",
-          minHeight: 60,
-          pb: 1.5,
+          minHeight: 48,
+          overflow: "visible",
+          pb: 1,
         }}
       >
         {/* Country selector - hidden for extensions/short numbers */}
@@ -625,10 +633,11 @@ export function Dialer() {
       <Box
         sx={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, 76px)",
+          gridTemplateColumns: "repeat(3, var(--dial-key))",
           gap: 1.5,
           justifyContent: "center",
           mb: 2,
+          flexShrink: 0,
         }}
       >
         {keys.map(({ digit, letters }) => (

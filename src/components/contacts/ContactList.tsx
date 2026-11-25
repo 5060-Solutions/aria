@@ -30,6 +30,8 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutlineOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
+import { contactLine } from "../../utils/callerDisplay";
+import type { CountryCode } from "libphonenumber-js";
 import type { Contact, PresenceState } from "../../types/sip";
 import { usePresenceReported } from "../../hooks/usePresence";
 import { dialUri } from "../../utils/sipUri";
@@ -267,11 +269,15 @@ function PresenceDot({ uri }: { uri: string }) {
 
 function ContactItem({
   contact,
+  ownDomain,
+  defaultCountry,
   onCall,
   onEdit,
   onToggleFavorite,
 }: {
   contact: Contact;
+  ownDomain: string;
+  defaultCountry: CountryCode;
   onCall: () => void;
   onEdit: () => void;
   onToggleFavorite: () => void;
@@ -279,10 +285,10 @@ function ContactItem({
   const { t } = useTranslation();
   const theme = useTheme();
   const bgColor = avatarColor(contact.name);
-  const displayUri = contact.uri.replace(/^sip:/, "");
-  const secondary = contact.phone
-    ? `${displayUri} | ${contact.phone}`
-    : displayUri;
+  // The number as a person reads it; the SIP host only when it is not the
+  // phone's own domain, since then it is the only thing that tells two
+  // "1002"s apart.
+  const secondary = contactLine(contact, ownDomain, defaultCountry);
 
   return (
     <ListItemButton
@@ -414,6 +420,8 @@ export function ContactList() {
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
 
   const [search, setSearch] = useState("");
+  const ownDomain = useAppStore((s) => s.accounts.find((a) => a.id === s.activeAccountId)?.domain ?? "");
+  const defaultCountry = useAppStore((s) => s.defaultCountry) as CountryCode;
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
 
@@ -646,6 +654,8 @@ export function ContactList() {
               </Box>
               {favorites.map((contact) => (
                 <ContactItem
+                  ownDomain={ownDomain}
+                  defaultCountry={defaultCountry}
                   key={contact.id}
                   contact={contact}
                   onCall={() => handleCall(contact.uri, contact.name)}
@@ -661,6 +671,8 @@ export function ContactList() {
             <AlphaSection key={letter} letter={letter}>
               {grouped[letter].map((contact) => (
                 <ContactItem
+                  ownDomain={ownDomain}
+                  defaultCountry={defaultCountry}
                   key={contact.id}
                   contact={contact}
                   onCall={() => handleCall(contact.uri, contact.name)}
@@ -680,8 +692,8 @@ export function ContactList() {
         onClick={() => setDialogOpen(true)}
         sx={{
           position: "absolute",
-          bottom: 16,
-          right: 16,
+          bottom: 20,
+          right: 20,
           borderRadius: "16px",
           boxShadow: `0 4px 16px ${alpha(theme.palette.primary.main, 0.3)}`,
         }}

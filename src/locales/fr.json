@@ -124,7 +124,9 @@
     "sipTraceDescription": "Télécharger PCAP compatible Wireshark",
     "account": "Compte",
     "transcript": "Transcription",
-    "openInRecordings": "Ouvrir dans Enregistrements"
+    "openInRecordings": "Ouvrir dans Enregistrements",
+    "unknownCaller": "Appelant inconnu",
+    "number": "Numéro"
   },
   "contacts": {
     "title": "Contacts",

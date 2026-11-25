@@ -34,6 +34,7 @@ import { useAppStore } from "../../stores/appStore";
 import { playRecording, exportCallPcap } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
 import { CallTranscript } from "./CallTranscript";
+import { callerDisplay } from "../../utils/callerDisplay";
 import type { CallHistoryEntry } from "../../types/sip";
 import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
 
@@ -111,6 +112,7 @@ export function CallHistory() {
   const callHistory = useAppStore((s) => s.callHistory);
   const setDialInput = useAppStore((s) => s.setDialInput);
   const setCurrentView = useAppStore((s) => s.setCurrentView);
+  const contacts = useAppStore((s) => s.contacts);
   const defaultCountry = useAppStore((s) => s.defaultCountry) as CountryCode;
   const theme = useTheme();
   const [selectedEntry, setSelectedEntry] = useState<CallHistoryEntry | null>(null);
@@ -155,6 +157,10 @@ export function CallHistory() {
     if (!selectedEntry) return null;
     return getNumberInfo(selectedEntry.remoteUri, defaultCountry);
   }, [selectedEntry, defaultCountry]);
+  const selectedWho = useMemo(
+    () => (selectedEntry ? callerDisplay(selectedEntry, contacts, defaultCountry, t("history.unknownCaller")) : null),
+    [selectedEntry, contacts, defaultCountry, t],
+  );
 
   return (
     <Box sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -181,6 +187,7 @@ export function CallHistory() {
         <List sx={{ flex: 1, overflow: "auto", px: 1 }}>
           {callHistory.map((entry) => {
             const numberInfo = getNumberInfo(entry.remoteUri, defaultCountry);
+            const who = callerDisplay(entry, contacts, defaultCountry, t("history.unknownCaller"));
             return (
               <ListItemButton
                 key={entry.id}
@@ -203,10 +210,9 @@ export function CallHistory() {
                   >
                     {numberInfo.country
                       ? getFlagEmoji(numberInfo.country)
-                      : (entry.remoteName || entry.remoteUri)
-                          .replace(/^sip:/, "")
-                          .substring(0, 2)
-                          .toUpperCase()}
+                      : who.withheld
+                        ? "?"
+                        : who.primary.substring(0, 2).toUpperCase()}
                   </Avatar>
                 </ListItemAvatar>
                 <ListItemText
@@ -214,7 +220,7 @@ export function CallHistory() {
                     <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                       <CallIcon_ entry={entry} />
                       <span style={{ color: entry.missed ? theme.palette.error.main : undefined }}>
-                        {entry.remoteName || numberInfo.formatted}
+                        {who.primary}
                       </span>
                       {entry.recordingPath && (
                         <FiberManualRecordIcon sx={{ fontSize: 10, color: "error.main", ml: 0.5 }} />
@@ -286,7 +292,7 @@ export function CallHistory() {
           },
         }}
       >
-        {selectedEntry && selectedInfo && (
+        {selectedEntry && selectedInfo && selectedWho && (
           <>
             <DialogTitle sx={{ pb: 1 }}>
               <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -300,7 +306,7 @@ export function CallHistory() {
                 {t("history.callDetails")}
               </Box>
             </DialogTitle>
-            <DialogContent>
+            <DialogContent dividers>
               <Box sx={{ textAlign: "center", py: 2 }}>
                 <Avatar
                   sx={{
@@ -315,14 +321,16 @@ export function CallHistory() {
                 >
                   {selectedInfo.country
                     ? getFlagEmoji(selectedInfo.country)
-                    : selectedInfo.raw.substring(0, 2).toUpperCase()}
+                    : selectedWho.withheld
+                      ? "?"
+                      : selectedWho.primary.substring(0, 2).toUpperCase()}
                 </Avatar>
                 <Typography variant="h6" sx={{ fontWeight: 600 }}>
-                  {selectedEntry.remoteName || selectedInfo.formatted}
+                  {selectedWho.primary}
                 </Typography>
-                {selectedEntry.remoteName && (
+                {selectedWho.secondary && (
                   <Typography variant="body2" sx={{ color: "text.secondary" }}>
-                    {selectedInfo.formatted}
+                    {selectedWho.secondary}
                   </Typography>
                 )}
               </Box>
@@ -373,17 +381,19 @@ export function CallHistory() {
                   </Box>
                 )}
 
-                <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-                  <PhoneIcon sx={{ color: "text.secondary" }} />
-                  <Box>
-                    <Typography variant="body2" sx={{ fontWeight: 500, fontFamily: "monospace" }}>
-                      {selectedEntry.remoteUri}
-                    </Typography>
-                    <Typography variant="caption" sx={{ color: "text.secondary" }}>
-                      {t("history.sipUri")}
-                    </Typography>
+                {!selectedWho.withheld && (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+                    <PhoneIcon sx={{ color: "text.secondary" }} />
+                    <Box>
+                      <Typography variant="body2" sx={{ fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>
+                        {selectedWho.secondary ?? selectedWho.primary}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: "text.secondary" }}>
+                        {t("history.number")}
+                      </Typography>
+                    </Box>
                   </Box>
-                </Box>
+                )}
 
                 {selectedEntry.accountId && (
                   <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
