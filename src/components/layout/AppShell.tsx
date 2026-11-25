@@ -2,6 +2,7 @@ import { Box } from "@mui/material";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAppStore } from "../../stores/appStore";
 import { useKeyboardShortcuts } from "../../hooks/useKeyboardShortcuts";
+import { useMessaging } from "../../hooks/useMessaging";
 import { useUpdateOnLaunch } from "../../hooks/useUpdater";
 import { UpdateDialog } from "../update/UpdateDialog";
 import { AssistantCallDialog } from "../mcp/AssistantCallDialog";
@@ -12,6 +13,7 @@ import { CallScreen } from "../call/CallScreen";
 import { CallHistory } from "../history/CallHistory";
 import { ContactList } from "../contacts/ContactList";
 import { Voicemail } from "../voicemail/Voicemail";
+import { Messages } from "../messaging/Messages";
 import { Recordings } from "../recordings/Recordings";
 import { Settings } from "../settings/Settings";
 
@@ -20,6 +22,7 @@ const views = {
   history: CallHistory,
   contacts: ContactList,
   voicemail: Voicemail,
+  messages: Messages,
   recordings: Recordings,
   settings: Settings,
 };
@@ -27,6 +30,7 @@ const views = {
 export function AppShell() {
   useKeyboardShortcuts();
   useUpdateOnLaunch();
+  useMessaging();
 
   const currentView = useAppStore((s) => s.currentView);
   const activeCall = useAppStore((s) => s.activeCall);

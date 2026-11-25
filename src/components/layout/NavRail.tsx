@@ -3,10 +3,12 @@ import DialpadIcon from "@mui/icons-material/Dialpad";
 import HistoryIcon from "@mui/icons-material/History";
 import ContactsIcon from "@mui/icons-material/People";
 import VoicemailIcon from "@mui/icons-material/Voicemail";
+import ChatIcon from "@mui/icons-material/ChatBubbleOutlined";
 import GraphicEqIcon from "@mui/icons-material/GraphicEq";
 import SettingsIcon from "@mui/icons-material/Settings";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
+import { useMessagingStore } from "../../stores/messagingStore";
 import { mailboxFor } from "../../utils/voicemail";
 import { showRecordingsNav } from "../../utils/recordings";
 
@@ -45,6 +47,8 @@ const navItems = [
   // Only for an account on an Aria PBX (it has a PBX API address); anyone
   // else reaches voicemail by dialling, from the status bar button.
   { id: "voicemail" as const, icon: VoicemailIcon, labelKey: "nav.voicemail" },
+  // Only when the PBX lists a messaging number the extension may use.
+  { id: "messages" as const, icon: ChatIcon, labelKey: "nav.messages" },
   // Once a call has been recorded, or an account records every call: where
   // the recordings and their transcripts live.
   { id: "recordings" as const, icon: GraphicEqIcon, labelKey: "nav.recordings" },
@@ -62,9 +66,21 @@ export function NavRail() {
   const theme = useTheme();
   const hasMailbox = mailboxFor(accounts.find((a) => a.id === activeAccountId)) !== null;
   const hasRecordings = showRecordingsNav(callHistory, accounts);
+  const inboxes = useMessagingStore((s) => (activeAccountId ? s.byAccount[activeAccountId]?.inboxes : undefined));
+  const conversations = useMessagingStore((s) => s.conversations);
+  const seen = useMessagingStore((s) => s.seen);
+  const unseen = useMessagingStore((s) => s.unseen);
+  const hasMessaging = (inboxes?.length ?? 0) > 0;
+  // Re-derived whenever a list or the seen record changes.
+  void conversations;
+  void seen;
+  const unseenMessages = (inboxes ?? []).reduce((n, i) => n + unseen(i.didId), 0);
   const newVoicemail = activeAccountId ? voicemail[activeAccountId]?.newMessages ?? 0 : 0;
   const items = navItems.filter(
-    (item) => (item.id !== "voicemail" || hasMailbox) && (item.id !== "recordings" || hasRecordings),
+    (item) =>
+      (item.id !== "voicemail" || hasMailbox) &&
+      (item.id !== "messages" || hasMessaging) &&
+      (item.id !== "recordings" || hasRecordings),
   );
 
   return (
@@ -129,7 +145,7 @@ export function NavRail() {
                 }}
               >
                 <Badge
-                  badgeContent={id === "voicemail" ? newVoicemail : 0}
+                  badgeContent={id === "voicemail" ? newVoicemail : id === "messages" ? unseenMessages : 0}
                   color="error"
                   max={99}
                   overlap="circular"

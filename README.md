@@ -55,6 +55,7 @@ stays light.
 - Contacts with favorites and search, plus macOS Contacts import
 - Presence (BLF) for colleagues' extensions, shown live in Contacts
 - Visual voicemail on an Aria PBX: see who called, play the message in the app, read its transcription, call back or delete. Other PBXes keep the one-click dial-in.
+- Text messages on an Aria PBX: when the PBX lists a messaging number for your extension, a Messages view appears with its conversations, pictures received, and a composer with the carrier's segment count. Nothing to configure in the app.
 - Call history with callback and CSV export
 - Keyboard-driven: ⌘D dialer, ⌘↵ call / answer, ⌘K hang up, ⌘M mute, ⌘H hold, ⌘, settings
 - Dark and light themes; English, Spanish, German and French
