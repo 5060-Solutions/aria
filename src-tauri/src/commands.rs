@@ -1713,11 +1713,13 @@ pub async fn ai_transcribe_recording(
     app: tauri::AppHandle,
     call_id: String,
     wav_path: String,
+    remote_label: Option<String>,
 ) -> Result<crate::ai::AiInsightDto, String> {
     let path = confine_to(&recordings_root(&app)?, &wav_path)?;
+    let remote_label = remote_label.unwrap_or_default();
     // Inference is CPU-bound and blocking, so it must not sit on an async
     // worker that other commands are waiting to use.
-    tokio::task::spawn_blocking(move || crate::ai::transcribe_recording(&call_id, &path))
+    tokio::task::spawn_blocking(move || crate::ai::transcribe_recording(&call_id, &path, &remote_label))
         .await
         .map_err(|e| format!("transcription task failed: {e}"))?
 }
