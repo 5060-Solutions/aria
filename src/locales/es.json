@@ -121,7 +121,9 @@
     "callBack": "Devolver llamada",
     "sipTrace": "Traza SIP",
     "sipTraceDescription": "Descargar PCAP compatible con Wireshark",
-    "account": "Cuenta"
+    "account": "Cuenta",
+    "transcript": "Transcripción",
+    "openInRecordings": "Abrir en Grabaciones"
   },
   "contacts": {
     "title": "Contactos",

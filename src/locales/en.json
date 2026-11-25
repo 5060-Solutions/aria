@@ -121,7 +121,9 @@
     "recordingAvailable": "Recording available",
     "callBack": "Call Back",
     "sipTrace": "SIP Trace",
-    "sipTraceDescription": "Download Wireshark-compatible PCAP"
+    "sipTraceDescription": "Download Wireshark-compatible PCAP",
+    "transcript": "Transcript",
+    "openInRecordings": "Open in Recordings"
   },
   "contacts": {
     "title": "Contacts",
