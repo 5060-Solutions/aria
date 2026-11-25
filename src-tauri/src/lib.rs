@@ -8,6 +8,8 @@ mod menu;
 mod provision;
 mod sip;
 mod system_contacts;
+mod messaging;
+mod pbx_api;
 mod voicemail;
 
 use tauri::{Emitter, Listener, Manager};
@@ -145,7 +147,7 @@ pub fn run() {
         )
         .manage(manager)
         .manage(audio_test_manager)
-        .manage(voicemail::VoicemailState::new())
+        .manage(pbx_api::PbxClient::new())
         .setup(move |app| {
             // Start the manager's sweeper and timers. setup() itself runs on
             // the main thread from the event loop's Ready handler, with no
@@ -397,6 +399,11 @@ pub fn run() {
             commands::voicemail_mark_read,
             commands::voicemail_delete,
             commands::voicemail_audio,
+            commands::messaging_inboxes,
+            commands::messaging_conversations,
+            commands::messaging_thread,
+            commands::messaging_send,
+            commands::messaging_attachment,
             mcp::mcp_get_config,
             mcp::mcp_set_config,
             mcp::mcp_get_token,

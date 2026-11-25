@@ -1759,28 +1759,29 @@ pub async fn ai_set_auto_transcribe(enabled: bool) -> Result<(), String> {
 
 // ── Visual voicemail (Aria PBX) ─────────────────────────────────────────────
 
-use crate::voicemail::{Mailbox, Message as VoicemailMessage, VoicemailError, VoicemailState};
+use crate::pbx_api::{Mailbox, PbxClient, PbxError};
+use crate::voicemail::Message as VoicemailMessage;
 
 /// The account's SIP password from the credential store, for signing in to
 /// the PBX API. Read off the main thread like `get_credential`, since the
 /// keychain can block on an unlock prompt.
-async fn voicemail_password(account_id: &str) -> Result<String, VoicemailError> {
+async fn pbx_password(account_id: &str) -> Result<String, PbxError> {
     let id = account_id.to_string();
     tokio::task::spawn_blocking(move || get_credential_blocking(&id))
         .await
-        .map_err(|e| VoicemailError::Network(format!("keychain task failed: {e}")))?
-        .map_err(VoicemailError::Network)?
+        .map_err(|e| PbxError::Network(format!("keychain task failed: {e}")))?
+        .map_err(PbxError::Network)?
         .filter(|p| !p.is_empty())
-        .ok_or(VoicemailError::NoPassword)
+        .ok_or(PbxError::NoPassword)
 }
 
 /// The mailbox's messages, newest first.
 #[tauri::command]
 pub async fn voicemail_list(
     mailbox: Mailbox,
-    state: State<'_, VoicemailState>,
-) -> Result<Vec<VoicemailMessage>, VoicemailError> {
-    let password = voicemail_password(&mailbox.account_id).await?;
+    state: State<'_, PbxClient>,
+) -> Result<Vec<VoicemailMessage>, PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
     state.list(&mailbox, &password).await
 }
 
@@ -1788,9 +1789,9 @@ pub async fn voicemail_list(
 pub async fn voicemail_mark_read(
     mailbox: Mailbox,
     message_id: String,
-    state: State<'_, VoicemailState>,
-) -> Result<(), VoicemailError> {
-    let password = voicemail_password(&mailbox.account_id).await?;
+    state: State<'_, PbxClient>,
+) -> Result<(), PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
     state.mark_read(&mailbox, &password, &message_id).await
 }
 
@@ -1798,9 +1799,9 @@ pub async fn voicemail_mark_read(
 pub async fn voicemail_delete(
     mailbox: Mailbox,
     message_id: String,
-    state: State<'_, VoicemailState>,
-) -> Result<(), VoicemailError> {
-    let password = voicemail_password(&mailbox.account_id).await?;
+    state: State<'_, PbxClient>,
+) -> Result<(), PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
     state.delete(&mailbox, &password, &message_id).await
 }
 
@@ -1810,9 +1811,61 @@ pub async fn voicemail_delete(
 pub async fn voicemail_audio(
     mailbox: Mailbox,
     message_id: String,
-    state: State<'_, VoicemailState>,
-) -> Result<tauri::ipc::Response, VoicemailError> {
-    let password = voicemail_password(&mailbox.account_id).await?;
+    state: State<'_, PbxClient>,
+) -> Result<tauri::ipc::Response, PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
     let bytes = state.audio(&mailbox, &password, &message_id).await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+// ── Messaging (Aria PBX) ─────────────────────────────────────────────────────
+
+use crate::messaging::{Conversation, Inbox, Outgoing, SmsMessage, Thread};
+
+/// The messaging numbers the account's extension may use; an empty list is
+/// an account without messaging, and the view stays hidden.
+#[tauri::command]
+pub async fn messaging_inboxes(mailbox: Mailbox, state: State<'_, PbxClient>) -> Result<Vec<Inbox>, PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
+    state.inboxes(&mailbox, &password).await
+}
+
+#[tauri::command]
+pub async fn messaging_conversations(
+    mailbox: Mailbox,
+    did_id: String,
+    state: State<'_, PbxClient>,
+) -> Result<Vec<Conversation>, PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
+    state.conversations(&mailbox, &password, &did_id).await
+}
+
+#[tauri::command]
+pub async fn messaging_thread(
+    mailbox: Mailbox,
+    did_id: String,
+    number: String,
+    before: Option<String>,
+    state: State<'_, PbxClient>,
+) -> Result<Thread, PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
+    state.thread(&mailbox, &password, &did_id, &number, before.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn messaging_send(mailbox: Mailbox, outgoing: Outgoing, state: State<'_, PbxClient>) -> Result<SmsMessage, PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
+    state.send_sms(&mailbox, &password, &outgoing).await
+}
+
+/// An attachment's bytes; the frontend knows its content type from the thread.
+#[tauri::command]
+pub async fn messaging_attachment(
+    mailbox: Mailbox,
+    attachment_id: String,
+    state: State<'_, PbxClient>,
+) -> Result<tauri::ipc::Response, PbxError> {
+    let password = pbx_password(&mailbox.account_id).await?;
+    let bytes = state.attachment(&mailbox, &password, &attachment_id).await?;
     Ok(tauri::ipc::Response::new(bytes))
 }
