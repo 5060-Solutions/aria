@@ -514,10 +514,19 @@ export function Dialer() {
               role="listbox"
               aria-label={t("dialer.matches")}
               sx={{
-                width: "100%",
-                mt: 1,
+                // Floats under the number, over the keypad: picking a contact
+                // is the whole point of typing a name, and the keys below are
+                // not needed until it is dismissed.
+                position: "absolute",
+                top: "100%",
+                left: 8,
+                right: 8,
+                zIndex: 3,
+                mt: 0.5,
                 borderRadius: "14px",
-                bgcolor: alpha(theme.palette.primary.main, 0.06),
+                bgcolor: "background.paper",
+                border: `1px solid ${alpha(theme.palette.divider, 0.3)}`,
+                boxShadow: `0 8px 24px ${alpha("#000", theme.palette.mode === "dark" ? 0.5 : 0.15)}`,
                 overflow: "hidden",
               }}
             >
