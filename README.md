@@ -49,7 +49,7 @@ stays light.
 - Record any call to WAV with one click (⌘R)
 - Per-account auto-record, off by default
 - Recordings have their own place in the left bar, with transcripts beside them when transcription is on
-- Optional on-device transcription of recorded calls: download a speech model in Settings, nothing is uploaded
+- Optional on-device transcription and summaries of recorded calls: download the models in Settings, nothing is uploaded
 
 **Everyday use**
 - Contacts with favorites and search, plus macOS Contacts import
@@ -160,11 +160,12 @@ Content Security Policy) only shows up in a real build. Check those with
 ```bash
 pnpm tauri build                                  # current platform
 pnpm tauri build --target universal-apple-darwin  # macOS universal
-pnpm tauri build --features ai                    # what releases ship (on-device transcription)
+pnpm tauri build --features ai-summaries          # what releases ship (transcription + summaries)
 ```
 
-The published installers are built with `ai`. Transcription stays off until
-you download a speech model in **Settings → Transcription** and turn the
+The published installers are built with `ai-summaries`: transcription and
+call summaries. Both stay off until you download a speech model (and, for
+summaries, a summary model) in **Settings → Transcription** and turn the
 switch on; the models are never part of the installer, and nothing leaves
 your computer. A build made without the feature shows that section as
 unavailable and points at the standard download.

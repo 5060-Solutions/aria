@@ -138,7 +138,11 @@ export function Recordings() {
     if (!entry.recordingPath) return;
     setBusy(entry.id);
     try {
-      const insight = await invoke<AiInsight>("ai_transcribe_recording", { callId: entry.id, wavPath: entry.recordingPath });
+      const insight = await invoke<AiInsight>("ai_transcribe_recording", {
+        callId: entry.id,
+        wavPath: entry.recordingPath,
+        remoteLabel: callerOf(entry),
+      });
       setInsights((rows) => [
         { callId: insight.callId, createdAt: insight.createdAt, durationSecs: insight.durationSecs, status: insight.status },
         ...rows.filter((r) => r.callId !== insight.callId),
