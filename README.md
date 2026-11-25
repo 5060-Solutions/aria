@@ -49,6 +49,7 @@ stays light.
 - Record any call to WAV with one click (⌘R)
 - Per-account auto-record, off by default
 - Recordings are linked from call history
+- Recordings have their own place in the left bar, with transcripts beside them when transcription is on
 - Optional on-device transcription and summaries of recorded calls: download the models in Settings, nothing is uploaded
 ||||||| fdfefbb
 - Recordings are linked from call history
