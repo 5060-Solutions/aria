@@ -86,8 +86,6 @@ jobs:
       # gate here: the bundle check and the smoke launch below are.
       - name: Build Tauri app (ai, unsigned)
         continue-on-error: true
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: pnpm tauri build --target ${{ matrix.target }} --features ai
 
       - name: Bundles produced, and their size

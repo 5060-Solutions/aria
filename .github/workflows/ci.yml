@@ -82,17 +82,11 @@ jobs:
       - name: Check Rust
         working-directory: src-tauri
         run: cargo check --features ai
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --features ai -- -D warnings
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
       - name: Test Rust
         working-directory: src-tauri
         run: cargo test --features ai
-        env:
-          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
