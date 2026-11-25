@@ -12,6 +12,7 @@ import { CallScreen } from "../call/CallScreen";
 import { CallHistory } from "../history/CallHistory";
 import { ContactList } from "../contacts/ContactList";
 import { Voicemail } from "../voicemail/Voicemail";
+import { Recordings } from "../recordings/Recordings";
 import { Settings } from "../settings/Settings";
 
 const views = {
@@ -19,6 +20,7 @@ const views = {
   history: CallHistory,
   contacts: ContactList,
   voicemail: Voicemail,
+  recordings: Recordings,
   settings: Settings,
 };
 

@@ -4,7 +4,8 @@
     "history": "History",
     "contacts": "Contacts",
     "settings": "Settings",
-    "voicemail": "Voicemail"
+    "voicemail": "Voicemail",
+    "recordings": "Recordings"
   },
   "status": {
     "connected": "Registered",
@@ -528,5 +529,22 @@
     "record": "Couldn't change recording: {{error}}",
     "merge": "Couldn't merge the calls: {{error}}",
     "swap": "Couldn't swap the calls: {{error}}"
+  },
+  "recordings": {
+    "title": "Recordings",
+    "empty": "No recordings yet. Press ⌘R during a call, or turn on auto-record for an account in Settings.",
+    "openFolder": "Open the recordings folder",
+    "play": "Play",
+    "transcribe": "Transcribe",
+    "transcribing": "Transcribing…",
+    "transcript": "Transcript",
+    "you": "You",
+    "caller": "Caller",
+    "noModel": "To transcribe calls, download a speech model under Transcription in",
+    "notBuilt": "This build has no transcription.",
+    "noTranscript": "No transcript for this call.",
+    "failed": "Transcription failed: {{error}}",
+    "count_one": "{{count}} recording",
+    "count_other": "{{count}} recordings"
   }
 }

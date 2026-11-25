@@ -4,7 +4,8 @@
     "history": "Historial",
     "contacts": "Contactos",
     "settings": "Ajustes",
-    "voicemail": "Buzón de voz"
+    "voicemail": "Buzón de voz",
+    "recordings": "Grabaciones"
   },
   "status": {
     "connected": "Conectado",
@@ -528,5 +529,22 @@
     "record": "No se pudo cambiar la grabación: {{error}}",
     "merge": "No se pudieron unir las llamadas: {{error}}",
     "swap": "No se pudieron alternar las llamadas: {{error}}"
+  },
+  "recordings": {
+    "title": "Grabaciones",
+    "empty": "Aún no hay grabaciones. Pulsa ⌘R durante una llamada o activa la grabación automática de una cuenta en Ajustes.",
+    "openFolder": "Abrir la carpeta de grabaciones",
+    "play": "Reproducir",
+    "transcribe": "Transcribir",
+    "transcribing": "Transcribiendo…",
+    "transcript": "Transcripción",
+    "you": "Tú",
+    "caller": "Llamante",
+    "noModel": "Para transcribir llamadas, descarga un modelo de voz en Transcripción dentro de",
+    "notBuilt": "Esta versión no tiene transcripción.",
+    "noTranscript": "No hay transcripción para esta llamada.",
+    "failed": "La transcripción falló: {{error}}",
+    "count_one": "{{count}} grabación",
+    "count_other": "{{count}} grabaciones"
   }
 }
