@@ -48,16 +48,11 @@ stays light.
 **Recording**
 - Record any call to WAV with one click (⌘R)
 - Per-account auto-record, off by default
-<<<<<<< HEAD
 - Recordings are linked from call history
 - Optional on-device transcription and summaries of recorded calls: download the models in Settings, nothing is uploaded
 ||||||| fdfefbb
 - Recordings are linked from call history
 - Optional on-device transcription of recorded calls: download a speech model in Settings, nothing is uploaded
-=======
-- Recordings have their own place in the left bar, with transcripts beside them when transcription is on
-- Optional on-device transcription of recorded calls: download a speech model in Settings, nothing is uploaded
->>>>>>> origin/main
 
 **Everyday use**
 - Contacts with favorites and search, plus macOS Contacts import
