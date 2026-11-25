@@ -276,7 +276,11 @@ export function CallScreen() {
             fontWeight: isConnected ? 500 : 400,
           }}
         >
-          {isOnHold
+          {activeCall.state === "incoming" && activeCall.moveId
+            ? activeCall.moveAuto
+              ? t("callMove.moving")
+              : t("callMove.movingFrom", { device: activeCall.moveFrom || t("callMove.anotherDevice") })
+            : isOnHold
             ? t("call.onHold")
             : isConnected
               ? elapsed

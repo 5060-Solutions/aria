@@ -216,6 +216,17 @@ export interface ActiveCall {
    * so local ringback tone generation must be suppressed.
    */
   hasEarlyMedia?: boolean;
+  /**
+   * Set on an incoming call that is the PBX moving a call to this device
+   * (`X-Aria-Move`). `moveAuto` means this app asked for it: it is answered
+   * without ringing. Otherwise the call rings, labelled as a move.
+   */
+  moveId?: string;
+  moveAuto?: boolean;
+  /** The device a ringing move comes from, when known. */
+  moveFrom?: string;
+  /** The device the PBX moved this call to, once it has (the call then ends). */
+  movedTo?: string;
 }
 
 export interface CallHistoryEntry {

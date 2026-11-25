@@ -48,6 +48,7 @@ import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import ContactsIcon from "@mui/icons-material/Contacts";
 import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
 import { Transcription } from "./Transcription";
+import { CallHandoff } from "./CallHandoff";
 import { Assistants } from "./Assistants";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import SyncIcon from "@mui/icons-material/Sync";
@@ -1331,6 +1332,9 @@ export function Settings() {
               </Typography>
             </Box>
           </Collapse>
+
+          {/* Moving calls between devices */}
+          <CallHandoff />
 
           {/* On-device transcription */}
           <ListItemButton

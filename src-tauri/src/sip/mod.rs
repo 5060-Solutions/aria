@@ -1,5 +1,6 @@
 pub mod account;
 pub mod auth;
+pub mod call_move;
 pub mod builder;
 pub mod codec;
 pub mod connection;
@@ -12,6 +13,7 @@ mod instance;
 pub mod media;
 pub mod mwi;
 pub mod presence;
+pub mod replaces;
 pub(crate) mod recording_parts;
 mod signaling;
 #[allow(dead_code)]
@@ -68,6 +70,11 @@ fn extract_display_name(uri: &str) -> Option<String> {
     None
 }
 
+/// This install's `+sip.instance` id (the UUID inside `urn:uuid:`).
+pub fn instance_id() -> &'static str {
+    instance::get()
+}
+
 /// Backward compatibility alias for CallEventPayload
 pub type CallEvent = CallEventPayload;
 
@@ -86,6 +93,8 @@ impl CallEventPayload {
             recording_path: None,
             srtp_active: Some(call.srtp_active),
             has_early_media: Some(call.has_early_media()),
+            move_id: None,
+            move_auto_answer: None,
         }
     }
 
@@ -109,6 +118,8 @@ impl CallEventPayload {
             recording_path: None,
             srtp_active: None,
             has_early_media: None,
+            move_id: None,
+            move_auto_answer: None,
         }
     }
 
@@ -127,6 +138,14 @@ impl CallEventPayload {
     /// Attach the path of the recording this call produced.
     pub fn with_recording_path(mut self, path: impl Into<String>) -> Self {
         self.recording_path = Some(path.into());
+        self
+    }
+
+    /// Mark an incoming call as the PBX moving a call here (`X-Aria-Move`).
+    /// `auto_answer` is set only for a move this app asked for.
+    pub fn with_move(mut self, move_id: impl Into<String>, auto_answer: bool) -> Self {
+        self.move_id = Some(move_id.into());
+        self.move_auto_answer = Some(auto_answer);
         self
     }
 
@@ -168,6 +187,14 @@ pub struct CallEventPayload {
     /// network audio is already playing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_early_media: Option<bool>,
+    /// The `X-Aria-Move` id of an incoming call that is a call being moved
+    /// to this device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub move_id: Option<String>,
+    /// With `move_id`: this app asked for the move, so the call is answered
+    /// without ringing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub move_auto_answer: Option<bool>,
 }
 
 /// Protocol timers.

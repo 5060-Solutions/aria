@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method};
 use crate::sip::state::{CallFSM, CallFSMEvent, InboundCallParams};
+use crate::sip::call_move::MoveInvite;
 use crate::sip::transfer;
 use crate::sip::{CallEvent, ManagerState, SipEvent, VoicemailStatusEvent};
 
@@ -187,13 +188,26 @@ pub async fn handle_incoming_request(
                     }
                 }
 
-                let event = CallEvent::new(
+                let mut event = CallEvent::new(
                     account_id,
                     &call_id_for_event,
                     "incoming",
                     &remote_uri_for_event,
                     "inbound",
                 ).with_sip_call_id(&sip_call_id);
+                match crate::sip::call_move::pending()
+                    .classify(extract_header(text, crate::sip::call_move::HEADER).as_deref(), std::time::Instant::now())
+                {
+                    MoveInvite::AutoAnswer(id) => {
+                        log::info!("INVITE is the call move this app asked for ({id})");
+                        event = event.with_move(id, true);
+                    }
+                    MoveInvite::Ring(id) => {
+                        log::info!("INVITE carries a call move this app did not ask for ({id}); ringing");
+                        event = event.with_move(id, false);
+                    }
+                    MoveInvite::None => {}
+                }
                 let _ = event_tx.send(SipEvent::CallStateChanged(event));
             }
         }

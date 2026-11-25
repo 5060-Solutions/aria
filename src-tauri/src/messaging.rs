@@ -54,7 +54,7 @@ impl From<VoicemailError> for MessagingError {
 /// said no, so the next attempt is a new request. A 5xx is `server`: it may or
 /// may not have acted (a carrier that refused leaves the text stored as
 /// failed), so the caller keeps its idempotency key for the retry.
-fn rejected(status: u16, body: &[u8]) -> MessagingError {
+pub(crate) fn rejected(status: u16, body: &[u8]) -> MessagingError {
     let parsed: Option<Value> = serde_json::from_slice(body).ok();
     let text = |key: &str| parsed.as_ref().and_then(|v| v.get(key)).and_then(Value::as_str).map(str::to_string);
     // `error` carries the sentence a person reads.
@@ -69,7 +69,7 @@ fn rejected(status: u16, body: &[u8]) -> MessagingError {
 type Build<'a> = &'a (dyn Fn(&reqwest::Client, &reqwest::Url, &Session) -> reqwest::RequestBuilder + Send + Sync);
 
 /// Send a signed request; a success is its body, anything else an error.
-async fn call(state: &VoicemailState, mailbox: &Mailbox, password: &str, build: Build<'_>) -> Result<Vec<u8>, MessagingError> {
+pub(crate) async fn call(state: &VoicemailState, mailbox: &Mailbox, password: &str, build: Build<'_>) -> Result<Vec<u8>, MessagingError> {
     let reply = state.send(mailbox, password, build).await?;
     let status = reply.status();
     let body = reply.bytes().await.map_err(net_error)?.to_vec();
@@ -213,6 +213,18 @@ pub fn parse_sms_event(account_id: &str, frame: &str) -> Option<SmsArrived> {
     })
 }
 
+/// The call-move events on the same stream (`call_active_elsewhere`,
+/// `call_moved`, `call_ended`) and the handoff suggestion, passed on as the
+/// PBX sent them. Anything else is `None`.
+pub fn parse_call_event(frame: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(frame).ok()?;
+    matches!(
+        v.get("type")?.as_str()?,
+        "call_active_elsewhere" | "call_moved" | "call_ended" | "handoff_suggested"
+    )
+    .then_some(v)
+}
+
 /// `https://host/` as the event stream's `wss://host/api/v1/ws`. The session
 /// goes in an `Authorization` header, never the address: a URL is logged by
 /// proxies and servers.
@@ -267,6 +279,7 @@ async fn run_once(
     mailbox: &Mailbox,
     password: &str,
     on_event: &(impl Fn(SmsArrived) + Send + Sync),
+    on_call_event: &(impl Fn(Value) + Send + Sync),
     on_live: &(impl Fn(bool) + Send + Sync),
 ) -> Result<(), String> {
     use futures_util::StreamExt;
@@ -296,6 +309,8 @@ async fn run_once(
             Frame::Text(text) => {
                 if let Some(event) = parse_sms_event(&mailbox.account_id, text.as_str()) {
                     on_event(event);
+                } else if let Some(event) = parse_call_event(text.as_str()) {
+                    on_call_event(event);
                 }
             }
             Frame::Close(_) => break,
@@ -313,12 +328,13 @@ pub async fn listen(
     mailbox: Mailbox,
     password: String,
     on_event: impl Fn(SmsArrived) + Send + Sync,
+    on_call_event: impl Fn(Value) + Send + Sync,
     on_live: impl Fn(bool) + Send + Sync,
 ) {
     let mut attempt = 0u32;
     loop {
         let began = std::time::Instant::now();
-        let outcome = run_once(&state, &mailbox, &password, &on_event, &on_live).await;
+        let outcome = run_once(&state, &mailbox, &password, &on_event, &on_call_event, &on_live).await;
         on_live(false);
         if let Err(e) = &outcome {
             log::warn!("[messaging] event stream: {e}");
@@ -377,6 +393,16 @@ mod tests {
         );
         assert_eq!(parse_sms_event("acct", r#"{"type":"call_started"}"#), None);
         assert_eq!(parse_sms_event("acct", "not json"), None);
+    }
+
+    #[test]
+    fn passes_on_call_move_events_and_nothing_else() {
+        for t in ["call_active_elsewhere", "call_moved", "call_ended", "handoff_suggested"] {
+            let frame = format!(r#"{{"type":"{t}","call_id":"c"}}"#);
+            assert_eq!(parse_call_event(&frame).unwrap()["type"], t);
+        }
+        assert!(parse_call_event(r#"{"type":"sms_received"}"#).is_none());
+        assert!(parse_call_event("nope").is_none());
     }
 
     #[test]

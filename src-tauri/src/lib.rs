@@ -1,12 +1,14 @@
 mod ai;
 mod audio_test;
 mod commands;
+mod desktop_context;
 mod diagnostics_window;
 mod mcp;
 mod messaging;
 #[cfg(target_os = "macos")]
 mod menu;
 mod pbx_binding;
+mod pbx_me;
 mod provision;
 mod sip;
 mod system_contacts;
@@ -410,6 +412,11 @@ pub fn run() {
             commands::messaging_attachment,
             commands::messaging_listen,
             commands::messaging_stop,
+            commands::pbx_me_request,
+            commands::callmove_expect,
+            commands::sip_instance_urn,
+            commands::desktop_context,
+            commands::network_fingerprint,
             commands::pbx_bind,
             mcp::mcp_get_config,
             mcp::mcp_set_config,

@@ -607,5 +607,32 @@
     "failed": "Transcription failed: {{error}}",
     "count_one": "{{count}} recording",
     "count_other": "{{count}} recordings"
+  },
+  "callMove": {
+    "activeElsewhere": "Call with {{who}} on {{device}}",
+    "moveHere": "Move here",
+    "moveHereLabel": "Move the call with {{who}} on {{device}} to this computer",
+    "moving": "Moving call...",
+    "movingFrom": "Moving call from {{device}}",
+    "movedTo": "Moved to {{device}}",
+    "anotherDevice": "another device",
+    "moveTo": "Move to...",
+    "noOtherDevices": "None of your other devices is online.",
+    "devicesList": "Your other devices",
+    "continueOn": "Continue on {{device}}",
+    "continue": "Continue",
+    "dismiss": "Dismiss",
+    "errNotFound": "That call is no longer active.",
+    "errBusy": "That call cannot be moved right now.",
+    "errDevice": "That device is not available.",
+    "errGeneric": "The call could not be moved.",
+    "settingsTitle": "Move calls between devices",
+    "settingsIntro": "Suggestions and automatic moves for your calls",
+    "suggestNearby": "Suggest nearby devices",
+    "suggestNearbyHint": "Offer to continue a call on another of your devices on the same network.",
+    "autoMoveOnLock": "Move the call when this computer locks",
+    "autoMoveOnLockHint": "If you lock this computer during a call, the call moves to your phone.",
+    "ble": "Bluetooth proximity",
+    "bleUnavailable": "Not available in the desktop app yet."
   }
 }

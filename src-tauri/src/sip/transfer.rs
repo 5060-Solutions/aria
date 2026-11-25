@@ -5,10 +5,11 @@ use tokio::sync::{mpsc, RwLock};
 use super::builder::{
     self, build_200_ok_invite_with_user, build_202_accepted, build_notify_refer,
     build_simple_response, extract_from_tag, extract_header, extract_via_branch,
-    parse_replaces_header, parse_sdp_connection, parse_sipfrag_status,
+    parse_sdp_connection, parse_sipfrag_status,
 };
 use super::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use super::media;
+use super::replaces;
 use super::{CallEvent, ManagerState, SipEvent, TransferEvent};
 
 /// Handle an incoming REFER request: accept, start transfer, send NOTIFY updates
@@ -369,87 +370,55 @@ pub async fn handle_invite_with_replaces(
     replaces_hdr: &str,
     account_id: &str,
 ) {
-    let (replaces_call_id, replaces_to_tag, replaces_from_tag) =
-        match parse_replaces_header(replaces_hdr) {
-            Some(v) => v,
-            None => {
-                log::warn!("Invalid Replaces header: {}", replaces_hdr);
-                if let Some(resp) = build_simple_response(text, 400, "Bad Request") {
-                    let s = state.read().await;
-                    if let Some(account) = s.get_account(account_id) {
-                        if let Some(ref transport) = account.transport {
-                            let _ = transport.send_to(resp.as_bytes(), remote).await;
-                        }
-                    }
-                }
-                return;
-            }
-        };
-
-    // Find the call to replace
-    let replaced_call_id = {
+    let new_call_header = extract_header(text, "Call-ID").unwrap_or_default();
+    let (outcome, replaced_id) = {
         let s = state.read().await;
-        let account = match s.get_account(account_id) {
-            Some(a) => a,
-            None => return,
-        };
-        account.calls
+        let Some(account) = s.get_account(account_id) else { return };
+        let dialogs: Vec<replaces::Dialog> = account
+            .calls
             .iter()
-            .find(|c| {
-                c.call_id_header == replaces_call_id
-                    && c.to_tag.as_deref() == Some(&replaces_to_tag)
-                    && c.from_tag == replaces_from_tag
-            })
-            .or_else(|| {
-                // Try swapped tags (the perspective matters)
-                account.calls.iter().find(|c| {
-                    c.call_id_header == replaces_call_id
-                        && c.from_tag == replaces_to_tag
-                        && c.to_tag.as_deref() == Some(&replaces_from_tag)
-                })
-            })
-            .map(|c| c.id.clone())
-    };
-
-    let replaced_id = match replaced_call_id {
-        Some(id) => id,
-        None => {
-            log::warn!(
-                "No matching call for Replaces: {} (to-tag={}, from-tag={})",
-                replaces_call_id,
-                replaces_to_tag,
-                replaces_from_tag
-            );
-            if let Some(resp) =
-                build_simple_response(text, 481, "Call/Transaction Does Not Exist")
-            {
-                let s = state.read().await;
-                if let Some(account) = s.get_account(account_id) {
-                    if let Some(ref transport) = account.transport {
-                        let _ = transport.send_to(resp.as_bytes(), remote).await;
-                    }
+            .map(|c| {
+                let (local_tag, remote_tag) = c.dialog_tags();
+                replaces::Dialog {
+                    call_id_header: c.call_id_header.clone(),
+                    local_tag,
+                    remote_tag,
+                    initiated_here: !c.is_incoming() && c.direction_str() == "outbound",
+                    confirmed: c.is_established(),
+                    ended: c.is_ended(),
                 }
-            }
-            return;
-        }
+            })
+            .collect();
+        let outcome = replaces::decide(replaces_hdr, &new_call_header, &dialogs);
+        let id = match outcome {
+            replaces::Outcome::Replace(i) => Some(account.calls[i].id.clone()),
+            _ => None,
+        };
+        (outcome, id)
     };
 
-    // Terminate the replaced call
-    let replaced = {
-        let mut s = state.write().await;
-        s.get_account_mut(account_id).and_then(|account| {
-            account.calls.iter_mut().find(|c| c.id == replaced_id).map(|call| {
-                let media = call.take_media();
-                let _ = call.process(CallFSMEvent::LocalHangup);
-                (
-                    call.id.clone(),
-                    call.remote_uri.clone(),
-                    call.direction_str().to_string(),
-                    media,
-                )
-            })
-        })
+    let refusal = match outcome {
+        replaces::Outcome::BadRequest | replaces::Outcome::Loop => Some((400, "Bad Request")),
+        replaces::Outcome::NoSuchDialog => Some((481, "Call/Transaction Does Not Exist")),
+        replaces::Outcome::Busy => Some((486, "Busy Here")),
+        replaces::Outcome::Replace(_) => None,
     };
+    if let Some((code, reason)) = refusal {
+        log::warn!("INVITE with Replaces refused: {code} ({replaces_hdr})");
+        if let Some(resp) = build_simple_response(text, code, reason) {
+            let s = state.read().await;
+            if let Some(transport) = s.get_account(account_id).and_then(|a| a.transport.clone()) {
+                let _ = transport.send_to(resp.as_bytes(), remote).await;
+            }
+        }
+        return;
+    }
+    let Some(replaced_id) = replaced_id else { return };
+
+    // Terminate the replaced call: a BYE for an answered dialog, a CANCEL for
+    // one this app is still placing. Ending it only here left the far end
+    // connected to nothing.
+    let replaced = end_replaced_dialog(state, account_id, &replaced_id).await;
     if let Some((call_id, remote_uri, direction, media)) = replaced {
         let recording_path = crate::sip::finish_call_media(&call_id, media).await;
         let mut ended = CallEvent::new(account_id, &call_id, "ended", &remote_uri, &direction);
@@ -588,4 +557,64 @@ pub async fn handle_invite_with_replaces(
     let _ = event_tx.send(SipEvent::CallStateChanged(
         CallEvent::new(account_id, &new_internal_id, "connected", &new_remote_uri, "inbound")
     ));
+}
+
+/// Send what ends a dialog replaced by an INVITE with Replaces and mark it
+/// ended. Returns what the caller needs to announce it.
+async fn end_replaced_dialog(
+    state: &Arc<RwLock<ManagerState>>,
+    account_id: &str,
+    call_id: &str,
+) -> Option<(String, String, String, Option<media::MediaSession>)> {
+    let (msg, transport, server_addr) = {
+        let mut s = state.write().await;
+        let account = s.get_account_mut(account_id)?;
+        let local_addr = account.local_addr.or_else(|| account.transport.as_ref().map(|t| t.local_addr()));
+        let (transport, server_addr) = (account.transport.clone(), account.server_addr);
+        let transport_param = account.config.transport.param().to_string();
+        let call = account.calls.iter_mut().find(|c| c.id == call_id)?;
+        let msg = match (local_addr, &transport) {
+            (Some(la), Some(_)) if call.is_established() && !call.bye_sent => {
+                call.bye_sent = true;
+                let cseq = call.next_cseq();
+                let (ours, theirs) = call.dialog_tags();
+                let target = call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone());
+                Some(builder::build_bye_with_routes(
+                    &target,
+                    la,
+                    &call.call_id_header,
+                    cseq,
+                    &ours,
+                    &theirs,
+                    &transport_param,
+                    call.route_set(),
+                    &call.local_uri,
+                    &call.remote_uri,
+                ))
+            }
+            (Some(la), Some(_)) if call.is_dialing() || call.is_ringing() => Some(builder::build_cancel(
+                &call.remote_uri,
+                la,
+                &call.call_id_header,
+                call.invite_cseq,
+                &call.dialog_tags().0,
+                &transport_param,
+                &call.last_invite_branch.clone().unwrap_or_default(),
+                &call.local_uri,
+                &call.remote_uri,
+            )),
+            _ => None,
+        };
+        (msg, transport, server_addr)
+    };
+    if let (Some(msg), Some(transport), Some(addr)) = (msg, transport, server_addr) {
+        if let Err(e) = super::send_non_invite(state, &transport, addr, msg).await {
+            log::warn!("Could not end the replaced dialog {call_id}: {e}");
+        }
+    }
+    let mut s = state.write().await;
+    let call = s.get_account_mut(account_id)?.calls.iter_mut().find(|c| c.id == call_id)?;
+    let media = call.take_media();
+    let _ = call.process(CallFSMEvent::LocalHangup);
+    Some((call.id.clone(), call.remote_uri.clone(), call.direction_str().to_string(), media))
 }

@@ -1965,13 +1965,17 @@ pub async fn messaging_listen(
     let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     let account_id = mailbox.account_id.clone();
-    let (on_app, live_app, live_id) = (app.clone(), app, account_id.clone());
+    let (on_app, call_app, live_app) = (app.clone(), app.clone(), app);
+    let (call_id, live_id) = (account_id.clone(), account_id.clone());
     let task = messaging::listen(
         state.inner().clone(),
         mailbox,
         password,
         move |event| {
             let _ = on_app.emit("messaging-sms", event);
+        },
+        move |event| {
+            let _ = call_app.emit("pbx-call-event", serde_json::json!({ "accountId": call_id, "event": event }));
         },
         move |up| {
             let _ = live_app.emit("messaging-live", serde_json::json!({ "accountId": live_id, "live": up }));
@@ -1984,6 +1988,56 @@ pub async fn messaging_listen(
 #[tauri::command]
 pub fn messaging_stop(account_id: String, live: State<'_, MessagingLive>) {
     live.stop(&account_id);
+}
+
+// ── Moving calls between devices, proximity and handoff (Aria PBX) ──────────
+
+/// One of the signed-in user's `/api/v1/me/...` routes (see `pbx_me`).
+#[tauri::command]
+pub async fn pbx_me_request(
+    mailbox: Mailbox,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
+    state: State<'_, std::sync::Arc<VoicemailState>>,
+) -> Result<serde_json::Value, MessagingError> {
+    // Refuse before touching the keychain.
+    crate::pbx_me::check(&method, &path)?;
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
+    let password = messaging_password(&mailbox.account_id).await?;
+    crate::pbx_me::request(&state, &mailbox, &password, &method, &path, body).await
+}
+
+/// Remember a move this app asked the PBX for, so the INVITE that carries its
+/// `X-Aria-Move` is answered without ringing. Expires after 30 seconds.
+#[tauri::command]
+pub fn callmove_expect(move_id: String) -> Result<(), String> {
+    if crate::sip::call_move::pending().register(&move_id, std::time::Instant::now()) {
+        Ok(())
+    } else {
+        Err("not a move id".into())
+    }
+}
+
+/// This install's `+sip.instance` value, as the PBX matches it.
+#[tauri::command]
+pub fn sip_instance_urn() -> String {
+    format!("urn:uuid:{}", crate::sip::instance_id())
+}
+
+/// Whether the screen is locked and how long the person has been idle.
+#[tauri::command]
+pub async fn desktop_context() -> crate::desktop_context::DesktopContext {
+    tokio::task::spawn_blocking(crate::desktop_context::context)
+        .await
+        .unwrap_or(crate::desktop_context::DesktopContext { locked: false, idle_secs: 0 })
+}
+
+/// A hash of this network's subnet and gateway, or null when unknown.
+#[tauri::command]
+pub async fn network_fingerprint() -> Option<String> {
+    tokio::task::spawn_blocking(crate::desktop_context::network_fingerprint).await.ok().flatten()
 }
 
 // ── Which PBX API an account's password may go to ───────────────────────────
