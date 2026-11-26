@@ -6,6 +6,7 @@ use tokio::sync::{mpsc, RwLock};
 
 use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method};
 use crate::sip::state::{CallFSM, CallFSMEvent, InboundCallParams};
+use crate::sip::call_move::MoveInvite;
 use crate::sip::transfer;
 use crate::sip::{CallEvent, ManagerState, SipEvent, VoicemailStatusEvent};
 
@@ -194,7 +195,33 @@ pub async fn handle_incoming_request(
                     &remote_uri_for_event,
                     "inbound",
                 ).with_sip_call_id(&sip_call_id);
-                let _ = event_tx.send(SipEvent::CallStateChanged(event));
+                let move_header = extract_header(text, crate::sip::call_move::HEADER);
+                if move_header.is_none() {
+                    let _ = event_tx.send(SipEvent::CallStateChanged(event));
+                } else {
+                    // A move INVITE may wait up to the grace period for its
+                    // 202; that wait must not stall the account's receive
+                    // loop (BYEs, re-INVITEs, NOTIFYs), so it runs aside.
+                    let event_tx = event_tx.clone();
+                    let account_for_move = account_id.to_string();
+                    tokio::spawn(async move {
+                        let event = match crate::sip::call_move::pending()
+                            .classify_waiting(&account_for_move, move_header.as_deref(), crate::sip::call_move::REQUEST_GRACE)
+                            .await
+                        {
+                            MoveInvite::AutoAnswer(id) => {
+                                log::info!("INVITE is the call move this app asked for");
+                                event.with_move(id, true)
+                            }
+                            MoveInvite::Ring(id) => {
+                                log::info!("INVITE carries a call move this app did not ask for; ringing");
+                                event.with_move(id, false)
+                            }
+                            MoveInvite::None => event,
+                        };
+                        let _ = event_tx.send(SipEvent::CallStateChanged(event));
+                    });
+                }
             }
         }
         "BYE" => {

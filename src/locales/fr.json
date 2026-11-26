@@ -607,5 +607,33 @@
     "failed": "La transcription a échoué : {{error}}",
     "count_one": "{{count}} enregistrement",
     "count_other": "{{count}} enregistrements"
+  },
+  "callMove": {
+    "activeElsewhere": "Appel avec {{who}} sur {{device}}",
+    "moveHere": "Déplacer ici",
+    "moveHereLabel": "Déplacer ici l'appel avec {{who}} sur {{device}}",
+    "moving": "Transfert de l'appel...",
+    "movingFrom": "Appel déplacé depuis {{device}}",
+    "movedTo": "Déplacé vers {{device}}",
+    "anotherDevice": "un autre appareil",
+    "moveTo": "Déplacer vers...",
+    "noOtherDevices": "Aucun de vos autres appareils n'est en ligne.",
+    "devicesList": "Vos autres appareils",
+    "continueOn": "Continuer sur {{device}}",
+    "continue": "Continuer",
+    "dismiss": "Ignorer",
+    "errNotFound": "Cet appel n'est plus actif.",
+    "errBusy": "Cet appel ne peut pas être déplacé maintenant.",
+    "errDevice": "Cet appareil n'est pas disponible.",
+    "errGeneric": "L'appel n'a pas pu être déplacé.",
+    "settingsTitle": "Déplacer les appels entre appareils",
+    "settingsIntro": "Suggestions et déplacements automatiques de vos appels",
+    "suggestNearby": "Suggérer les appareils proches",
+    "suggestNearbyHint": "Propose de continuer un appel sur un autre de vos appareils du même réseau.",
+    "autoMoveOnLock": "Déplacer l'appel au verrouillage de cet ordinateur",
+    "autoMoveOnLockHint": "Si vous verrouillez cet ordinateur pendant un appel, l'appel passe sur votre téléphone.",
+    "ble": "Proximité Bluetooth",
+    "bleUnavailable": "Pas encore disponible dans l'application de bureau.",
+    "devicesUnavailable": "Vos autres appareils n'ont pas pu être lus depuis le PBX. Vérifiez la connexion et réessayez."
   }
 }

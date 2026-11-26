@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 pub use rsip::generators::{generate_branch, generate_call_id, generate_tag};
 pub use rsip::sip_parser::{
     extract_all_headers, extract_from_tag, extract_header, extract_method, extract_to_tag,
-    extract_via_branch, extract_via_received, is_request, parse_replaces_header,
+    extract_via_branch, extract_via_received, is_request,
     parse_sdp_connection, parse_sipfrag_status, parse_status_code,
 };
 

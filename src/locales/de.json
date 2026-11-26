@@ -607,5 +607,33 @@
     "failed": "Transkription fehlgeschlagen: {{error}}",
     "count_one": "{{count}} Aufnahme",
     "count_other": "{{count}} Aufnahmen"
+  },
+  "callMove": {
+    "activeElsewhere": "Anruf mit {{who}} auf {{device}}",
+    "moveHere": "Hierher holen",
+    "moveHereLabel": "Anruf mit {{who}} von {{device}} auf diesen Computer holen",
+    "moving": "Anruf wird verschoben...",
+    "movingFrom": "Anruf wird von {{device}} verschoben",
+    "movedTo": "Verschoben auf {{device}}",
+    "anotherDevice": "einem anderen Gerät",
+    "moveTo": "Verschieben auf...",
+    "noOtherDevices": "Keines Ihrer anderen Geräte ist online.",
+    "devicesList": "Ihre anderen Geräte",
+    "continueOn": "Auf {{device}} fortsetzen",
+    "continue": "Fortsetzen",
+    "dismiss": "Schließen",
+    "errNotFound": "Dieser Anruf ist nicht mehr aktiv.",
+    "errBusy": "Dieser Anruf kann gerade nicht verschoben werden.",
+    "errDevice": "Dieses Gerät ist nicht verfügbar.",
+    "errGeneric": "Der Anruf konnte nicht verschoben werden.",
+    "settingsTitle": "Anrufe zwischen Geräten verschieben",
+    "settingsIntro": "Vorschläge und automatisches Verschieben Ihrer Anrufe",
+    "suggestNearby": "Geräte in der Nähe vorschlagen",
+    "suggestNearbyHint": "Bietet an, einen Anruf auf einem anderen Gerät im selben Netzwerk fortzusetzen.",
+    "autoMoveOnLock": "Anruf beim Sperren dieses Computers verschieben",
+    "autoMoveOnLockHint": "Wenn Sie diesen Computer während eines Anrufs sperren, wechselt der Anruf auf Ihr Telefon.",
+    "ble": "Bluetooth-Nähe",
+    "bleUnavailable": "In der Desktop-App noch nicht verfügbar.",
+    "devicesUnavailable": "Deine anderen Geräte konnten nicht von der PBX gelesen werden. Prüfe die Verbindung und versuche es erneut."
   }
 }

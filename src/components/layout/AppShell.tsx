@@ -7,6 +7,7 @@ import { UpdateDialog } from "../update/UpdateDialog";
 import { AssistantCallDialog } from "../mcp/AssistantCallDialog";
 import { NavRail } from "./NavRail";
 import { StatusBar } from "./StatusBar";
+import { CallMoveBanner } from "../call/CallMoveBanner";
 import { Dialer } from "../dialer/Dialer";
 import { CallScreen } from "../call/CallScreen";
 import { CallHistory } from "../history/CallHistory";
@@ -62,6 +63,7 @@ export function AppShell() {
         }}
       >
         <StatusBar />
+        <CallMoveBanner />
         <Box sx={{ flex: 1, overflow: "auto", position: "relative" }}>
           <AnimatePresence mode="wait">
             {showCallScreen ? (

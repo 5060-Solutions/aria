@@ -24,6 +24,9 @@ import { useAppStore } from "../../stores/appStore";
 import CallIcon from "@mui/icons-material/Call";
 import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
 import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
+import DevicesIcon from "@mui/icons-material/Devices";
+import { MoveToDialog } from "./MoveToDialog";
+import { useMoveMailbox } from "../../hooks/useCallMove";
 import { dialUri } from "../../utils/sipUri";
 import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
@@ -124,6 +127,8 @@ export function CallControls() {
   const [transferDialogOpen, setTransferDialogOpen] = useState(false);
   const [transferUri, setTransferUri] = useState("");
   const [transferring, setTransferring] = useState(false);
+  const [moveToOpen, setMoveToOpen] = useState(false);
+  const moveMailbox = useMoveMailbox();
   const [dtmfAnchor, setDtmfAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioAnchor, setAudioAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
@@ -152,6 +157,16 @@ export function CallControls() {
   const handleDecline = async () => {
     await hangupCall(activeCall);
   };
+
+  // A move this app asked for is answered by the backend path at once; there
+  // is nothing to choose, so no answer and decline buttons flash up.
+  if (isIncoming && activeCall.moveAuto) {
+    return (
+      <Typography role="status" variant="body2" sx={{ textAlign: "center", color: "text.secondary" }}>
+        {t("callMove.moving")}
+      </Typography>
+    );
+  }
 
   if (isIncoming) {
     return (
@@ -404,6 +419,14 @@ export function CallControls() {
         onClick: () => setTransferDialogOpen(true),
       },
     );
+    if (moveMailbox) {
+      controls.push({
+        key: "moveTo",
+        icon: <DevicesIcon />,
+        label: t("callMove.moveTo"),
+        onClick: () => setMoveToOpen(true),
+      });
+    }
   }
   if (hasMultipleCalls && heldCalls.length > 0) {
     controls.push({
@@ -708,6 +731,8 @@ export function CallControls() {
           </Box>
         </DialogContent>
       </Dialog>
+
+      <MoveToDialog open={moveToOpen} onClose={() => setMoveToOpen(false)} />
 
       {/* Blind transfer dialog */}
       <Dialog

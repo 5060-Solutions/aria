@@ -607,5 +607,33 @@
     "failed": "La transcripción falló: {{error}}",
     "count_one": "{{count}} grabación",
     "count_other": "{{count}} grabaciones"
+  },
+  "callMove": {
+    "activeElsewhere": "Llamada con {{who}} en {{device}}",
+    "moveHere": "Mover aquí",
+    "moveHereLabel": "Mover aquí la llamada con {{who}} en {{device}}",
+    "moving": "Moviendo la llamada...",
+    "movingFrom": "Moviendo llamada desde {{device}}",
+    "movedTo": "Movida a {{device}}",
+    "anotherDevice": "otro dispositivo",
+    "moveTo": "Mover a...",
+    "noOtherDevices": "Ninguno de tus otros dispositivos está en línea.",
+    "devicesList": "Tus otros dispositivos",
+    "continueOn": "Continuar en {{device}}",
+    "continue": "Continuar",
+    "dismiss": "Descartar",
+    "errNotFound": "Esa llamada ya no está activa.",
+    "errBusy": "Esa llamada no se puede mover ahora.",
+    "errDevice": "Ese dispositivo no está disponible.",
+    "errGeneric": "No se pudo mover la llamada.",
+    "settingsTitle": "Mover llamadas entre dispositivos",
+    "settingsIntro": "Sugerencias y movimientos automáticos de tus llamadas",
+    "suggestNearby": "Sugerir dispositivos cercanos",
+    "suggestNearbyHint": "Ofrece continuar una llamada en otro de tus dispositivos de la misma red.",
+    "autoMoveOnLock": "Mover la llamada al bloquear este equipo",
+    "autoMoveOnLockHint": "Si bloqueas este equipo durante una llamada, la llamada pasa a tu teléfono.",
+    "ble": "Proximidad por Bluetooth",
+    "bleUnavailable": "Aún no está disponible en la aplicación de escritorio.",
+    "devicesUnavailable": "No se pudieron leer tus otros dispositivos desde la PBX. Comprueba la conexión e inténtalo de nuevo."
   }
 }

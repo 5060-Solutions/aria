@@ -16,9 +16,11 @@ import { log } from "../utils/log";
 import type { ConnectionReport } from "../types/connection";
 import { isAuthFailure } from "../utils/authFailure";
 import i18n from "i18next";
-import { errorText, notifyError } from "../stores/toastStore";
+import { errorText, notifyError, useToastStore } from "../stores/toastStore";
+import { movedAway } from "../utils/callMove";
 import { blfDiff, blfExtensions, isNotRegistered } from "../utils/blf";
 import { useVoicemailStore } from "../stores/voicemailStore";
+import { useCallMoveStore } from "../stores/callMoveStore";
 
 interface ConnectionPayload {
   accountId: string;
@@ -58,6 +60,10 @@ interface CallPayload {
   signalingTls?: boolean;
   /** Set on 180/183 when early media stream is present. */
   hasEarlyMedia?: boolean;
+  /** Set on an incoming call that is a call being moved here (`X-Aria-Move`). */
+  moveId?: string;
+  /** With moveId: this app asked for the move, so it is answered at once. */
+  moveAutoAnswer?: boolean;
 }
 
 interface VoicemailPayload {
@@ -292,6 +298,7 @@ export function useAutoRegister() {
 /** How long an ended call stays on screen before it is removed. */
 const ENDED_DISPLAY_MS = 1200;
 
+
 /**
  * Take a call out of service: file it in history, show it as ended briefly,
  * then remove it.
@@ -327,7 +334,17 @@ function finishCall(
     recordingPath: details.recordingPath ?? call.recordingPath,
     sipCallId: details.sipCallId ?? call.sipCallId,
   });
-  store.updateCall(callId, { state: "ended", endTime, recording: false });
+  // The PBX BYEs this leg after swapping the call to another device; if it
+  // said so, the call did not end, it moved.
+  const away = movedAway(useCallMoveStore.getState().movedTo, endTime, details.sipCallId ?? call.sipCallId);
+  const movedTo = away === null ? undefined : away || i18n.t("callMove.anotherDevice");
+  store.updateCall(callId, { state: "ended", endTime, recording: false, ...(movedTo ? { movedTo } : {}) });
+  if (movedTo) {
+    useCallMoveStore.getState().clearMovedTo();
+    // The call screen is gone once a call ends, so this is where "Moved to"
+    // is said instead of "Call ended".
+    useToastStore.getState().show(i18n.t("callMove.movedTo", { device: movedTo }), "info");
+  }
   setTimeout(() => useAppStore.getState().removeCall(callId), ENDED_DISPLAY_MS);
 }
 
@@ -336,10 +353,29 @@ function hasLiveCall(): boolean {
   return useAppStore.getState().activeCalls.some((c) => c.state !== "ended");
 }
 
+/**
+ * What an incoming call's `X-Aria-Move` means here. The backend decided
+ * whether this app asked for the move (it holds the pending ids and their
+ * 30 s expiry); the store supplies the original call's start, so the timer
+ * continues rather than restarting.
+ */
+function incomingMove(p: CallPayload): { moveId?: string; auto: boolean; startTime?: number; from?: string } {
+  if (!p.moveId) return { auto: false };
+  const moves = useCallMoveStore.getState();
+  if (p.moveAutoAnswer) {
+    const pending = moves.pendingFor(p.moveId);
+    moves.clearPending();
+    return { moveId: p.moveId, auto: true, startTime: pending?.startedAt ?? undefined };
+  }
+  const remote = p.remoteUri;
+  const elsewhere = moves.calls.find((c) => remote.includes(c.remote.number) && c.remote.number !== "");
+  return { moveId: p.moveId, auto: false, from: elsewhere?.device.label };
+}
+
 export function useSipEvents() {
   const activeCall = useAppStore((s) => s.activeCall);
 
-  const isIncoming = activeCall?.state === "incoming";
+  const isIncoming = activeCall?.state === "incoming" && !activeCall.moveAuto;
   const isRinging = shouldPlayRingback(activeCall);
   useRingtone(isIncoming);
   useRingback(isRinging);
@@ -447,6 +483,7 @@ export function useSipEvents() {
           void sipHangup(p.callId).catch(() => {});
           return;
         }
+        const move = incomingMove(p);
         store.setActiveCall({
           id: p.callId,
           accountId: p.accountId,
@@ -454,14 +491,29 @@ export function useSipEvents() {
           remoteName: p.remoteName ?? undefined,
           state: "incoming",
           direction: "inbound",
-          startTime: Date.now(),
+          startTime: move.startTime ?? Date.now(),
+          // The original call's start, taken as the connect time once this
+          // leg connects; a move that never connects is still a missed call.
+          moveStartTime: move.startTime,
           muted: false,
           held: false,
           recording: false,
           sipCallId: p.sipCallId,
           hasEarlyMedia: false,
+          moveId: move.moveId,
+          moveAuto: move.auto,
+          moveFrom: move.from,
         });
         store.setCurrentView("dialer");
+        if (move.auto) {
+          // A move this app asked for: pick it up now, with no ring. If that
+          // fails, the call rings like any other so the person can still
+          // answer or decline it by hand.
+          void sipAnswer(p.callId).catch((e) => {
+            log.error("[callMove] could not answer the move:", e);
+            store.updateCall(p.callId, { moveAuto: false });
+          });
+        }
         return;
       }
 
@@ -499,7 +551,7 @@ export function useSipEvents() {
       store.updateCall(p.callId, {
         state: p.state as CallState,
         connectTime:
-          p.state === "connected" && !call.connectTime ? Date.now() : call.connectTime,
+          p.state === "connected" && !call.connectTime ? (call.moveStartTime ?? Date.now()) : call.connectTime,
         sipCallId: p.sipCallId ?? call.sipCallId,
         srtpActive: p.srtpActive ?? call.srtpActive,
         signalingTls: p.signalingTls ?? call.signalingTls,

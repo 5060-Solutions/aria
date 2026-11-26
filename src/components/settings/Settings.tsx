@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useTransition } from "react";
 import {
   Box,
   Typography,
@@ -48,6 +48,7 @@ import FiberManualRecordIcon from "@mui/icons-material/FiberManualRecord";
 import ContactsIcon from "@mui/icons-material/Contacts";
 import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
 import { Transcription } from "./Transcription";
+import { CallHandoff } from "./CallHandoff";
 import { Assistants } from "./Assistants";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import SyncIcon from "@mui/icons-material/Sync";
@@ -172,6 +173,18 @@ export function Settings() {
   );
   const setSetupComplete = useAppStore((s) => s.setSetupComplete);
   const theme = useTheme();
+  // Re-theming every mounted component takes a moment; the switch must not
+  // wait for it. Its own state flips at once and the theme change follows
+  // as a transition, so the click is seen the instant it lands.
+  const [wantDark, setWantDark] = useState(darkMode);
+  const [themePending, startThemeTransition] = useTransition();
+  const switchTheme = () => {
+    setWantDark(!darkMode);
+    startThemeTransition(() => toggleDarkMode());
+  };
+  // Once the transition has landed, the switch follows the store again, so a
+  // change made elsewhere (the app menu) is shown too.
+  if (!themePending && wantDark !== darkMode) setWantDark(darkMode);
   const [selectedLanguage, setSelectedLanguage] = useState(getCurrentLanguage());
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -982,7 +995,7 @@ export function Settings() {
         {/* Preferences */}
         <List disablePadding>
           <ListItemButton
-            onClick={toggleDarkMode}
+            onClick={switchTheme}
             sx={{ borderRadius: "16px", mb: 0.5 }}
           >
             <ListItemIcon sx={{ minWidth: 40 }}>
@@ -996,8 +1009,11 @@ export function Settings() {
             />
             <Switch
               edge="end"
-              checked={darkMode}
-              onChange={toggleDarkMode}
+              checked={wantDark}
+              onChange={switchTheme}
+              // The row toggles on click too; a click on the switch must not
+              // reach it, or the mode flips twice and lands where it started.
+              onClick={(e) => e.stopPropagation()}
               size="small"
             />
           </ListItemButton>
@@ -1331,6 +1347,9 @@ export function Settings() {
               </Typography>
             </Box>
           </Collapse>
+
+          {/* Moving calls between devices */}
+          <CallHandoff />
 
           {/* On-device transcription */}
           <ListItemButton

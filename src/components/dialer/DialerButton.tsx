@@ -49,20 +49,22 @@ export function DialerButton({ digit, letters, onPress }: DialerButtonProps) {
         >
           {digit}
         </Box>
-        {letters && (
-          <Box
-            sx={{
-              fontSize: "0.55rem",
-              fontWeight: 600,
-              letterSpacing: "0.18em",
-              opacity: 0.55,
-              lineHeight: 1,
-              mt: 0.2,
-            }}
-          >
-            {letters}
-          </Box>
-        )}
+        {/* Every key keeps the letters row, empty on 1, * and #, so the digit
+            sits at the same height on every key. */}
+        <Box
+          aria-hidden={!letters}
+          sx={{
+            fontSize: "0.55rem",
+            fontWeight: 600,
+            letterSpacing: "0.18em",
+            opacity: 0.55,
+            lineHeight: 1,
+            mt: 0.2,
+            minHeight: "0.55rem",
+          }}
+        >
+          {letters ?? "\u00A0"}
+        </Box>
       </ButtonBase>
     </motion.div>
   );

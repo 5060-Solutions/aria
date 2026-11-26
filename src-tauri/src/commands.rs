@@ -1965,13 +1965,17 @@ pub async fn messaging_listen(
     let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     let account_id = mailbox.account_id.clone();
-    let (on_app, live_app, live_id) = (app.clone(), app, account_id.clone());
+    let (on_app, call_app, live_app) = (app.clone(), app.clone(), app);
+    let (call_id, live_id) = (account_id.clone(), account_id.clone());
     let task = messaging::listen(
         state.inner().clone(),
         mailbox,
         password,
         move |event| {
             let _ = on_app.emit("messaging-sms", event);
+        },
+        move |event| {
+            let _ = call_app.emit("pbx-call-event", serde_json::json!({ "accountId": call_id, "event": event }));
         },
         move |up| {
             let _ = live_app.emit("messaging-live", serde_json::json!({ "accountId": live_id, "live": up }));
@@ -1984,6 +1988,79 @@ pub async fn messaging_listen(
 #[tauri::command]
 pub fn messaging_stop(account_id: String, live: State<'_, MessagingLive>) {
     live.stop(&account_id);
+}
+
+// ── Moving calls between devices, proximity and handoff (Aria PBX) ──────────
+
+/// One of the signed-in user's `/api/v1/me/...` routes (see `pbx_me`).
+#[tauri::command]
+pub async fn pbx_me_request(
+    mailbox: Mailbox,
+    method: String,
+    path: String,
+    body: Option<serde_json::Value>,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
+    state: State<'_, std::sync::Arc<VoicemailState>>,
+) -> Result<serde_json::Value, MessagingError> {
+    // Refuse before touching the keychain.
+    crate::pbx_me::check(&method, &path)?;
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
+    let password = messaging_password(&mailbox.account_id).await?;
+    crate::pbx_me::request(&state, &mailbox, &password, &method, &path, body).await
+}
+
+/// Remember a move this app asked the PBX for, so the INVITE that carries its
+/// `X-Aria-Move` is answered without ringing. Expires after 30 seconds.
+#[tauri::command]
+pub fn callmove_expect(account_id: String, move_id: String) -> Result<(), String> {
+    if crate::sip::call_move::pending().register(&account_id, &move_id, std::time::Instant::now()) {
+        Ok(())
+    } else {
+        Err("not a move id".into())
+    }
+}
+
+/// A move request is about to be posted: an INVITE with `X-Aria-Move` that
+/// arrives before its 202 is held (up to 2 s) instead of ringing.
+#[tauri::command]
+pub fn callmove_request_started(account_id: String) {
+    let _ = account_id;
+    crate::sip::call_move::pending().request_started(std::time::Instant::now());
+}
+
+/// The move request was answered or failed (always paired with the start).
+#[tauri::command]
+pub fn callmove_request_finished(account_id: String) {
+    let _ = account_id;
+    crate::sip::call_move::pending().request_finished();
+}
+
+/// This install's `+sip.instance` value, as the PBX matches it.
+#[tauri::command]
+pub fn sip_instance_urn() -> String {
+    format!("urn:uuid:{}", crate::sip::instance_id())
+}
+
+/// Whether the screen is locked and how long the person has been idle.
+#[tauri::command]
+pub async fn desktop_context() -> crate::desktop_context::DesktopContext {
+    tokio::task::spawn_blocking(crate::desktop_context::context)
+        .await
+        .unwrap_or(crate::desktop_context::DesktopContext { locked: false, idle_secs: 0 })
+}
+
+/// The contract's `network_hash` for this network, or null with no IPv4
+/// default route. Salted by the signed-in user's extension id.
+#[tauri::command]
+pub async fn network_fingerprint(
+    mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
+    state: State<'_, std::sync::Arc<VoicemailState>>,
+) -> Result<Option<String>, MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
+    let password = messaging_password(&mailbox.account_id).await?;
+    let extension_id = crate::pbx_me::extension_id(&state, &mailbox, &password).await?;
+    Ok(tokio::task::spawn_blocking(move || crate::desktop_context::network_fingerprint(&extension_id)).await.ok().flatten())
 }
 
 // ── Which PBX API an account's password may go to ───────────────────────────
