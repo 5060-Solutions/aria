@@ -20,6 +20,8 @@ export interface Device {
   registrationId: string;
   label: string;
   online: boolean;
+  /** This computer, as the PBX knows it (`current`). */
+  current?: boolean;
 }
 
 /** A pending move expires after this long without its INVITE. */
@@ -38,7 +40,9 @@ export function parseActiveCall(raw: unknown): ActiveElsewhereCall | null {
   const device = rec(o.device);
   const remote = rec(o.remote);
   const id = str(o.id);
-  if (!id || !str(device.registration_id)) return null;
+  // A call whose device the PBX could not match to a registration is still a
+  // call on another device: the banner shows it, only moving it away needs the id.
+  if (!id || !(str(device.registration_id) || str(o.sip_call_id))) return null;
   return {
     id,
     state: o.state === "held" ? "held" : "active",
@@ -59,7 +63,7 @@ export function parseDevices(raw: unknown): Device[] {
   return raw
     .map((d) => {
       const o = rec(d);
-      return { registrationId: str(o.registration_id), label: str(o.label) || str(o.user_agent), online: o.online !== false };
+      return { registrationId: str(o.registration_id), label: str(o.label) || str(o.user_agent), online: o.online !== false, current: o.current === true };
     })
     .filter((d) => d.registrationId);
 }
@@ -151,7 +155,7 @@ export function moveFailureKey(status: number | undefined): string {
 
 /** Devices to offer in "Move to...": online, and not this one. */
 export function otherOnlineDevices(devices: Device[], ownRegistrationId: string | null): Device[] {
-  return devices.filter((d) => d.online && d.registrationId !== ownRegistrationId);
+  return devices.filter((d) => d.online && !d.current && d.registrationId !== ownRegistrationId);
 }
 
 /** What to report to the PBX about this computer during a call here. */
