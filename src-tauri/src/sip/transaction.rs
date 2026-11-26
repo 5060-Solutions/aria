@@ -117,7 +117,9 @@ impl Transactions {
     /// request sent without `send_request`) is ignored here; its handler
     /// still sees it.
     pub(crate) fn on_response(&self, response: &str, status: u16) {
-        let Some(branch) = extract_via_branch(response) else { return };
+        let Some(branch) = extract_via_branch(response) else {
+            return;
+        };
         let key = (branch, response_method(response));
         let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((_, tx)) = map.get(&key) {
@@ -204,7 +206,11 @@ async fn retransmit(
         if tokio::time::Instant::now() >= deadline {
             return Outcome::TimedOut;
         }
-        let wake = if reliable { deadline } else { next_send.min(deadline) };
+        let wake = if reliable {
+            deadline
+        } else {
+            next_send.min(deadline)
+        };
         tokio::select! {
             changed = seen.changed() => {
                 if changed.is_err() {
@@ -224,7 +230,10 @@ async fn retransmit(
         if reliable || tokio::time::Instant::now() >= deadline {
             continue;
         }
-        log::debug!("Retransmitting {}", msg.split_whitespace().next().unwrap_or("request"));
+        log::debug!(
+            "Retransmitting {}",
+            msg.split_whitespace().next().unwrap_or("request")
+        );
         if let Err(e) = transport.send_to(msg.as_bytes(), dest).await {
             log::warn!("Could not retransmit a request: {}", e);
         }
@@ -255,12 +264,18 @@ mod tests {
     async fn pair() -> (SipTransport, UdpSocket, SocketAddr) {
         let peer = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let dest = peer.local_addr().unwrap();
-        let (udp, _rx) = super::super::transport::UdpTransport::bind("127.0.0.1:0").await.unwrap();
+        let (udp, _rx) = super::super::transport::UdpTransport::bind("127.0.0.1:0")
+            .await
+            .unwrap();
         (SipTransport::Udp(udp), peer, dest)
     }
 
     fn timing(t1_ms: u64) -> Timing {
-        Timing { t1: Duration::from_millis(t1_ms), timer_f: Duration::from_millis(t1_ms * 64), ..Timing::default() }
+        Timing {
+            t1: Duration::from_millis(t1_ms),
+            timer_f: Duration::from_millis(t1_ms * 64),
+            ..Timing::default()
+        }
     }
 
     async fn count_received(peer: &UdpSocket, within: Duration) -> usize {
@@ -279,9 +294,17 @@ mod tests {
         let txs = Arc::new(Transactions::default());
         let mut t = timing(10);
         t.timer_f = Duration::from_millis(300);
-        let handle = send_request(&txs, &transport, dest, request("z9hG4bKa", "BYE"), Kind::NonInvite, t, None)
-            .await
-            .unwrap();
+        let handle = send_request(
+            &txs,
+            &transport,
+            dest,
+            request("z9hG4bKa", "BYE"),
+            Kind::NonInvite,
+            t,
+            None,
+        )
+        .await
+        .unwrap();
         let sent = count_received(&peer, Duration::from_millis(400)).await;
         assert_eq!(handle.await.unwrap(), Outcome::TimedOut);
         // 0, 10, 30, 70, 150 (then 310 is past the 300 ms deadline).
@@ -293,17 +316,36 @@ mod tests {
     async fn a_provisional_stops_an_invite_but_not_a_non_invite() {
         let (transport, peer, dest) = pair().await;
         let txs = Arc::new(Transactions::default());
-        let invite = send_request(&txs, &transport, dest, request("z9hG4bKi", "INVITE"), Kind::Invite, timing(20), None)
-            .await
-            .unwrap();
-        let bye = send_request(&txs, &transport, dest, request("z9hG4bKb", "BYE"), Kind::NonInvite, timing(20), None)
-            .await
-            .unwrap();
+        let invite = send_request(
+            &txs,
+            &transport,
+            dest,
+            request("z9hG4bKi", "INVITE"),
+            Kind::Invite,
+            timing(20),
+            None,
+        )
+        .await
+        .unwrap();
+        let bye = send_request(
+            &txs,
+            &transport,
+            dest,
+            request("z9hG4bKb", "BYE"),
+            Kind::NonInvite,
+            timing(20),
+            None,
+        )
+        .await
+        .unwrap();
         txs.on_response(&response("z9hG4bKi", 100, "INVITE"), 100);
         txs.on_response(&response("z9hG4bKb", 100, "BYE"), 100);
         assert_eq!(invite.await.unwrap(), Outcome::Answered(100));
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(!bye.is_finished(), "a 100 does not end a non-INVITE transaction");
+        assert!(
+            !bye.is_finished(),
+            "a 100 does not end a non-INVITE transaction"
+        );
         txs.on_response(&response("z9hG4bKb", 200, "BYE"), 200);
         assert_eq!(bye.await.unwrap(), Outcome::Answered(200));
         drop(peer);
@@ -313,9 +355,17 @@ mod tests {
     async fn an_unanswered_invite_gives_up_at_timer_b() {
         let (transport, peer, dest) = pair().await;
         let txs = Arc::new(Transactions::default());
-        let handle = send_request(&txs, &transport, dest, request("z9hG4bKt", "INVITE"), Kind::Invite, timing(5), None)
-            .await
-            .unwrap();
+        let handle = send_request(
+            &txs,
+            &transport,
+            dest,
+            request("z9hG4bKt", "INVITE"),
+            Kind::Invite,
+            timing(5),
+            None,
+        )
+        .await
+        .unwrap();
         // Timer B is 64*T1 = 320 ms: sent at 0, 5, 15, 35, 75, 155 and 315.
         let sent = count_received(&peer, Duration::from_millis(450)).await;
         assert_eq!(handle.await.unwrap(), Outcome::TimedOut);
@@ -330,19 +380,38 @@ mod tests {
     async fn a_cancel_and_its_invite_are_separate_transactions_on_one_branch() {
         let (transport, peer, dest) = pair().await;
         let txs = Arc::new(Transactions::default());
-        let invite = send_request(&txs, &transport, dest, request("z9hG4bKc", "INVITE"), Kind::Invite, timing(20), None)
-            .await
-            .unwrap();
-        let cancel = send_request(&txs, &transport, dest, request("z9hG4bKc", "CANCEL"), Kind::NonInvite, timing(20), None)
-            .await
-            .unwrap();
+        let invite = send_request(
+            &txs,
+            &transport,
+            dest,
+            request("z9hG4bKc", "INVITE"),
+            Kind::Invite,
+            timing(20),
+            None,
+        )
+        .await
+        .unwrap();
+        let cancel = send_request(
+            &txs,
+            &transport,
+            dest,
+            request("z9hG4bKc", "CANCEL"),
+            Kind::NonInvite,
+            timing(20),
+            None,
+        )
+        .await
+        .unwrap();
         assert!(txs.in_flight("z9hG4bKc", "INVITE"));
         assert!(txs.in_flight("z9hG4bKc", "CANCEL"));
 
         txs.on_response(&response("z9hG4bKc", 487, "INVITE"), 487);
         assert_eq!(invite.await.unwrap(), Outcome::Answered(487));
         assert!(!txs.in_flight("z9hG4bKc", "INVITE"));
-        assert!(txs.in_flight("z9hG4bKc", "CANCEL"), "the INVITE ending took the CANCEL's entry");
+        assert!(
+            txs.in_flight("z9hG4bKc", "CANCEL"),
+            "the INVITE ending took the CANCEL's entry"
+        );
         // Still resending the CANCEL.
         assert!(count_received(&peer, Duration::from_millis(100)).await >= 1);
         assert!(!cancel.is_finished());

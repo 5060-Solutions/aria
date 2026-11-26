@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
 use crate::sip::builder::{self, build_200_ok_subscribe, extract_header, extract_method};
-use crate::sip::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use crate::sip::call_move::MoveInvite;
+use crate::sip::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use crate::sip::transfer;
 use crate::sip::{CallEvent, ManagerState, SipEvent, VoicemailStatusEvent};
 
@@ -29,8 +29,15 @@ pub async fn handle_incoming_request(
         "INVITE" => {
             if let Some(replaces_hdr) = extract_header(text, "Replaces") {
                 log::info!("Incoming INVITE with Replaces from {}", remote);
-                transfer::handle_invite_with_replaces(state, event_tx, text, remote, &replaces_hdr, account_id)
-                    .await;
+                transfer::handle_invite_with_replaces(
+                    state,
+                    event_tx,
+                    text,
+                    remote,
+                    &replaces_hdr,
+                    account_id,
+                )
+                .await;
             } else {
                 log::info!("Incoming INVITE from {}", remote);
                 let call_id = extract_header(text, "Call-ID").unwrap_or_default();
@@ -54,10 +61,15 @@ pub async fn handle_incoming_request(
                 if let Some((call_internal_id, ringing_here, established, our_tag, pending_2xx)) =
                     existing
                 {
-                    let in_dialog = extract_header(text, "To").is_some_and(|to| to.contains("tag="));
+                    let in_dialog =
+                        extract_header(text, "To").is_some_and(|to| to.contains("tag="));
                     let s = state.read().await;
-                    let Some(account) = s.get_account(account_id) else { return };
-                    let Some(ref transport) = account.transport else { return };
+                    let Some(account) = s.get_account(account_id) else {
+                        return;
+                    };
+                    let Some(ref transport) = account.transport else {
+                        return;
+                    };
 
                     let response = if !in_dialog {
                         // No To tag: the caller is resending its first INVITE
@@ -72,7 +84,10 @@ pub async fn handle_incoming_request(
                             // Answered (or declined), and the caller has not
                             // seen it: the INVITE it resends gets the same
                             // final response again.
-                            log::info!("Retransmitted INVITE for {}, re-sending its final response", call_id);
+                            log::info!(
+                                "Retransmitted INVITE for {}, re-sending its final response",
+                                call_id
+                            );
                             Some(pending.response)
                         } else {
                             None
@@ -194,7 +209,8 @@ pub async fn handle_incoming_request(
                     "incoming",
                     &remote_uri_for_event,
                     "inbound",
-                ).with_sip_call_id(&sip_call_id);
+                )
+                .with_sip_call_id(&sip_call_id);
                 let move_header = extract_header(text, crate::sip::call_move::HEADER);
                 if move_header.is_none() {
                     let _ = event_tx.send(SipEvent::CallStateChanged(event));
@@ -206,7 +222,11 @@ pub async fn handle_incoming_request(
                     let account_for_move = account_id.to_string();
                     tokio::spawn(async move {
                         let event = match crate::sip::call_move::pending()
-                            .classify_waiting(&account_for_move, move_header.as_deref(), crate::sip::call_move::REQUEST_GRACE)
+                            .classify_waiting(
+                                &account_for_move,
+                                move_header.as_deref(),
+                                crate::sip::call_move::REQUEST_GRACE,
+                            )
                             .await
                         {
                             MoveInvite::AutoAnswer(id) => {
@@ -214,7 +234,9 @@ pub async fn handle_incoming_request(
                                 event.with_move(id, true)
                             }
                             MoveInvite::Ring(id) => {
-                                log::info!("INVITE carries a call move this app did not ask for; ringing");
+                                log::info!(
+                                    "INVITE carries a call move this app did not ask for; ringing"
+                                );
                                 event.with_move(id, false)
                             }
                             MoveInvite::None => event,
@@ -247,26 +269,33 @@ pub async fn handle_incoming_request(
             // every other SIP task.
             let ended_call = {
                 let mut s = state.write().await;
-                s.find_call_by_header_mut(&call_id).map(|(found_account_id, call)| {
-                    let found_account_id = found_account_id.to_string();
-                    let media = call.take_media();
-                    let _ = call.process(CallFSMEvent::RemoteHangup);
-                    (
-                        found_account_id,
-                        call.id.clone(),
-                        call.remote_uri.clone(),
-                        call.direction_str().to_string(),
-                        media,
-                    )
-                })
+                s.find_call_by_header_mut(&call_id)
+                    .map(|(found_account_id, call)| {
+                        let found_account_id = found_account_id.to_string();
+                        let media = call.take_media();
+                        let _ = call.process(CallFSMEvent::RemoteHangup);
+                        (
+                            found_account_id,
+                            call.id.clone(),
+                            call.remote_uri.clone(),
+                            call.direction_str().to_string(),
+                            media,
+                        )
+                    })
             };
 
-            if let Some((found_account_id, internal_id, remote_uri, direction, media)) = ended_call {
+            if let Some((found_account_id, internal_id, remote_uri, direction, media)) = ended_call
+            {
                 // The frontend files call history from the ended event, so the
                 // recording path has to ride on it or the WAV is unreachable.
                 let recording_path = crate::sip::finish_call_media(&internal_id, media).await;
-                let mut ended =
-                    CallEvent::new(&found_account_id, &internal_id, "ended", &remote_uri, &direction);
+                let mut ended = CallEvent::new(
+                    &found_account_id,
+                    &internal_id,
+                    "ended",
+                    &remote_uri,
+                    &direction,
+                );
                 if let Some(path) = recording_path {
                     ended = ended.with_recording_path(path);
                 }
@@ -299,14 +328,18 @@ pub async fn handle_incoming_request(
             if event_trimmed == "refer" {
                 transfer::handle_notify_refer(state, event_tx, text, remote, account_id).await;
             } else if event_trimmed == "dialog" || event_trimmed == "presence" {
-                handle_notify_presence(state, event_tx, text, remote, &event_trimmed, account_id).await;
+                handle_notify_presence(state, event_tx, text, remote, &event_trimmed, account_id)
+                    .await;
             } else if event_trimmed == "message-summary" {
                 // RFC 3842 MWI NOTIFY — parse the body for voicemail status
                 crate::sip::mwi::track_notify_state(state, account_id, text).await;
                 let mwi = parse_mwi_body(text);
                 log::info!(
                     "MWI NOTIFY from {}: waiting={}, new={}, old={}",
-                    remote, mwi.messages_waiting, mwi.new_messages, mwi.old_messages
+                    remote,
+                    mwi.messages_waiting,
+                    mwi.new_messages,
+                    mwi.old_messages
                 );
 
                 let _ = event_tx.send(SipEvent::VoicemailStatus(VoicemailStatusEvent {
@@ -372,15 +405,29 @@ pub async fn handle_incoming_request(
 
                 let transport = s.get_account(account_id).and_then(|a| a.transport.clone());
                 drop(s);
-                let resp = raw_invite.as_deref().and_then(|invite| build_terminated_response(invite, &to_tag));
+                let resp = raw_invite
+                    .as_deref()
+                    .and_then(|invite| build_terminated_response(invite, &to_tag));
                 if let (Some(resp), Some(transport)) = (resp, transport) {
-                    let _ = crate::sip::send_invite_final_response(state, &call_internal_id, resp, &transport, remote)
-                        .await;
+                    let _ = crate::sip::send_invite_final_response(
+                        state,
+                        &call_internal_id,
+                        resp,
+                        &transport,
+                        remote,
+                    )
+                    .await;
                 }
 
                 let _ = event_tx.send(SipEvent::CallStateChanged(
-                    CallEvent::new(account_id, &call_internal_id, "ended", &remote_uri, "inbound")
-                        .with_sip_call_id(&call_id),
+                    CallEvent::new(
+                        account_id,
+                        &call_internal_id,
+                        "ended",
+                        &remote_uri,
+                        "inbound",
+                    )
+                    .with_sip_call_id(&call_id),
                 ));
             }
         }
@@ -403,11 +450,19 @@ pub async fn handle_incoming_request(
             let cseq = crate::sip::cseq_number(text);
             let mut s = state.write().await;
             if let Some((_, call)) = s.find_call_by_header_mut(&call_id) {
-                if call.pending_2xx.as_ref().is_some_and(|p| Some(p.cseq) == cseq) {
+                if call
+                    .pending_2xx
+                    .as_ref()
+                    .is_some_and(|p| Some(p.cseq) == cseq)
+                {
                     log::info!("ACK received for the 200 OK to call {}", call.id);
                     call.pending_2xx = None;
                 }
-                if call.pending_final.as_ref().is_some_and(|p| Some(p.cseq) == cseq) {
+                if call
+                    .pending_final
+                    .as_ref()
+                    .is_some_and(|p| Some(p.cseq) == cseq)
+                {
                     log::info!("ACK received for the final response to call {}", call.id);
                     call.pending_final = None;
                 }
@@ -435,7 +490,9 @@ async fn send_simple(
     code: u16,
     reason: &str,
 ) {
-    let Some(resp) = build_simple_response(request, code, reason) else { return };
+    let Some(resp) = build_simple_response(request, code, reason) else {
+        return;
+    };
     let s = state.read().await;
     if let Some(transport) = s.get_account(account_id).and_then(|a| a.transport.clone()) {
         let _ = transport.send_to(resp.as_bytes(), remote).await;
@@ -491,7 +548,13 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
          CSeq: {}\r\n\
          User-Agent: {ua}\r\n\
          Content-Length: 0\r\n\r\n",
-        code, reason, via, from, to, call_id, cseq,
+        code,
+        reason,
+        via,
+        from,
+        to,
+        call_id,
+        cseq,
         ua = builder::USER_AGENT,
     ))
 }
@@ -530,7 +593,9 @@ fn parse_mwi_body(sip_message: &str) -> MwiBody {
             waiting = value.trim().eq_ignore_ascii_case("yes");
         } else if let Some(value) = line.strip_prefix("Voice-Message:") {
             // Format: "3/1 (0/0)" or just "3/1"
-            let counts = value.trim().split_once('(')
+            let counts = value
+                .trim()
+                .split_once('(')
                 .map_or(value.trim(), |(before, _)| before.trim());
             if let Some((new_str, old_str)) = counts.split_once('/') {
                 new_msgs = new_str.trim().parse().unwrap_or(0);

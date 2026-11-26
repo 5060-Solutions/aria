@@ -107,7 +107,11 @@ fn join_files(earlier: PathBuf, later: PathBuf) -> PathBuf {
     }
     match append_wav(&earlier, &later) {
         Ok(true) => {
-            log::info!("Joined recording {} onto {}", later.display(), earlier.display());
+            log::info!(
+                "Joined recording {} onto {}",
+                later.display(),
+                earlier.display()
+            );
             earlier
         }
         Ok(false) => {
@@ -121,7 +125,12 @@ fn join_files(earlier: PathBuf, later: PathBuf) -> PathBuf {
             later
         }
         Err(e) => {
-            log::warn!("Could not join recording parts {} and {}: {}", earlier.display(), later.display(), e);
+            log::warn!(
+                "Could not join recording parts {} and {}: {}",
+                earlier.display(),
+                later.display(),
+                e
+            );
             later
         }
     }
@@ -158,7 +167,11 @@ fn append_wav(earlier: &Path, later: &Path) -> io::Result<bool> {
     let a_len = u32::from_le_bytes([ha[40], ha[41], ha[42], ha[43]]);
     let b_len = u32::from_le_bytes([hb[40], hb[41], hb[42], hb[43]]);
     // RIFF sizes are 32-bit: a joined file past 4 GiB cannot be described.
-    if a_len.checked_add(b_len).and_then(|t| t.checked_add(36)).is_none() {
+    if a_len
+        .checked_add(b_len)
+        .and_then(|t| t.checked_add(36))
+        .is_none()
+    {
         return Ok(false);
     }
     a.seek(SeekFrom::Start(HEADER as u64 + u64::from(a_len)))?;
@@ -200,7 +213,10 @@ mod tests {
     }
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("aria-recording-parts-{name}-{}", std::process::id()));
+        let d = std::env::temp_dir().join(format!(
+            "aria-recording-parts-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -219,7 +235,10 @@ mod tests {
         assert!(!second.exists(), "the joined part is removed");
         let mut want = Vec::new();
         wav(&d.join("want.wav"), 8000, &[1, 2, 3, 4, 5, 6]);
-        File::open(d.join("want.wav")).unwrap().read_to_end(&mut want).unwrap();
+        File::open(d.join("want.wav"))
+            .unwrap()
+            .read_to_end(&mut want)
+            .unwrap();
         assert_eq!(std::fs::read(&first).unwrap(), want);
     }
 

@@ -54,11 +54,18 @@ impl PbxBindings {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        Self { path, map: Mutex::new(map) }
+        Self {
+            path,
+            map: Mutex::new(map),
+        }
     }
 
     pub fn get(&self, account_id: &str) -> Option<Binding> {
-        self.map.lock().unwrap_or_else(|p| p.into_inner()).get(account_id).cloned()
+        self.map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(account_id)
+            .cloned()
     }
 
     /// Bind without asking: for the backend's own redeem, never for a request.
@@ -84,15 +91,28 @@ impl PbxBindings {
     /// whatever the caller said.
     pub fn resolve(&self, account_id: &str) -> Result<Mailbox, VoicemailError> {
         let b = self.get(account_id).ok_or(VoicemailError::NotBound)?;
-        Ok(Mailbox { account_id: account_id.to_string(), api_url: b.api_url, extension: b.extension, domain: b.domain })
+        Ok(Mailbox {
+            account_id: account_id.to_string(),
+            api_url: b.api_url,
+            extension: b.extension,
+            domain: b.domain,
+        })
     }
 }
 
 /// A binding from what Settings or a setup link holds, with the address
 /// reduced to its origin.
-pub fn binding_from(api_url: &str, extension: &str, domain: &str) -> Result<Binding, VoicemailError> {
+pub fn binding_from(
+    api_url: &str,
+    extension: &str,
+    domain: &str,
+) -> Result<Binding, VoicemailError> {
     let url = validate_api_url(api_url, cfg!(debug_assertions))?;
-    Ok(Binding { api_url: url.to_string(), extension: extension.to_string(), domain: domain.to_string() })
+    Ok(Binding {
+        api_url: url.to_string(),
+        extension: extension.to_string(),
+        domain: domain.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -106,14 +126,29 @@ mod tests {
     #[test]
     fn a_new_binding_is_added_the_same_one_is_unchanged_a_different_one_needs_a_say_so() {
         assert_eq!(decide(None, &b("https://api.example.com")), Decision::Add);
-        assert_eq!(decide(Some(&b("https://api.example.com")), &b("https://api.example.com/path")), Decision::Unchanged);
-        assert_eq!(decide(Some(&b("https://api.example.com")), &b("https://evil.example.net")), Decision::NeedsConfirmation);
+        assert_eq!(
+            decide(
+                Some(&b("https://api.example.com")),
+                &b("https://api.example.com/path")
+            ),
+            Decision::Unchanged
+        );
+        assert_eq!(
+            decide(
+                Some(&b("https://api.example.com")),
+                &b("https://evil.example.net")
+            ),
+            Decision::NeedsConfirmation
+        );
     }
 
     #[test]
     fn resolve_uses_the_stored_address_only() {
         let bindings = PbxBindings::load(None);
-        assert!(matches!(bindings.resolve("a"), Err(VoicemailError::NotBound)));
+        assert!(matches!(
+            bindings.resolve("a"),
+            Err(VoicemailError::NotBound)
+        ));
         bindings.set("a", b("https://api.example.com"));
         let m = bindings.resolve("a").unwrap();
         assert_eq!(m.api_url, "https://api.example.com/");
@@ -125,7 +160,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("aria-bind-{}", uuid::Uuid::new_v4()));
         let path = dir.join("pbx_bindings.json");
         PbxBindings::load(Some(path.clone())).set("a", b("https://api.example.com"));
-        assert_eq!(PbxBindings::load(Some(path)).get("a"), Some(b("https://api.example.com")));
+        assert_eq!(
+            PbxBindings::load(Some(path)).get("a"),
+            Some(b("https://api.example.com"))
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -7,8 +7,8 @@ use std::net::SocketAddr;
 pub use rsip::generators::{generate_branch, generate_call_id, generate_tag};
 pub use rsip::sip_parser::{
     extract_all_headers, extract_from_tag, extract_header, extract_method, extract_to_tag,
-    extract_via_branch, extract_via_received, is_request,
-    parse_sdp_connection, parse_sipfrag_status, parse_status_code,
+    extract_via_branch, extract_via_received, is_request, parse_sdp_connection,
+    parse_sipfrag_status, parse_status_code,
 };
 
 // ---------------------------------------------------------------------------
@@ -88,12 +88,10 @@ pub(crate) fn quoted_display_name(name: &str) -> String {
 /// Falls back to treating the whole string as a domain if parsing fails.
 fn parse_uri(s: &str) -> rsip::Uri {
     use std::convert::TryFrom;
-    rsip::Uri::try_from(s).unwrap_or_else(|_| {
-        rsip::Uri {
-            scheme: Some(rsip::Scheme::Sip),
-            host_with_port: rsip::Domain::from(s).into(),
-            ..Default::default()
-        }
+    rsip::Uri::try_from(s).unwrap_or_else(|_| rsip::Uri {
+        scheme: Some(rsip::Scheme::Sip),
+        host_with_port: rsip::Domain::from(s).into(),
+        ..Default::default()
     })
 }
 
@@ -118,7 +116,9 @@ fn base_request_headers(
 ) -> rsip::Headers {
     let mut headers = rsip::Headers::default();
     headers.push(rsip::headers::Via::new(via).into());
-    headers.push(rsip::Header::MaxForwards(rsip::headers::MaxForwards::new("70")));
+    headers.push(rsip::Header::MaxForwards(rsip::headers::MaxForwards::new(
+        "70",
+    )));
     headers.push(rsip::headers::From::new(from).into());
     headers.push(rsip::headers::To::new(to).into());
     headers.push(rsip::headers::CallId::new(call_id).into());
@@ -140,7 +140,12 @@ pub const REGISTER_SUPPORTED: &str = "outbound, path";
 
 /// The Contact of a REGISTER, with the RFC 5626 outbound parameters: `;ob` on
 /// the URI, and `+sip.instance` and `reg-id` on the contact.
-pub fn register_contact(username: &str, local_addr: SocketAddr, transport: &str, instance_id: &str) -> String {
+pub fn register_contact(
+    username: &str,
+    local_addr: SocketAddr,
+    transport: &str,
+    instance_id: &str,
+) -> String {
     format!(
         "<sip:{username}@{}:{};transport={transport};ob>;+sip.instance=\"<urn:uuid:{instance_id}>\";reg-id={REG_ID}",
         local_addr.ip(),
@@ -170,13 +175,21 @@ pub fn build_register(
     };
 
     let via = via_value(transport_param, local_addr, &branch);
-    let from_hdr = format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag);
+    let from_hdr = format!(
+        "<sip:{}@{}>;tag={}",
+        account.username, account.domain, from_tag
+    );
     let to_hdr = format!("<sip:{}@{}>", account.username, account.domain);
     let cseq_hdr = format!("{} REGISTER", cseq);
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
 
-    let contact = register_contact(&account.username, local_addr, transport_param, super::instance::get());
+    let contact = register_contact(
+        &account.username,
+        local_addr,
+        transport_param,
+        super::instance::get(),
+    );
     headers.push(rsip::headers::Contact::new(contact).into());
     headers.push(rsip::headers::Expires::new(expires.to_string()).into());
     headers.push(rsip::headers::Allow::new(ALLOW).into());
@@ -219,7 +232,10 @@ fn sdp_ip(local_addr: SocketAddr, public_ip: Option<&str>) -> String {
     match public_ip.map(str::parse::<std::net::IpAddr>) {
         Some(Ok(ip)) if !ip.is_unspecified() => ip.to_string(),
         Some(Ok(ip)) => {
-            log::error!("refusing to advertise {} for media; using the local address", ip);
+            log::error!(
+                "refusing to advertise {} for media; using the local address",
+                ip
+            );
             local_addr.ip().to_string()
         }
         Some(Err(_)) => public_ip.unwrap_or_default().to_string(),
@@ -248,20 +264,22 @@ pub fn build_invite_with_public_ip(
     let sdp_ip = sdp_ip(local_addr, public_ip);
 
     // Generate SRTP key if account has SRTP enabled
-    log::info!("Building INVITE for account {} with SRTP mode: {:?}", account.username, account.srtp_mode);
+    log::info!(
+        "Building INVITE for account {} with SRTP mode: {:?}",
+        account.username,
+        account.srtp_mode
+    );
     let crypto_key = match account.srtp_mode {
-        SrtpMode::Sdes => {
-            match rtp_engine::srtp::SrtpContext::generate() {
-                Ok((_, key)) => {
-                    log::info!("Generated SRTP key for call");
-                    Some(key)
-                }
-                Err(e) => {
-                    log::error!("Failed to generate SRTP key: {:?}", e);
-                    None
-                }
+        SrtpMode::Sdes => match rtp_engine::srtp::SrtpContext::generate() {
+            Ok((_, key)) => {
+                log::info!("Generated SRTP key for call");
+                Some(key)
             }
-        }
+            Err(e) => {
+                log::error!("Failed to generate SRTP key: {:?}", e);
+                None
+            }
+        },
         SrtpMode::Disabled => {
             log::info!("SRTP disabled for this account");
             None
@@ -279,9 +297,18 @@ pub fn build_invite_with_public_ip(
 
     let via = via_value(transport_param, local_addr, &branch);
     let from_hdr = if account.display_name.trim().is_empty() {
-        format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag)
+        format!(
+            "<sip:{}@{}>;tag={}",
+            account.username, account.domain, from_tag
+        )
     } else {
-        format!("{} <sip:{}@{}>;tag={}", quoted_display_name(&account.display_name), account.username, account.domain, from_tag)
+        format!(
+            "{} <sip:{}@{}>;tag={}",
+            quoted_display_name(&account.display_name),
+            account.username,
+            account.domain,
+            from_tag
+        )
     };
     let to_hdr = format!("<{}>", target_uri);
     let cseq_hdr = format!("{} INVITE", cseq);
@@ -290,7 +317,10 @@ pub fn build_invite_with_public_ip(
 
     let contact = format!(
         "<sip:{}@{}:{};transport={}>",
-        account.username, local_addr.ip(), local_addr.port(), transport_param,
+        account.username,
+        local_addr.ip(),
+        local_addr.port(),
+        transport_param,
     );
     headers.push(rsip::headers::Contact::new(contact).into());
     headers.push(rsip::headers::ContentType::new("application/sdp").into());
@@ -478,7 +508,15 @@ pub fn build_200_ok_invite_with_public_ip(
     username: Option<&str>,
     public_ip: Option<&str>,
 ) -> Option<String> {
-    build_200_ok_invite_srtp(request_raw, local_addr, rtp_port, to_tag, username, public_ip, None)
+    build_200_ok_invite_srtp(
+        request_raw,
+        local_addr,
+        rtp_port,
+        to_tag,
+        username,
+        public_ip,
+        None,
+    )
 }
 
 /// Build a 200 OK for an incoming INVITE, answering SRTP when `crypto_b64_key`
@@ -505,7 +543,13 @@ pub fn build_200_ok_invite_srtp(
     let sdp = if remote_sdp.contains("m=audio") {
         build_sdp_answer_with(
             remote_sdp,
-            &AnswerOptions { ip, rtp_port, crypto_b64_key, codecs: None, origin: None },
+            &AnswerOptions {
+                ip,
+                rtp_port,
+                crypto_b64_key,
+                codecs: None,
+                origin: None,
+            },
         )?
     } else {
         build_sdp_offer(ip, rtp_port)
@@ -551,7 +595,11 @@ pub fn build_200_ok_invite_with_sdp(
     headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
     headers.push(rsip::headers::ContentLength::new(sdp.len().to_string()).into());
 
-    Some(response_to_string(200.into(), headers, sdp.as_bytes().to_vec()))
+    Some(response_to_string(
+        200.into(),
+        headers,
+        sdp.as_bytes().to_vec(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -605,7 +653,9 @@ enum OfferedPayload {
 fn classify_payload(pt: u8, rtpmaps: &[RtpMap]) -> Option<OfferedPayload> {
     use rtp_engine::CodecType;
     match rtpmaps.iter().find(|m| m.pt == pt) {
-        Some(map) if map.name == "telephone-event" => Some(OfferedPayload::TelephoneEvent(map.rate)),
+        Some(map) if map.name == "telephone-event" => {
+            Some(OfferedPayload::TelephoneEvent(map.rate))
+        }
         Some(map) => CodecType::from_name(&map.name)
             .filter(|codec| codec.clock_rate() == map.rate)
             .filter(|codec| SUPPORTED_CODECS.contains(codec))
@@ -658,7 +708,13 @@ fn telephone_event_rtpmap(pt: u8, rate: u32) -> String {
 pub fn build_sdp_answer(remote_sdp: &str, ip: String, rtp_port: u16) -> Option<String> {
     build_sdp_answer_with(
         remote_sdp,
-        &AnswerOptions { ip, rtp_port, crypto_b64_key: None, codecs: None, origin: None },
+        &AnswerOptions {
+            ip,
+            rtp_port,
+            crypto_b64_key: None,
+            codecs: None,
+            origin: None,
+        },
     )
 }
 
@@ -720,7 +776,9 @@ pub fn with_sdp_origin(sdp: &str, origin: SdpOrigin) -> String {
 
 /// `sdp` without its `o=` line, for telling whether two SDPs say the same.
 pub fn sdp_without_origin(sdp: &str) -> String {
-    sdp.split_inclusive('\n').filter(|l| !l.starts_with("o=")).collect()
+    sdp.split_inclusive('\n')
+        .filter(|l| !l.starts_with("o="))
+        .collect()
 }
 
 /// A media direction attribute (RFC 3264 §5.1).
@@ -777,7 +835,11 @@ pub fn offer_direction(sdp: &str) -> Direction {
     let mut section = 0;
     for line in sdp.lines().map(str::trim) {
         if line.starts_with("m=") {
-            section = if section == 0 && line.starts_with("m=audio ") { 1 } else { 2 };
+            section = if section == 0 && line.starts_with("m=audio ") {
+                1
+            } else {
+                2
+            };
             continue;
         }
         match section {
@@ -790,7 +852,11 @@ pub fn offer_direction(sdp: &str) -> Direction {
         return dir;
     }
     let held_address = parse_sdp_connection(sdp).is_some_and(|(ip, _)| ip == "0.0.0.0");
-    if held_address { Direction::SendOnly } else { Direction::SendRecv }
+    if held_address {
+        Direction::SendOnly
+    } else {
+        Direction::SendRecv
+    }
 }
 
 /// What goes into an SDP answer besides the offer.
@@ -811,7 +877,12 @@ fn audio_payload_types(sdp: &str) -> Vec<u8> {
     sdp.lines()
         .map(str::trim)
         .find(|line| line.starts_with("m=audio "))
-        .map(|line| line.split_whitespace().skip(3).filter_map(|pt| pt.parse().ok()).collect())
+        .map(|line| {
+            line.split_whitespace()
+                .skip(3)
+                .filter_map(|pt| pt.parse().ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -820,11 +891,17 @@ fn audio_payload_types(sdp: &str) -> Vec<u8> {
 /// preferences name none. An empty or all-disabled list is a broken setting,
 /// not a request to refuse every call.
 fn preferred_codecs(prefs: &[super::account::CodecPreference]) -> Vec<rtp_engine::CodecType> {
-    let mut enabled: Vec<&super::account::CodecPreference> =
-        prefs.iter().filter(|p| p.enabled && SUPPORTED_CODECS.contains(&p.codec)).collect();
+    let mut enabled: Vec<&super::account::CodecPreference> = prefs
+        .iter()
+        .filter(|p| p.enabled && SUPPORTED_CODECS.contains(&p.codec))
+        .collect();
     enabled.sort_by_key(|p| p.priority);
     let codecs: Vec<_> = enabled.into_iter().map(|p| p.codec).collect();
-    if codecs.is_empty() { SUPPORTED_CODECS.to_vec() } else { codecs }
+    if codecs.is_empty() {
+        SUPPORTED_CODECS.to_vec()
+    } else {
+        codecs
+    }
 }
 
 /// The payload types an answer to `offer` carries, in the order it lists
@@ -845,8 +922,11 @@ fn answer_payloads(
         .into_iter()
         .filter_map(|pt| classify_payload(pt, &rtpmaps).map(|p| (pt, p)))
         .collect();
-    let mut payloads: Vec<(u8, OfferedPayload)> =
-        offered.iter().copied().filter(|(_, p)| matches!(p, OfferedPayload::Codec(_))).collect();
+    let mut payloads: Vec<(u8, OfferedPayload)> = offered
+        .iter()
+        .copied()
+        .filter(|(_, p)| matches!(p, OfferedPayload::Codec(_)))
+        .collect();
     if let Some(prefs) = prefs {
         let order = preferred_codecs(prefs);
         let rank = |p: &OfferedPayload| match p {
@@ -860,7 +940,11 @@ fn answer_payloads(
     if payloads.is_empty() {
         return Vec::new();
     }
-    payloads.extend(offered.into_iter().filter(|(_, p)| matches!(p, OfferedPayload::TelephoneEvent(_))));
+    payloads.extend(
+        offered
+            .into_iter()
+            .filter(|(_, p)| matches!(p, OfferedPayload::TelephoneEvent(_))),
+    );
     payloads
 }
 
@@ -874,10 +958,12 @@ pub fn negotiate_audio(
     sdp: &str,
     prefs: Option<&[super::account::CodecPreference]>,
 ) -> Option<NegotiatedAudio> {
-    answer_payloads(sdp, prefs).into_iter().find_map(|(pt, p)| match p {
-        OfferedPayload::Codec(codec) => Some(NegotiatedAudio { codec, pt }),
-        OfferedPayload::TelephoneEvent(_) => None,
-    })
+    answer_payloads(sdp, prefs)
+        .into_iter()
+        .find_map(|(pt, p)| match p {
+            OfferedPayload::Codec(codec) => Some(NegotiatedAudio { codec, pt }),
+            OfferedPayload::TelephoneEvent(_) => None,
+        })
 }
 
 /// Build an SDP answer with optional SRTP crypto attribute.
@@ -894,7 +980,13 @@ pub fn build_sdp_answer_srtp(
 ) -> Option<String> {
     build_sdp_answer_with(
         remote_sdp,
-        &AnswerOptions { ip, rtp_port, crypto_b64_key, codecs: None, origin: None },
+        &AnswerOptions {
+            ip,
+            rtp_port,
+            crypto_b64_key,
+            codecs: None,
+            origin: None,
+        },
     )
 }
 
@@ -946,12 +1038,17 @@ pub fn build_sdp_answer_with(remote_sdp: &str, opts: &AnswerOptions<'_>) -> Opti
     for (pt, payload) in &common {
         match payload {
             OfferedPayload::Codec(codec) => sdp.push_str(&codec_rtpmap(*pt, *codec)),
-            OfferedPayload::TelephoneEvent(rate) => sdp.push_str(&telephone_event_rtpmap(*pt, *rate)),
+            OfferedPayload::TelephoneEvent(rate) => {
+                sdp.push_str(&telephone_event_rtpmap(*pt, *rate))
+            }
         }
     }
 
     sdp.push_str("a=ptime:20\r\n");
-    sdp.push_str(&format!("a={}\r\n", offer_direction(remote_sdp).mirror().as_str()));
+    sdp.push_str(&format!(
+        "a={}\r\n",
+        offer_direction(remote_sdp).mirror().as_str()
+    ));
 
     if use_srtp {
         if let Some(key) = opts.crypto_b64_key {
@@ -996,7 +1093,10 @@ pub fn sdp_offers_savp(sdp: &str) -> bool {
     sdp.lines().any(|line| {
         let line = line.trim();
         line.starts_with("m=audio ")
-            && line.split_whitespace().nth(2).is_some_and(|p| p.contains("SAVP"))
+            && line
+                .split_whitespace()
+                .nth(2)
+                .is_some_and(|p| p.contains("SAVP"))
     })
 }
 
@@ -1025,7 +1125,13 @@ pub fn build_sdp_offer_with_codecs(
     crypto_b64_key: Option<&str>,
     codecs: &[super::account::CodecPreference],
 ) -> String {
-    build_sdp_offer_with_origin(ip, rtp_port, crypto_b64_key, codecs, u64::from(rand::random::<u32>()))
+    build_sdp_offer_with_origin(
+        ip,
+        rtp_port,
+        crypto_b64_key,
+        codecs,
+        u64::from(rand::random::<u32>()),
+    )
 }
 
 /// [`build_sdp_offer_with_codecs`] with the `o=` session id given: the
@@ -1068,7 +1174,11 @@ pub fn build_sdp_offer_with_origin(
         pts.push(TELEPHONE_EVENT_PT_48K);
     }
 
-    let pt_list = pts.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
+    let pt_list = pts
+        .iter()
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
 
     let mut sdp = format!(
         "v=0\r\n\
@@ -1086,7 +1196,10 @@ pub fn build_sdp_offer_with_origin(
 
     // Add rtpmap for each enabled codec in priority order
     for codec_pref in &offered {
-        sdp.push_str(&codec_rtpmap(codec_pref.codec.payload_type(), codec_pref.codec));
+        sdp.push_str(&codec_rtpmap(
+            codec_pref.codec.payload_type(),
+            codec_pref.codec,
+        ));
     }
 
     // Telephone event for DTMF
@@ -1136,7 +1249,10 @@ pub fn build_refer(
         headers.push(rsip::headers::Route::new(route.as_str()).into());
     }
 
-    headers.push(rsip::Header::Other("Refer-To".into(), format!("<{}>", refer_to)));
+    headers.push(rsip::Header::Other(
+        "Refer-To".into(),
+        format!("<{}>", refer_to),
+    ));
     headers.push(rsip::Header::Other(
         "Referred-By".into(),
         format!("<sip:user@{}:{}>", local_addr.ip(), local_addr.port()),
@@ -1186,7 +1302,10 @@ pub fn build_refer_with_replaces(
         headers.push(rsip::headers::Route::new(route.as_str()).into());
     }
 
-    headers.push(rsip::Header::Other("Refer-To".into(), format!("<{}>", refer_to_uri)));
+    headers.push(rsip::Header::Other(
+        "Refer-To".into(),
+        format!("<{}>", refer_to_uri),
+    ));
     headers.push(rsip::Header::Other(
         "Referred-By".into(),
         format!("<sip:user@{}:{}>", local_addr.ip(), local_addr.port()),
@@ -1265,7 +1384,12 @@ pub fn build_notify_refer(
     headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
     headers.push(rsip::headers::ContentLength::new(body.len().to_string()).into());
 
-    request_to_string(rsip::Method::Notify, request_uri, headers, body.into_bytes())
+    request_to_string(
+        rsip::Method::Notify,
+        request_uri,
+        headers,
+        body.into_bytes(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1292,21 +1416,27 @@ pub fn build_invite_with_replaces(
 
     // Generate SRTP key if account has SRTP enabled
     let crypto_key = match account.srtp_mode {
-        SrtpMode::Sdes => {
-            rtp_engine::srtp::SrtpContext::generate()
-                .ok()
-                .map(|(_, key)| key)
-        }
+        SrtpMode::Sdes => rtp_engine::srtp::SrtpContext::generate()
+            .ok()
+            .map(|(_, key)| key),
         SrtpMode::Disabled => None,
     };
-    let sdp = build_sdp_offer_with_codecs(local_addr.ip().to_string(), rtp_port, crypto_key.as_deref(), &account.codecs);
+    let sdp = build_sdp_offer_with_codecs(
+        local_addr.ip().to_string(),
+        rtp_port,
+        crypto_key.as_deref(),
+        &account.codecs,
+    );
 
     let request_uri = parse_uri(target_uri);
 
     let via = via_value(transport_param, local_addr, &branch);
     let from_hdr = format!(
         "{} <sip:{}@{}>;tag={}",
-        quoted_display_name(&account.display_name), account.username, account.domain, from_tag,
+        quoted_display_name(&account.display_name),
+        account.username,
+        account.domain,
+        from_tag,
     );
     let to_hdr = format!("<{}>", target_uri);
     let cseq_hdr = format!("{} INVITE", cseq);
@@ -1315,12 +1445,18 @@ pub fn build_invite_with_replaces(
 
     let contact = format!(
         "<sip:{}@{}:{};transport={}>",
-        account.username, local_addr.ip(), local_addr.port(), transport_param,
+        account.username,
+        local_addr.ip(),
+        local_addr.port(),
+        transport_param,
     );
     headers.push(rsip::headers::Contact::new(contact).into());
     headers.push(rsip::Header::Other(
         "Replaces".into(),
-        format!("{};to-tag={};from-tag={}", replaces_call_id, replaces_to_tag, replaces_from_tag),
+        format!(
+            "{};to-tag={};from-tag={}",
+            replaces_call_id, replaces_to_tag, replaces_from_tag
+        ),
     ));
     headers.push(rsip::headers::ContentType::new("application/sdp").into());
     headers.push(rsip::headers::Allow::new(ALLOW).into());
@@ -1395,7 +1531,10 @@ pub fn build_subscribe(
     let request_uri = parse_uri(target_uri);
 
     let via = via_value(transport_param, local_addr, &branch);
-    let from_hdr = format!("<sip:{}@{}>;tag={}", account.username, account.domain, from_tag);
+    let from_hdr = format!(
+        "<sip:{}@{}>;tag={}",
+        account.username, account.domain, from_tag
+    );
     // With the server's tag this is a refresh inside the existing
     // subscription (RFC 6665 §4.1.2.2). Without it, it is a brand-new
     // subscription: refreshes used to leave the tag off, so the server
@@ -1411,15 +1550,21 @@ pub fn build_subscribe(
 
     let contact = format!(
         "<sip:{}@{}:{};transport={}>",
-        account.username, local_addr.ip(), local_addr.port(), transport_param,
+        account.username,
+        local_addr.ip(),
+        local_addr.port(),
+        transport_param,
     );
     headers.push(rsip::headers::Contact::new(contact).into());
     headers.push(rsip::headers::Event::new(event_type.event_header()).into());
     headers.push(rsip::headers::Accept::new(event_type.accept_header()).into());
     headers.push(rsip::headers::Expires::new(expires.to_string()).into());
-    headers.push(rsip::headers::Allow::new(
-        "INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, SUBSCRIBE, REFER, INFO",
-    ).into());
+    headers.push(
+        rsip::headers::Allow::new(
+            "INVITE, ACK, CANCEL, BYE, OPTIONS, NOTIFY, SUBSCRIBE, REFER, INFO",
+        )
+        .into(),
+    );
     headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
 
     if let Some(auth) = auth_header {
@@ -1472,13 +1617,21 @@ pub fn build_200_ok_subscribe(request_raw: &str, expires: u32) -> Option<String>
 /// A final response creates (or ends) a dialog, so it needs a To tag (RFC
 /// 3261 §12.1.1); `build_simple_response` copies To as it was in the request.
 /// An existing tag — a re-sent INVITE already carries ours — is kept.
-pub fn build_final_response(request: &str, code: u16, reason: &str, to_tag: &str) -> Option<String> {
+pub fn build_final_response(
+    request: &str,
+    code: u16,
+    reason: &str,
+    to_tag: &str,
+) -> Option<String> {
     let response = build_simple_response(request, code, reason)?;
     let to = extract_header(request, "To")?;
     if to.contains("tag=") {
         return Some(response);
     }
-    Some(response.replace(&format!("To: {to}\r\n"), &format!("To: {to};tag={to_tag}\r\n")))
+    Some(response.replace(
+        &format!("To: {to}\r\n"),
+        &format!("To: {to};tag={to_tag}\r\n"),
+    ))
 }
 
 /// Build a simple SIP response (no body) from a request
@@ -1504,12 +1657,7 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
     // Use format! for the status line so we keep the exact reason phrase the caller wants.
     // rsip::StatusCode maps code -> canonical reason, which may differ from what the caller
     // intends (e.g., 481 "Call/Transaction Does Not Exist" vs rsip's default).
-    Some(format!(
-        "SIP/2.0 {} {}\r\n{}\r\n",
-        code,
-        reason,
-        headers,
-    ))
+    Some(format!("SIP/2.0 {} {}\r\n{}\r\n", code, reason, headers,))
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,7 +1675,6 @@ mod tests {
         assert_eq!(q("x\"\r\nVia: evil"), "\"x\\\"Via: evil\"");
         assert_eq!(q(""), "\"\"");
     }
-
 
     #[test]
     fn contact_uri_takes_the_bracketed_uri_and_drops_header_params() {
@@ -1580,7 +1727,10 @@ mod tests {
         };
         let msg = build_register(&account, addr(), "cid", 1, "tag", None, 300);
         assert!(msg.contains("Supported: outbound, path\r\n"), "{msg}");
-        assert!(msg.contains(";transport=tcp;ob>;+sip.instance=\"<urn:uuid:"), "{msg}");
+        assert!(
+            msg.contains(";transport=tcp;ob>;+sip.instance=\"<urn:uuid:"),
+            "{msg}"
+        );
         assert!(msg.contains(";reg-id=1\r\n"), "{msg}");
     }
 
@@ -1591,10 +1741,15 @@ mod tests {
     /// them anyway is still decoded.
     #[test]
     fn g729_is_offered_and_answered() {
-        use super::super::account::{CodecPreference, default_codec_preferences};
+        use super::super::account::{default_codec_preferences, CodecPreference};
         use rtp_engine::CodecType;
 
-        let defaults = build_sdp_offer_with_codecs("10.0.0.2".to_string(), 40000, None, &default_codec_preferences());
+        let defaults = build_sdp_offer_with_codecs(
+            "10.0.0.2".to_string(),
+            40000,
+            None,
+            &default_codec_preferences(),
+        );
         // No SDP in the panic messages: the `o=` line carries the session id,
         // and CodeQL reads printing it as cleartext logging of a secret.
         assert!(defaults.contains("m=audio 40000 RTP/AVP 111 0 8 18 101 102\r\n"));
@@ -1605,13 +1760,26 @@ mod tests {
             40000,
             None,
             &[
-                CodecPreference { codec: CodecType::G729, enabled: true, priority: 1 },
-                CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
+                CodecPreference {
+                    codec: CodecType::G729,
+                    enabled: true,
+                    priority: 1,
+                },
+                CodecPreference {
+                    codec: CodecType::Pcmu,
+                    enabled: true,
+                    priority: 2,
+                },
             ],
         );
         assert!(saved.contains("m=audio 40000 RTP/AVP 18 0 101\r\n"));
 
-        let answer = build_sdp_answer("m=audio 20000 RTP/AVP 18 0\r\n", "10.0.0.2".to_string(), 30000).unwrap();
+        let answer = build_sdp_answer(
+            "m=audio 20000 RTP/AVP 18 0\r\n",
+            "10.0.0.2".to_string(),
+            30000,
+        )
+        .unwrap();
         assert!(answer.contains("m=audio 30000 RTP/AVP 18 0\r\n"));
         assert!(answer.contains("a=rtpmap:18 G729/8000\r\na=fmtp:18 annexb=no\r\n"));
     }
@@ -1639,9 +1807,15 @@ mod tests {
     #[test]
     fn bye_has_correct_from_to_uris() {
         let msg = build_bye(
-            "sip:pbx@159.203.80.231", addr(), "call-123", 2,
-            "from-tag", "to-tag", "UDP",
-            "sip:1001@example.com", "sip:1002@example.com",
+            "sip:pbx@159.203.80.231",
+            addr(),
+            "call-123",
+            2,
+            "from-tag",
+            "to-tag",
+            "UDP",
+            "sip:1001@example.com",
+            "sip:1002@example.com",
         );
         assert!(msg.starts_with("BYE sip:pbx@159.203.80.231 SIP/2.0\r\n"));
         assert!(msg.contains("From: <sip:1001@example.com>;tag=from-tag"));
@@ -1656,9 +1830,16 @@ mod tests {
     fn bye_with_routes_includes_route_headers() {
         let routes = vec!["<sip:proxy.example.com;lr>".to_string()];
         let msg = build_bye_with_routes(
-            "sip:pbx@159.203.80.231", addr(), "call-123", 2,
-            "ft", "tt", "UDP", &routes,
-            "sip:1001@example.com", "sip:1002@example.com",
+            "sip:pbx@159.203.80.231",
+            addr(),
+            "call-123",
+            2,
+            "ft",
+            "tt",
+            "UDP",
+            &routes,
+            "sip:1001@example.com",
+            "sip:1002@example.com",
         );
         assert!(msg.contains("Route: <sip:proxy.example.com;lr>"));
         assert!(msg.contains("From: <sip:1001@example.com>;tag=ft"));
@@ -1668,9 +1849,16 @@ mod tests {
     #[test]
     fn ack_has_correct_from_to_uris() {
         let msg = build_ack(
-            "sip:1002@example.com", addr(), "call-123", 1,
-            "ft", "tt", "UDP", "z9hG4bK-test",
-            "sip:1001@example.com", "sip:1002@example.com",
+            "sip:1002@example.com",
+            addr(),
+            "call-123",
+            1,
+            "ft",
+            "tt",
+            "UDP",
+            "z9hG4bK-test",
+            "sip:1001@example.com",
+            "sip:1002@example.com",
         );
         assert!(msg.starts_with("ACK sip:1002@example.com SIP/2.0\r\n"));
         assert!(msg.contains("From: <sip:1001@example.com>;tag=ft"));
@@ -1681,8 +1869,15 @@ mod tests {
     #[test]
     fn cancel_has_correct_from_to_uris() {
         let msg = build_cancel(
-            "sip:1002@example.com", addr(), "call-123", 1,
-            "ft", "UDP", "z9hG4bK-branch", "sip:1001@example.com", "sip:1002@example.com",
+            "sip:1002@example.com",
+            addr(),
+            "call-123",
+            1,
+            "ft",
+            "UDP",
+            "z9hG4bK-branch",
+            "sip:1001@example.com",
+            "sip:1002@example.com",
         );
         assert!(msg.starts_with("CANCEL sip:1002@example.com SIP/2.0\r\n"));
         assert!(msg.contains("From: <sip:1001@example.com>;tag=ft"));
@@ -1693,14 +1888,48 @@ mod tests {
 
     #[test]
     fn all_messages_end_with_double_crlf() {
-        let bye = build_bye("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "sip:a@b", "sip:x@y");
+        let bye = build_bye(
+            "sip:x@y",
+            addr(),
+            "c",
+            1,
+            "f",
+            "t",
+            "UDP",
+            "sip:a@b",
+            "sip:x@y",
+        );
         assert!(bye.ends_with("\r\n\r\n"), "BYE must end with \\r\\n\\r\\n");
 
-        let ack = build_ack("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
+        let ack = build_ack(
+            "sip:x@y",
+            addr(),
+            "c",
+            1,
+            "f",
+            "t",
+            "UDP",
+            "z9hG4bK-b",
+            "sip:a@b",
+            "sip:x@y",
+        );
         assert!(ack.ends_with("\r\n\r\n"), "ACK must end with \\r\\n\\r\\n");
 
-        let cancel = build_cancel("sip:x@y", addr(), "c", 1, "f", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
-        assert!(cancel.ends_with("\r\n\r\n"), "CANCEL must end with \\r\\n\\r\\n");
+        let cancel = build_cancel(
+            "sip:x@y",
+            addr(),
+            "c",
+            1,
+            "f",
+            "UDP",
+            "z9hG4bK-b",
+            "sip:a@b",
+            "sip:x@y",
+        );
+        assert!(
+            cancel.ends_with("\r\n\r\n"),
+            "CANCEL must end with \\r\\n\\r\\n"
+        );
     }
 
     #[test]
@@ -1722,17 +1951,49 @@ mod tests {
 
     #[test]
     fn no_message_contains_hardcoded_user_at_host() {
-        let bye = build_bye("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "sip:a@b", "sip:x@y");
+        let bye = build_bye(
+            "sip:x@y",
+            addr(),
+            "c",
+            1,
+            "f",
+            "t",
+            "UDP",
+            "sip:a@b",
+            "sip:x@y",
+        );
         assert!(!bye.contains("user@host"));
 
-        let ack = build_ack("sip:x@y", addr(), "c", 1, "f", "t", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
+        let ack = build_ack(
+            "sip:x@y",
+            addr(),
+            "c",
+            1,
+            "f",
+            "t",
+            "UDP",
+            "z9hG4bK-b",
+            "sip:a@b",
+            "sip:x@y",
+        );
         assert!(!ack.contains("user@host"));
 
-        let cancel = build_cancel("sip:x@y", addr(), "c", 1, "f", "UDP", "z9hG4bK-b", "sip:a@b", "sip:x@y");
+        let cancel = build_cancel(
+            "sip:x@y",
+            addr(),
+            "c",
+            1,
+            "f",
+            "UDP",
+            "z9hG4bK-b",
+            "sip:a@b",
+            "sip:x@y",
+        );
         assert!(!cancel.contains("user@host"));
     }
 
-    const SAVP_OFFER: &str = "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+    const SAVP_OFFER: &str =
+        "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
         m=audio 20000 RTP/SAVP 0 8 96\r\na=rtpmap:0 PCMU/8000\r\n\
         a=rtpmap:96 telephone-event/8000\r\n\
         a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVyS3cm9vZ3J0ZXN0aW5na2V5bWF0ZXJpYWwxMjM0\r\n";
@@ -1772,7 +2033,10 @@ mod tests {
                        a=rtpmap:111 opus/48000/2\r\n\
                        a=rtpmap:96 telephone-event/8000\r\n";
         assert_eq!(parse_telephone_event(only_8k, 48000), Some((96, 8000)));
-        assert_eq!(parse_telephone_event("a=rtpmap:0 PCMU/8000\r\n", 8000), None);
+        assert_eq!(
+            parse_telephone_event("a=rtpmap:0 PCMU/8000\r\n", 8000),
+            None
+        );
     }
 
     /// Offering Opus also offers telephone-event at 48 kHz, on its own
@@ -1788,11 +2052,22 @@ mod tests {
             40000,
             None,
             &[
-                CodecPreference { codec: CodecType::Opus, enabled: true, priority: 1 },
-                CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
+                CodecPreference {
+                    codec: CodecType::Opus,
+                    enabled: true,
+                    priority: 1,
+                },
+                CodecPreference {
+                    codec: CodecType::Pcmu,
+                    enabled: true,
+                    priority: 2,
+                },
             ],
         );
-        assert!(with_opus.contains("m=audio 40000 RTP/AVP 111 0 101 102\r\n"), "{with_opus}");
+        assert!(
+            with_opus.contains("m=audio 40000 RTP/AVP 111 0 101 102\r\n"),
+            "{with_opus}"
+        );
         assert!(with_opus.contains("a=rtpmap:111 opus/48000/2\r\n"));
         assert!(with_opus.contains("a=rtpmap:101 telephone-event/8000\r\na=fmtp:101 0-16\r\n"));
         assert!(with_opus.contains("a=rtpmap:102 telephone-event/48000\r\na=fmtp:102 0-16\r\n"));
@@ -1802,11 +2077,22 @@ mod tests {
             40000,
             None,
             &[
-                CodecPreference { codec: CodecType::Opus, enabled: false, priority: 1 },
-                CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
+                CodecPreference {
+                    codec: CodecType::Opus,
+                    enabled: false,
+                    priority: 1,
+                },
+                CodecPreference {
+                    codec: CodecType::Pcmu,
+                    enabled: true,
+                    priority: 2,
+                },
             ],
         );
-        assert!(without_opus.contains("m=audio 40000 RTP/AVP 0 101\r\n"), "{without_opus}");
+        assert!(
+            without_opus.contains("m=audio 40000 RTP/AVP 0 101\r\n"),
+            "{without_opus}"
+        );
         assert!(!without_opus.contains("telephone-event/48000"));
         assert!(!without_opus.contains("opus"));
     }
@@ -1824,8 +2110,13 @@ mod tests {
                      a=rtpmap:97 telephone-event/48000\r\n\
                      a=rtpmap:98 telephone-event/8000\r\n";
         let answer = build_sdp_answer(offer, "10.0.0.2".to_string(), 30000).unwrap();
-        assert!(answer.contains("m=audio 30000 RTP/AVP 96 0 97 98\r\n"), "{answer}");
-        assert!(answer.contains("a=rtpmap:96 opus/48000/2\r\na=fmtp:96 minptime=10;useinbandfec=1\r\n"));
+        assert!(
+            answer.contains("m=audio 30000 RTP/AVP 96 0 97 98\r\n"),
+            "{answer}"
+        );
+        assert!(
+            answer.contains("a=rtpmap:96 opus/48000/2\r\na=fmtp:96 minptime=10;useinbandfec=1\r\n")
+        );
         assert!(answer.contains("a=rtpmap:0 PCMU/8000\r\n"));
         assert!(answer.contains("a=rtpmap:97 telephone-event/48000\r\na=fmtp:97 0-16\r\n"));
         assert!(answer.contains("a=rtpmap:98 telephone-event/8000\r\na=fmtp:98 0-16\r\n"));
@@ -1856,25 +2147,39 @@ mod tests {
 
         // Nothing usable at all: no answer (the caller sends 488), never a
         // PCMU the offer did not name.
-        let none = build_sdp_answer("m=audio 20000 RTP/AVP 9\r\na=rtpmap:9 G722/8000\r\n", "10.0.0.2".to_string(), 30000);
+        let none = build_sdp_answer(
+            "m=audio 20000 RTP/AVP 9\r\na=rtpmap:9 G722/8000\r\n",
+            "10.0.0.2".to_string(),
+            30000,
+        );
         assert_eq!(none, None);
     }
 
-    fn prefs(list: &[(rtp_engine::CodecType, bool)]) -> Vec<super::super::account::CodecPreference> {
+    fn prefs(
+        list: &[(rtp_engine::CodecType, bool)],
+    ) -> Vec<super::super::account::CodecPreference> {
         list.iter()
             .enumerate()
-            .map(|(i, &(codec, enabled))| super::super::account::CodecPreference {
-                codec,
-                enabled,
-                priority: i as u8 + 1,
-            })
+            .map(
+                |(i, &(codec, enabled))| super::super::account::CodecPreference {
+                    codec,
+                    enabled,
+                    priority: i as u8 + 1,
+                },
+            )
             .collect()
     }
 
     /// The first payload type on the answer's m= line.
     fn first_answered_pt(answer: &str) -> u8 {
-        let m = answer.lines().find(|l| l.starts_with("m=audio ")).expect("an m= line");
-        m.split_whitespace().nth(3).and_then(|pt| pt.parse().ok()).expect("a payload type")
+        let m = answer
+            .lines()
+            .find(|l| l.starts_with("m=audio "))
+            .expect("an m= line");
+        m.split_whitespace()
+            .nth(3)
+            .and_then(|pt| pt.parse().ok())
+            .expect("a payload type")
     }
 
     /// M1: a Yealink offers G.722 first. The session used to run G.722 (PT 9)
@@ -1887,16 +2192,35 @@ mod tests {
         let offer = "v=0\r\nc=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 9 0 8 101\r\n\
                      a=rtpmap:9 G722/8000\r\na=rtpmap:101 telephone-event/8000\r\n";
         let telephony = prefs(&[(CodecType::Pcmu, true), (CodecType::Pcma, true)]);
-        for user in [None, Some(crate::sip::account::default_codec_preferences()), Some(telephony)] {
+        for user in [
+            None,
+            Some(crate::sip::account::default_codec_preferences()),
+            Some(telephony),
+        ] {
             let user = user.as_deref();
             let got = negotiate_audio(offer, user).expect("a codec in common");
-            assert_eq!(got, NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 });
+            assert_eq!(
+                got,
+                NegotiatedAudio {
+                    codec: CodecType::Pcmu,
+                    pt: 0
+                }
+            );
             let answer = build_sdp_answer_with(
                 offer,
-                &AnswerOptions { ip: "10.0.0.2".into(), rtp_port: 30000, crypto_b64_key: None, codecs: user, origin: None },
+                &AnswerOptions {
+                    ip: "10.0.0.2".into(),
+                    rtp_port: 30000,
+                    crypto_b64_key: None,
+                    codecs: user,
+                    origin: None,
+                },
             )
             .expect("an answer");
-            assert!(answer.contains("m=audio 30000 RTP/AVP 0 8 101\r\n"), "{answer}");
+            assert!(
+                answer.contains("m=audio 30000 RTP/AVP 0 8 101\r\n"),
+                "{answer}"
+            );
             assert_eq!(first_answered_pt(&answer), got.pt);
         }
     }
@@ -1908,22 +2232,43 @@ mod tests {
         use rtp_engine::CodecType;
         let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0 8 101\r\n";
         let user = prefs(&[(CodecType::Pcma, true), (CodecType::Pcmu, true)]);
-        assert_eq!(negotiate_audio(offer, Some(&user)), Some(NegotiatedAudio { codec: CodecType::Pcma, pt: 8 }));
+        assert_eq!(
+            negotiate_audio(offer, Some(&user)),
+            Some(NegotiatedAudio {
+                codec: CodecType::Pcma,
+                pt: 8
+            })
+        );
         let answer = build_sdp_answer_with(
             offer,
-            &AnswerOptions { ip: "10.0.0.2".into(), rtp_port: 30000, crypto_b64_key: None, codecs: Some(&user), origin: None },
+            &AnswerOptions {
+                ip: "10.0.0.2".into(),
+                rtp_port: 30000,
+                crypto_b64_key: None,
+                codecs: Some(&user),
+                origin: None,
+            },
         )
         .unwrap();
-        assert!(answer.contains("m=audio 30000 RTP/AVP 8 0 101\r\n"), "{answer}");
+        assert!(
+            answer.contains("m=audio 30000 RTP/AVP 8 0 101\r\n"),
+            "{answer}"
+        );
 
         let no_pcmu = prefs(&[(CodecType::Pcmu, false), (CodecType::Pcma, true)]);
-        assert_eq!(negotiate_audio(offer, Some(&no_pcmu)).map(|n| n.pt), Some(8));
+        assert_eq!(
+            negotiate_audio(offer, Some(&no_pcmu)).map(|n| n.pt),
+            Some(8)
+        );
         let pcmu_only_offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0 101\r\n";
         assert_eq!(negotiate_audio(pcmu_only_offer, Some(&no_pcmu)), None);
 
         // A list with nothing enabled is a broken setting, not "refuse all".
         let none_enabled = prefs(&[(CodecType::Pcmu, false)]);
-        assert_eq!(negotiate_audio(pcmu_only_offer, Some(&none_enabled)).map(|n| n.pt), Some(0));
+        assert_eq!(
+            negotiate_audio(pcmu_only_offer, Some(&none_enabled)).map(|n| n.pt),
+            Some(0)
+        );
     }
 
     /// `18 0`: G.729 offered first runs when the offer's order stands, and
@@ -1932,9 +2277,21 @@ mod tests {
     fn g729_first_offer_runs_g729_unless_the_preferences_rank_it_lower() {
         use rtp_engine::CodecType;
         let offer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 18 0\r\n";
-        assert_eq!(negotiate_audio(offer, None), Some(NegotiatedAudio { codec: CodecType::G729, pt: 18 }));
+        assert_eq!(
+            negotiate_audio(offer, None),
+            Some(NegotiatedAudio {
+                codec: CodecType::G729,
+                pt: 18
+            })
+        );
         let defaults = crate::sip::account::default_codec_preferences();
-        assert_eq!(negotiate_audio(offer, Some(&defaults)), Some(NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 }));
+        assert_eq!(
+            negotiate_audio(offer, Some(&defaults)),
+            Some(NegotiatedAudio {
+                codec: CodecType::Pcmu,
+                pt: 0
+            })
+        );
     }
 
     /// Only codecs this phone cannot carry: nothing to negotiate, no answer.
@@ -1953,7 +2310,10 @@ mod tests {
             offer.len(),
             offer
         );
-        assert_eq!(build_200_ok_invite_srtp(&invite, addr(), 30000, "t", None, None, None), None);
+        assert_eq!(
+            build_200_ok_invite_srtp(&invite, addr(), 30000, "t", None, None, None),
+            None
+        );
     }
 
     /// The UAC side: the answer to our offer is read with the same filter, in
@@ -1963,7 +2323,13 @@ mod tests {
         use rtp_engine::CodecType;
         let answer = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 96 0 101\r\n\
                       a=rtpmap:96 opus/48000/2\r\na=rtpmap:101 telephone-event/8000\r\n";
-        assert_eq!(negotiate_audio(answer, None), Some(NegotiatedAudio { codec: CodecType::Opus, pt: 96 }));
+        assert_eq!(
+            negotiate_audio(answer, None),
+            Some(NegotiatedAudio {
+                codec: CodecType::Opus,
+                pt: 96
+            })
+        );
         let pcma_first = "c=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 8 0\r\n";
         assert_eq!(negotiate_audio(pcma_first, None).map(|n| n.pt), Some(8));
     }
@@ -1979,10 +2345,16 @@ mod tests {
             ("a=sendrecv\r\n", "a=sendrecv\r\n"),
             ("", "a=sendrecv\r\n"),
         ] {
-            let answer = build_sdp_answer(&format!("{base}{offered}"), "10.0.0.2".into(), 30000).unwrap();
+            let answer =
+                build_sdp_answer(&format!("{base}{offered}"), "10.0.0.2".into(), 30000).unwrap();
             assert!(answer.contains(answered), "{offered:?} answered:\n{answer}");
-            assert_eq!(answer.matches("a=sendrecv").count() + answer.matches("a=sendonly").count()
-                + answer.matches("a=recvonly").count() + answer.matches("a=inactive").count(), 1);
+            assert_eq!(
+                answer.matches("a=sendrecv").count()
+                    + answer.matches("a=sendonly").count()
+                    + answer.matches("a=recvonly").count()
+                    + answer.matches("a=inactive").count(),
+                1
+            );
         }
         // Session-level attribute, and the RFC 2543 hold address.
         let session = "v=0\r\nc=IN IP4 10.0.0.1\r\na=sendonly\r\nm=audio 20000 RTP/AVP 0\r\n";
@@ -1990,7 +2362,8 @@ mod tests {
         let old_hold = "v=0\r\nc=IN IP4 0.0.0.0\r\nm=audio 20000 RTP/AVP 0\r\n";
         assert_eq!(offer_direction(old_hold), Direction::SendOnly);
         // A media-level attribute wins over the session's.
-        let both = "v=0\r\na=sendonly\r\nc=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0\r\na=sendrecv\r\n";
+        let both =
+            "v=0\r\na=sendonly\r\nc=IN IP4 10.0.0.1\r\nm=audio 20000 RTP/AVP 0\r\na=sendrecv\r\n";
         assert_eq!(offer_direction(both), Direction::SendRecv);
     }
 
@@ -2012,12 +2385,24 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(answer.contains("o=aria 42 7 IN IP4 10.0.0.2\r\n"), "{answer}");
+        assert!(
+            answer.contains("o=aria 42 7 IN IP4 10.0.0.2\r\n"),
+            "{answer}"
+        );
         let restamped = with_sdp_origin(&answer, SdpOrigin { id: 42, version: 8 });
-        assert!(restamped.contains("o=aria 42 8 IN IP4 10.0.0.2\r\n"), "{restamped}");
+        assert!(
+            restamped.contains("o=aria 42 8 IN IP4 10.0.0.2\r\n"),
+            "{restamped}"
+        );
         assert_eq!(sdp_without_origin(&answer), sdp_without_origin(&restamped));
 
-        let ours = build_sdp_offer_with_origin("10.0.0.2".into(), 30000, None, &crate::sip::account::default_codec_preferences(), 99);
+        let ours = build_sdp_offer_with_origin(
+            "10.0.0.2".into(),
+            30000,
+            None,
+            &crate::sip::account::default_codec_preferences(),
+            99,
+        );
         assert!(ours.contains("o=aria 99 1 IN IP4 10.0.0.2\r\n"), "{ours}");
     }
 
@@ -2034,10 +2419,14 @@ mod tests {
             SAVP_OFFER
         );
         let key = "WVyS3cm9vZ3J0ZXN0aW5na2V5bWF0ZXJpYWwxMjM0";
-        let enc = build_200_ok_invite_srtp(&invite, addr(), 30000, "t", Some("1001"), None, Some(key))
-            .expect("200 OK");
+        let enc =
+            build_200_ok_invite_srtp(&invite, addr(), 30000, "t", Some("1001"), None, Some(key))
+                .expect("200 OK");
         assert!(enc.contains("m=audio 30000 RTP/SAVP"), "{enc}");
-        assert!(enc.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"), "{enc}");
+        assert!(
+            enc.contains("a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:"),
+            "{enc}"
+        );
 
         let plain = build_200_ok_invite_srtp(&invite, addr(), 30000, "t", Some("1001"), None, None)
             .expect("200 OK");

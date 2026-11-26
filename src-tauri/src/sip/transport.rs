@@ -182,7 +182,14 @@ impl UdpTransport {
             }
         });
 
-        Ok((Self { socket, local_addr, diagnostic: None }, rx))
+        Ok((
+            Self {
+                socket,
+                local_addr,
+                diagnostic: None,
+            },
+            rx,
+        ))
     }
 
     pub async fn send_to(&self, data: &[u8], addr: SocketAddr) -> Result<(), String> {
@@ -395,11 +402,11 @@ impl TcpTransport {
         // 10 second connection timeout
         let stream = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            TcpStream::connect(server_addr)
+            TcpStream::connect(server_addr),
         )
-            .await
-            .map_err(|_| format!("TCP connect to {} timed out", server_addr))?
-            .map_err(|e| format!("TCP connect to {} failed: {}", server_addr, e))?;
+        .await
+        .map_err(|_| format!("TCP connect to {} timed out", server_addr))?
+        .map_err(|e| format!("TCP connect to {} failed: {}", server_addr, e))?;
 
         let local_addr = stream
             .local_addr()
@@ -423,7 +430,14 @@ impl TcpTransport {
             stream_receive_loop(read_half, tx, remote, "TCP").await;
         });
 
-        Ok((Self { writer, local_addr, diagnostic: None }, rx))
+        Ok((
+            Self {
+                writer,
+                local_addr,
+                diagnostic: None,
+            },
+            rx,
+        ))
     }
 
     pub async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> Result<(), String> {
@@ -468,11 +482,11 @@ impl TlsTransport {
         // 10 second TCP connection timeout
         let tcp_stream = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            TcpStream::connect(server_addr)
+            TcpStream::connect(server_addr),
         )
-            .await
-            .map_err(|_| format!("TLS/TCP connect to {} timed out", server_addr))?
-            .map_err(|e| format!("TLS/TCP connect to {} failed: {}", server_addr, e))?;
+        .await
+        .map_err(|_| format!("TLS/TCP connect to {} timed out", server_addr))?
+        .map_err(|e| format!("TLS/TCP connect to {} failed: {}", server_addr, e))?;
 
         let local_addr = tcp_stream
             .local_addr()
@@ -490,11 +504,17 @@ impl TlsTransport {
         // 10 second TLS handshake timeout
         let tls_stream = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            connector.connect(dns_name, tcp_stream)
+            connector.connect(dns_name, tcp_stream),
         )
-            .await
-            .map_err(|_| format!("TLS handshake with {} timed out", server_addr))?
-            .map_err(|e| format!("TLS handshake with {} failed: {}", server_addr, describe_tls_error(&e)))?;
+        .await
+        .map_err(|_| format!("TLS handshake with {} timed out", server_addr))?
+        .map_err(|e| {
+            format!(
+                "TLS handshake with {} failed: {}",
+                server_addr,
+                describe_tls_error(&e)
+            )
+        })?;
 
         log::info!(
             "SIP TLS transport connected {} -> {}",
@@ -512,7 +532,14 @@ impl TlsTransport {
             stream_receive_loop(read_half, tx, remote, "TLS").await;
         });
 
-        Ok((Self { writer, local_addr, diagnostic: None }, rx))
+        Ok((
+            Self {
+                writer,
+                local_addr,
+                diagnostic: None,
+            },
+            rx,
+        ))
     }
 
     pub async fn send_to(&self, data: &[u8], _addr: SocketAddr) -> Result<(), String> {
@@ -553,7 +580,10 @@ impl TlsTransport {
 /// name mismatch` prefixes that `connection::classify_connect` looks for.
 pub(crate) fn describe_tls_error(e: &std::io::Error) -> String {
     use rustls::CertificateError as C;
-    match e.get_ref().and_then(|inner| inner.downcast_ref::<rustls::Error>()) {
+    match e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+    {
         Some(rustls::Error::InvalidCertificate(c)) => match c {
             C::UnknownIssuer | C::BadSignature | C::Expired | C::NotValidYet | C::Revoked => {
                 format!("certificate not trusted: {c:?}")

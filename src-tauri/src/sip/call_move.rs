@@ -53,7 +53,9 @@ fn clean(id: &str) -> Option<String> {
 impl PendingMoves {
     /// Remember a move for `account_id`; false for an id that is not a plausible one.
     pub fn register(&self, account_id: &str, move_id: &str, now: Instant) -> bool {
-        let Some(id) = clean(move_id) else { return false };
+        let Some(id) = clean(move_id) else {
+            return false;
+        };
         let mut w = self.waiting.lock().unwrap_or_else(|p| p.into_inner());
         w.retain(|_, at| now.duration_since(*at) < PENDING_TTL);
         w.insert((account_id.to_string(), id), now);
@@ -64,7 +66,10 @@ impl PendingMoves {
 
     /// A move request is about to be posted.
     pub fn request_started(&self, now: Instant) {
-        self.in_flight.lock().unwrap_or_else(|p| p.into_inner()).push(now);
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(now);
     }
 
     /// A move request was answered (or failed): release any held INVITE.
@@ -94,7 +99,12 @@ impl PendingMoves {
     /// [`classify`](Self::classify), but an INVITE with a move header whose id
     /// is not known yet is held for up to [`REQUEST_GRACE`] while this app has
     /// a move request in flight, since the 202 that names the id may be behind it.
-    pub async fn classify_waiting(&self, account_id: &str, header: Option<&str>, grace: Duration) -> MoveInvite {
+    pub async fn classify_waiting(
+        &self,
+        account_id: &str,
+        header: Option<&str>,
+        grace: Duration,
+    ) -> MoveInvite {
         if let Some(id) = header.and_then(clean) {
             let deadline = tokio::time::Instant::now() + grace;
             loop {
@@ -115,7 +125,9 @@ impl PendingMoves {
     /// Classify an INVITE's header for `account_id`. A pending id is used up:
     /// the PBX sends one INVITE per move, and a retried id must ring.
     pub fn classify(&self, account_id: &str, header: Option<&str>, now: Instant) -> MoveInvite {
-        let Some(id) = header.and_then(clean) else { return MoveInvite::None };
+        let Some(id) = header.and_then(clean) else {
+            return MoveInvite::None;
+        };
         let mut w = self.waiting.lock().unwrap_or_else(|p| p.into_inner());
         match w.remove(&(account_id.to_string(), id.clone())) {
             Some(at) if now.duration_since(at) < PENDING_TTL => MoveInvite::AutoAnswer(id),
@@ -142,13 +154,19 @@ mod tests {
         let p = PendingMoves::default();
         let t = Instant::now();
         assert!(p.register(A, ID, t));
-        assert_eq!(p.classify(A, Some(ID), t + Duration::from_secs(2)), MoveInvite::AutoAnswer(ID.into()));
+        assert_eq!(
+            p.classify(A, Some(ID), t + Duration::from_secs(2)),
+            MoveInvite::AutoAnswer(ID.into())
+        );
     }
 
     #[test]
     fn a_move_someone_else_started_rings() {
         let p = PendingMoves::default();
-        assert_eq!(p.classify(A, Some(ID), Instant::now()), MoveInvite::Ring(ID.into()));
+        assert_eq!(
+            p.classify(A, Some(ID), Instant::now()),
+            MoveInvite::Ring(ID.into())
+        );
     }
 
     #[test]
@@ -156,7 +174,10 @@ mod tests {
         let p = PendingMoves::default();
         let t = Instant::now();
         p.register(A, ID, t);
-        assert!(matches!(p.classify(A, Some("other-id"), t), MoveInvite::Ring(_)));
+        assert!(matches!(
+            p.classify(A, Some("other-id"), t),
+            MoveInvite::Ring(_)
+        ));
     }
 
     #[test]
@@ -164,7 +185,10 @@ mod tests {
         let p = PendingMoves::default();
         let t = Instant::now();
         p.register(A, ID, t);
-        assert_eq!(p.classify(A, Some(ID), t + PENDING_TTL), MoveInvite::Ring(ID.into()));
+        assert_eq!(
+            p.classify(A, Some(ID), t + PENDING_TTL),
+            MoveInvite::Ring(ID.into())
+        );
     }
 
     #[test]
@@ -172,7 +196,10 @@ mod tests {
         let p = PendingMoves::default();
         let t = Instant::now();
         p.register(A, ID, t);
-        assert!(matches!(p.classify(A, Some(ID), t), MoveInvite::AutoAnswer(_)));
+        assert!(matches!(
+            p.classify(A, Some(ID), t),
+            MoveInvite::AutoAnswer(_)
+        ));
         assert!(matches!(p.classify(A, Some(ID), t), MoveInvite::Ring(_)));
     }
 
@@ -181,7 +208,10 @@ mod tests {
         let p = PendingMoves::default();
         assert_eq!(p.classify(A, None, Instant::now()), MoveInvite::None);
         assert_eq!(p.classify(A, Some("  "), Instant::now()), MoveInvite::None);
-        assert_eq!(p.classify(A, Some("a b;c"), Instant::now()), MoveInvite::None);
+        assert_eq!(
+            p.classify(A, Some("a b;c"), Instant::now()),
+            MoveInvite::None
+        );
         assert!(!p.register(A, "a b", Instant::now()));
     }
 
@@ -204,7 +234,10 @@ mod tests {
     async fn an_invite_with_no_request_in_flight_is_not_held() {
         let p = PendingMoves::default();
         let t = std::time::Instant::now();
-        assert_eq!(p.classify_waiting(A, Some(ID), REQUEST_GRACE).await, MoveInvite::Ring(ID.into()));
+        assert_eq!(
+            p.classify_waiting(A, Some(ID), REQUEST_GRACE).await,
+            MoveInvite::Ring(ID.into())
+        );
         assert!(t.elapsed() < Duration::from_millis(500));
     }
 
@@ -213,7 +246,11 @@ mod tests {
         let p = PendingMoves::default();
         p.request_started(Instant::now());
         let t = std::time::Instant::now();
-        assert_eq!(p.classify_waiting(A, Some(ID), Duration::from_millis(200)).await, MoveInvite::Ring(ID.into()));
+        assert_eq!(
+            p.classify_waiting(A, Some(ID), Duration::from_millis(200))
+                .await,
+            MoveInvite::Ring(ID.into())
+        );
         assert!(t.elapsed() >= Duration::from_millis(150));
     }
 
@@ -226,14 +263,20 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
             q.request_finished();
         });
-        assert_eq!(p.classify_waiting(A, Some(ID), REQUEST_GRACE).await, MoveInvite::Ring(ID.into()));
+        assert_eq!(
+            p.classify_waiting(A, Some(ID), REQUEST_GRACE).await,
+            MoveInvite::Ring(ID.into())
+        );
     }
 
     #[tokio::test]
     async fn an_ordinary_invite_is_never_held() {
         let p = PendingMoves::default();
         p.request_started(Instant::now());
-        assert_eq!(p.classify_waiting(A, None, REQUEST_GRACE).await, MoveInvite::None);
+        assert_eq!(
+            p.classify_waiting(A, None, REQUEST_GRACE).await,
+            MoveInvite::None
+        );
     }
 
     #[test]
@@ -241,9 +284,15 @@ mod tests {
         let p = PendingMoves::default();
         let t = Instant::now();
         p.register(A, ID, t);
-        assert_eq!(p.classify("acct-b", Some(ID), t), MoveInvite::Ring(ID.into()));
+        assert_eq!(
+            p.classify("acct-b", Some(ID), t),
+            MoveInvite::Ring(ID.into())
+        );
         // Still waiting for its own account.
-        assert_eq!(p.classify(A, Some(ID), t), MoveInvite::AutoAnswer(ID.into()));
+        assert_eq!(
+            p.classify(A, Some(ID), t),
+            MoveInvite::AutoAnswer(ID.into())
+        );
     }
 
     #[tokio::test]
@@ -251,7 +300,10 @@ mod tests {
         let p = PendingMoves::default();
         p.request_started(Instant::now() - REQUEST_TTL);
         let t = std::time::Instant::now();
-        assert_eq!(p.classify_waiting(A, Some(ID), REQUEST_GRACE).await, MoveInvite::Ring(ID.into()));
+        assert_eq!(
+            p.classify_waiting(A, Some(ID), REQUEST_GRACE).await,
+            MoveInvite::Ring(ID.into())
+        );
         assert!(t.elapsed() < Duration::from_millis(500));
     }
 
@@ -260,6 +312,9 @@ mod tests {
         let p = PendingMoves::default();
         let t = Instant::now();
         p.register(A, &ID.to_uppercase(), t);
-        assert!(matches!(p.classify(A, Some(&format!(" {ID} ")), t), MoveInvite::AutoAnswer(_)));
+        assert!(matches!(
+            p.classify(A, Some(&format!(" {ID} ")), t),
+            MoveInvite::AutoAnswer(_)
+        ));
     }
 }

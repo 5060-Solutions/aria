@@ -279,7 +279,10 @@ mod tests {
 
     #[test]
     fn test_offline_serializes_for_the_frontend() {
-        assert_eq!(serde_json::to_string(&PresenceState::Offline).unwrap(), "\"offline\"");
+        assert_eq!(
+            serde_json::to_string(&PresenceState::Offline).unwrap(),
+            "\"offline\""
+        );
     }
 
     #[test]

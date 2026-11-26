@@ -35,7 +35,9 @@ impl Stub {
         let seen = requests.clone();
         tokio::spawn(async move {
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
                 let reply = reply.clone();
                 let seen = seen.clone();
                 tokio::spawn(async move {
@@ -48,7 +50,9 @@ impl Stub {
                         }
                     }
                     let head = String::from_utf8_lossy(&buf).to_string();
-                    seen.lock().unwrap().push(head.lines().next().unwrap_or_default().to_string());
+                    seen.lock()
+                        .unwrap()
+                        .push(head.lines().next().unwrap_or_default().to_string());
                     match reply {
                         Reply::Raw(r) => {
                             let _ = sock.write_all(r.as_bytes()).await;
@@ -63,7 +67,12 @@ impl Stub {
     }
 
     async fn json(status: &str, body: &serde_json::Value) -> Self {
-        Self::start(Reply::Raw(response(status, "application/json", &body.to_string()))).await
+        Self::start(Reply::Raw(response(
+            status,
+            "application/json",
+            &body.to_string(),
+        )))
+        .await
     }
 
     fn url(&self) -> reqwest::Url {
@@ -129,7 +138,8 @@ fn obj(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
 
 #[test]
 fn accepts_an_https_redeem_url() {
-    let url = validate_redeem_url("https://api.ariaroute.com/provision/softphone/abc", false).unwrap();
+    let url =
+        validate_redeem_url("https://api.ariaroute.com/provision/softphone/abc", false).unwrap();
     assert_eq!(server_host(&url), "api.ariaroute.com");
 }
 
@@ -139,8 +149,14 @@ fn rejects_urls_outside_the_contract() {
         ("http://api.ariaroute.com/provision/softphone/abc", true),
         ("http://localhost:8787/provision/softphone/abc", false),
         ("http://127.0.0.1/provision/softphone/abc", false),
-        ("https://user:pw@api.ariaroute.com/provision/softphone/abc", false),
-        ("https://user@api.ariaroute.com/provision/softphone/abc", false),
+        (
+            "https://user:pw@api.ariaroute.com/provision/softphone/abc",
+            false,
+        ),
+        (
+            "https://user@api.ariaroute.com/provision/softphone/abc",
+            false,
+        ),
         ("https://api.ariaroute.com/provision/softphone/", false),
         ("https://api.ariaroute.com/provision/other/abc", false),
         ("https://api.ariaroute.com/x/provision/softphone/abc", false),
@@ -149,7 +165,10 @@ fn rejects_urls_outside_the_contract() {
         ("not a url", false),
         ("", false),
     ] {
-        assert!(validate_redeem_url(raw, local).is_err(), "{raw} should be refused");
+        assert!(
+            validate_redeem_url(raw, local).is_err(),
+            "{raw} should be refused"
+        );
     }
 }
 
@@ -158,7 +177,9 @@ fn allows_local_http_only_when_asked() {
     assert!(validate_redeem_url("http://localhost:8787/provision/softphone/abc", true).is_ok());
     assert!(validate_redeem_url("http://127.0.0.1:8787/provision/softphone/abc", true).is_ok());
     assert_eq!(
-        server_host(&validate_redeem_url("http://localhost:8787/provision/softphone/abc", true).unwrap()),
+        server_host(
+            &validate_redeem_url("http://localhost:8787/provision/softphone/abc", true).unwrap()
+        ),
         "localhost:8787"
     );
 }
@@ -204,8 +225,14 @@ async fn preview_ok_uses_get() {
 #[tokio::test]
 async fn not_found_means_expired_or_used() {
     let stub = Stub::json("404 Not Found", &json!({"error": "not_found"})).await;
-    assert_eq!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::Expired));
-    assert_eq!(redeem(&stub.url(), SHORT).await, Err(ProvisionError::Expired));
+    assert_eq!(
+        fetch_preview(&stub.url(), SHORT).await,
+        Err(ProvisionError::Expired)
+    );
+    assert_eq!(
+        redeem(&stub.url(), SHORT).await,
+        Err(ProvisionError::Expired)
+    );
     assert_eq!(
         ProvisionError::Expired.user_message(),
         "This setup link has expired or was already used. Ask for a new one."
@@ -215,17 +242,34 @@ async fn not_found_means_expired_or_used() {
 #[tokio::test]
 async fn other_statuses_fail() {
     let stub = Stub::json("500 Internal Server Error", &preview_body()).await;
-    assert_eq!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::Status(500)));
+    assert_eq!(
+        fetch_preview(&stub.url(), SHORT).await,
+        Err(ProvisionError::Status(500))
+    );
 }
 
 #[tokio::test]
 async fn bad_json_fails() {
-    let stub = Stub::start(Reply::Raw(response("200 OK", "application/json", "{not json"))).await;
-    assert!(matches!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::BadReply(_))));
+    let stub = Stub::start(Reply::Raw(response(
+        "200 OK",
+        "application/json",
+        "{not json",
+    )))
+    .await;
+    assert!(matches!(
+        fetch_preview(&stub.url(), SHORT).await,
+        Err(ProvisionError::BadReply(_))
+    ));
     let stub = Stub::start(Reply::Raw(response("200 OK", "text/html", "<html></html>"))).await;
-    assert!(matches!(redeem(&stub.url(), SHORT).await, Err(ProvisionError::BadReply(_))));
+    assert!(matches!(
+        redeem(&stub.url(), SHORT).await,
+        Err(ProvisionError::BadReply(_))
+    ));
     let stub = Stub::json("200 OK", &json!([1, 2])).await;
-    assert!(matches!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::BadReply(_))));
+    assert!(matches!(
+        fetch_preview(&stub.url(), SHORT).await,
+        Err(ProvisionError::BadReply(_))
+    ));
 }
 
 #[tokio::test]
@@ -234,7 +278,10 @@ async fn wrong_version_fails() {
         let mut body = preview_body();
         body["v"] = v;
         let stub = Stub::json("200 OK", &body).await;
-        assert_eq!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::Version));
+        assert_eq!(
+            fetch_preview(&stub.url(), SHORT).await,
+            Err(ProvisionError::Version)
+        );
     }
 }
 
@@ -245,7 +292,10 @@ async fn missing_required_preview_fields_fail() {
         body.as_object_mut().unwrap().remove(key);
         let stub = Stub::json("200 OK", &body).await;
         assert!(
-            matches!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::BadReply(_))),
+            matches!(
+                fetch_preview(&stub.url(), SHORT).await,
+                Err(ProvisionError::BadReply(_))
+            ),
             "missing {key}"
         );
     }
@@ -256,13 +306,21 @@ async fn oversize_body_fails() {
     let mut body = preview_body();
     body["display_name"] = json!("x".repeat(MAX_BODY_BYTES));
     let stub = Stub::json("200 OK", &body).await;
-    assert_eq!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::TooLarge));
+    assert_eq!(
+        fetch_preview(&stub.url(), SHORT).await,
+        Err(ProvisionError::TooLarge)
+    );
 
     // No Content-Length: the cap applies while reading, too.
     let big = body.to_string();
-    let raw = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{big}");
+    let raw = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{big}"
+    );
     let stub = Stub::start(Reply::Raw(raw)).await;
-    assert_eq!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::TooLarge));
+    assert_eq!(
+        fetch_preview(&stub.url(), SHORT).await,
+        Err(ProvisionError::TooLarge)
+    );
 }
 
 #[tokio::test]
@@ -274,8 +332,14 @@ async fn redirects_are_not_followed() {
         target.url()
     );
     let stub = Stub::start(Reply::Raw(raw)).await;
-    assert_eq!(fetch_preview(&stub.url(), SHORT).await, Err(ProvisionError::Status(302)));
-    assert!(target.methods().is_empty(), "the redirect target must not be contacted");
+    assert_eq!(
+        fetch_preview(&stub.url(), SHORT).await,
+        Err(ProvisionError::Status(302))
+    );
+    assert!(
+        target.methods().is_empty(),
+        "the redirect target must not be contacted"
+    );
 }
 
 #[tokio::test]
@@ -292,8 +356,15 @@ async fn nothing_listening_is_unreachable() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
-    let url = validate_redeem_url(&format!("http://127.0.0.1:{port}/provision/softphone/t"), true).unwrap();
-    assert_eq!(fetch_preview(&url, SHORT).await, Err(ProvisionError::Unreachable));
+    let url = validate_redeem_url(
+        &format!("http://127.0.0.1:{port}/provision/softphone/t"),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        fetch_preview(&url, SHORT).await,
+        Err(ProvisionError::Unreachable)
+    );
 }
 
 // ── Redeem ──────────────────────────────────────────────────────────────────
@@ -307,7 +378,10 @@ async fn redeem_ok_uses_post_and_maps_the_proxy() {
     assert_eq!(line.auth_username.as_deref(), Some("1001-auth"));
     assert_eq!(line.password, "s3cret-pw");
     assert_eq!(line.domain, "regular-test.ariaroute.com");
-    assert_eq!(line.outbound_proxy.as_deref(), Some("sip.ariaroute.com:5061"));
+    assert_eq!(
+        line.outbound_proxy.as_deref(),
+        Some("sip.ariaroute.com:5061")
+    );
     assert_eq!(line.tls_server_name.as_deref(), Some("sip.ariaroute.com"));
     assert_eq!(line.port, 5061);
     assert_eq!(line.transport, "tls");
@@ -321,7 +395,14 @@ async fn redeem_ok_uses_post_and_maps_the_proxy() {
 fn redeem_defaults_and_optional_fields() {
     let mut body = redeem_body();
     let m = body.as_object_mut().unwrap();
-    for key in ["auth_username", "outbound_proxy", "port", "transport", "voicemail", "display_name"] {
+    for key in [
+        "auth_username",
+        "outbound_proxy",
+        "port",
+        "transport",
+        "voicemail",
+        "display_name",
+    ] {
         m.remove(key);
     }
     let line = parse_redeem(&obj(body)).unwrap();
@@ -355,11 +436,17 @@ fn an_absent_null_or_zero_port_means_srv_and_a_proxy_keeps_no_port() {
 #[test]
 fn an_explicit_port_still_pins_the_proxy_and_a_proxy_port_wins() {
     let line = parse_redeem(&obj(redeem_body())).unwrap();
-    assert_eq!((line.port, line.outbound_proxy.as_deref()), (5061, Some("sip.ariaroute.com:5061")));
+    assert_eq!(
+        (line.port, line.outbound_proxy.as_deref()),
+        (5061, Some("sip.ariaroute.com:5061"))
+    );
     let mut body = redeem_body();
     body["port"] = json!(0);
     body["outbound_proxy"] = json!("sip.ariaroute.com:5071");
-    assert_eq!(parse_redeem(&obj(body)).unwrap().outbound_proxy.as_deref(), Some("sip.ariaroute.com:5071"));
+    assert_eq!(
+        parse_redeem(&obj(body)).unwrap().outbound_proxy.as_deref(),
+        Some("sip.ariaroute.com:5071")
+    );
 }
 
 #[test]
@@ -371,10 +458,18 @@ fn auto_is_an_accepted_transport() {
 
 #[test]
 fn srtp_is_read_when_present() {
-    for (raw, want) in [("sdes", "sdes"), ("disabled", "disabled"), (" SDES ", "sdes")] {
+    for (raw, want) in [
+        ("sdes", "sdes"),
+        ("disabled", "disabled"),
+        (" SDES ", "sdes"),
+    ] {
         let mut body = redeem_body();
         body["srtp"] = json!(raw);
-        assert_eq!(parse_redeem(&obj(body)).unwrap().srtp.as_deref(), Some(want), "{raw:?}");
+        assert_eq!(
+            parse_redeem(&obj(body)).unwrap().srtp.as_deref(),
+            Some(want),
+            "{raw:?}"
+        );
     }
 }
 
@@ -386,7 +481,14 @@ fn srtp_absent_is_none() {
 
 #[test]
 fn unknown_srtp_counts_as_absent() {
-    for raw in [json!("dtls"), json!("zrtp"), json!(""), json!(true), json!(1), serde_json::Value::Null] {
+    for raw in [
+        json!("dtls"),
+        json!("zrtp"),
+        json!(""),
+        json!(true),
+        json!(1),
+        serde_json::Value::Null,
+    ] {
         let mut body = redeem_body();
         body["srtp"] = raw.clone();
         // The rest of the line is still usable.
@@ -401,10 +503,15 @@ async fn redeem_passes_srtp_through_to_the_ui() {
     let mut body = redeem_body();
     body["srtp"] = json!("sdes");
     let stub = Stub::json("200 OK", &body).await;
-    let (line, _) =
-        redeem_checked(&stub.url(), &expected("1001", "regular-test.ariaroute.com"), &[], "new-id", SHORT)
-            .await
-            .unwrap();
+    let (line, _) = redeem_checked(
+        &stub.url(),
+        &expected("1001", "regular-test.ariaroute.com"),
+        &[],
+        "new-id",
+        SHORT,
+    )
+    .await
+    .unwrap();
     assert_eq!(line.srtp.as_deref(), Some("sdes"));
     assert_eq!(line.transport, "tls");
 }
@@ -419,9 +526,19 @@ fn proxy_forms() {
     ] {
         let mut body = redeem_body();
         body["outbound_proxy"] = json!(raw);
-        assert_eq!(parse_redeem(&obj(body)).unwrap().outbound_proxy.as_deref(), Some(want), "{raw}");
+        assert_eq!(
+            parse_redeem(&obj(body)).unwrap().outbound_proxy.as_deref(),
+            Some(want),
+            "{raw}"
+        );
     }
-    for raw in ["sip.ariaroute.com;transport=tls", "evil.com\r\nVia: x", "a b", "host:0", "host:99999"] {
+    for raw in [
+        "sip.ariaroute.com;transport=tls",
+        "evil.com\r\nVia: x",
+        "a b",
+        "host:0",
+        "host:99999",
+    ] {
         let mut body = redeem_body();
         body["outbound_proxy"] = json!(raw);
         assert!(parse_redeem(&obj(body)).is_err(), "{raw:?}");
@@ -457,7 +574,10 @@ fn known(id: &str, username: &str, domain: &str, from: Option<&str>) -> KnownAcc
 }
 
 fn expected(extension: &str, domain: &str) -> ExpectedLine {
-    ExpectedLine { extension: extension.into(), domain: domain.into() }
+    ExpectedLine {
+        extension: extension.into(),
+        domain: domain.into(),
+    }
 }
 
 #[test]
@@ -466,14 +586,44 @@ fn only_an_account_from_the_same_host_is_updated() {
     let host = "api.ariaroute.com";
     let other_line = known("a", "1002", "regular-test.ariaroute.com", Some(host));
     let by_hand = known("h", "1001", "Regular-Test.AriaRoute.com", None);
-    let other_host = known("o", "1001", "regular-test.ariaroute.com", Some("evil.example"));
-    let own = known("b", "1001", "Regular-Test.AriaRoute.com", Some("API.ariaroute.com"));
+    let other_host = known(
+        "o",
+        "1001",
+        "regular-test.ariaroute.com",
+        Some("evil.example"),
+    );
+    let own = known(
+        "b",
+        "1001",
+        "Regular-Test.AriaRoute.com",
+        Some("API.ariaroute.com"),
+    );
 
-    assert_eq!(pick_account(&line, &[], host, "new"), ("new".into(), LineMode::Added));
-    assert_eq!(pick_account(&line, &[known("a", "1002", "regular-test.ariaroute.com", Some(host))], host, "new"), ("new".into(), LineMode::Added));
-    assert_eq!(pick_account(&line, std::slice::from_ref(&by_hand), host, "new"), ("new".into(), LineMode::Separate));
-    assert_eq!(pick_account(&line, std::slice::from_ref(&other_host), host, "new"), ("new".into(), LineMode::Separate));
-    assert_eq!(pick_account(&line, &[other_line, by_hand, other_host, own], host, "new"), ("b".into(), LineMode::Updated));
+    assert_eq!(
+        pick_account(&line, &[], host, "new"),
+        ("new".into(), LineMode::Added)
+    );
+    assert_eq!(
+        pick_account(
+            &line,
+            &[known("a", "1002", "regular-test.ariaroute.com", Some(host))],
+            host,
+            "new"
+        ),
+        ("new".into(), LineMode::Added)
+    );
+    assert_eq!(
+        pick_account(&line, std::slice::from_ref(&by_hand), host, "new"),
+        ("new".into(), LineMode::Separate)
+    );
+    assert_eq!(
+        pick_account(&line, std::slice::from_ref(&other_host), host, "new"),
+        ("new".into(), LineMode::Separate)
+    );
+    assert_eq!(
+        pick_account(&line, &[other_line, by_hand, other_host, own], host, "new"),
+        ("b".into(), LineMode::Updated)
+    );
 }
 
 #[tokio::test]
@@ -481,7 +631,10 @@ async fn a_redeem_for_a_different_line_than_previewed_is_refused() {
     // Previewed 1001@regular-test; the POST tries to return someone else's line.
     let stub = Stub::json("200 OK", &redeem_body()).await;
     let accounts = [known("real", "1001", "regular-test.ariaroute.com", None)];
-    for exp in [expected("1002", "regular-test.ariaroute.com"), expected("1001", "other.ariaroute.com")] {
+    for exp in [
+        expected("1002", "regular-test.ariaroute.com"),
+        expected("1001", "other.ariaroute.com"),
+    ] {
         let r = redeem_checked(&stub.url(), &exp, &accounts, "new", SHORT).await;
         // Err means the command never reaches the credential store.
         assert_eq!(r.map(|(l, _)| l), Err(ProvisionError::Mismatch));
@@ -492,10 +645,15 @@ async fn a_redeem_for_a_different_line_than_previewed_is_refused() {
 async fn a_redeem_matching_a_hand_made_account_adds_a_separate_one() {
     let stub = Stub::json("200 OK", &redeem_body()).await;
     let accounts = [known("real", "1001", "regular-test.ariaroute.com", None)];
-    let (line, password) =
-        redeem_checked(&stub.url(), &expected("1001", "Regular-Test.ariaroute.com"), &accounts, "new-id", SHORT)
-            .await
-            .unwrap();
+    let (line, password) = redeem_checked(
+        &stub.url(),
+        &expected("1001", "Regular-Test.ariaroute.com"),
+        &accounts,
+        "new-id",
+        SHORT,
+    )
+    .await
+    .unwrap();
     assert_eq!(line.account_id, "new-id");
     assert_eq!(line.mode, LineMode::Separate);
     assert_eq!(line.provisioned_from, format!("127.0.0.1:{}", stub.port));
@@ -510,12 +668,25 @@ async fn a_redeem_matching_a_hand_made_account_adds_a_separate_one() {
 async fn a_redeem_from_the_same_host_updates_its_own_account() {
     let stub = Stub::json("200 OK", &redeem_body()).await;
     let host = format!("127.0.0.1:{}", stub.port);
-    let accounts = [known("mine", "1001", "regular-test.ariaroute.com", Some(&host))];
-    let (line, _) =
-        redeem_checked(&stub.url(), &expected("1001", "regular-test.ariaroute.com"), &accounts, "new-id", SHORT)
-            .await
-            .unwrap();
-    assert_eq!((line.account_id.as_str(), line.mode), ("mine", LineMode::Updated));
+    let accounts = [known(
+        "mine",
+        "1001",
+        "regular-test.ariaroute.com",
+        Some(&host),
+    )];
+    let (line, _) = redeem_checked(
+        &stub.url(),
+        &expected("1001", "regular-test.ariaroute.com"),
+        &accounts,
+        "new-id",
+        SHORT,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (line.account_id.as_str(), line.mode),
+        ("mine", LineMode::Updated)
+    );
 }
 
 #[test]
@@ -530,7 +701,14 @@ fn display_text_cannot_break_a_quoted_string() {
 async fn a_new_account_id_that_is_already_taken_is_refused_before_redeeming() {
     let stub = Stub::json("200 OK", &redeem_body()).await;
     let accounts = [known("taken", "2002", "elsewhere.example.com", None)];
-    let r = redeem_checked(&stub.url(), &expected("1001", "regular-test.ariaroute.com"), &accounts, "taken", SHORT).await;
+    let r = redeem_checked(
+        &stub.url(),
+        &expected("1001", "regular-test.ariaroute.com"),
+        &accounts,
+        "taken",
+        SHORT,
+    )
+    .await;
     assert_eq!(r.map(|(l, _)| l), Err(ProvisionError::AccountIdInUse));
     assert!(stub.methods().is_empty(), "the link must not be used up");
 }

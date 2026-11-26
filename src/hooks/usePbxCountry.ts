@@ -7,7 +7,7 @@ import { mailboxFor, type Mailbox } from "../utils/voicemail";
 
 /**
  * Asks the PBX which country the active account's company calls from
- * (`calling/settings`) and makes it the default country for formatting
+ * (`/me`'s `calling_country`, else the admin-only `calling/settings`) and makes it the default country for formatting
  * numbers, unless the person picked one themselves. A seat the PBX will not
  * show the settings to, or an account with no API address, keeps the device's
  * region.
@@ -23,9 +23,9 @@ export function usePbxCountry(): void {
     if (!mailbox) return;
     let cancelled = false;
     ensureBound(mailbox)
-      .then(() => invoke<string>("pbx_calling_country", { mailbox }))
+      .then(() => invoke<string | null>("pbx_calling_country", { mailbox }))
       .then((country) => {
-        if (!cancelled) setPbxCountry(country);
+        if (!cancelled && country) setPbxCountry(country);
       })
       .catch((e) => log.info("[calling] company country not available, using the device region:", e));
     return () => {

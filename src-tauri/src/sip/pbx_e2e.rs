@@ -85,8 +85,12 @@ impl Env {
             pass_a: var(names[3])?,
             ext_b: var(names[4])?,
             pass_b: var(names[5])?,
-            srtp_a: var("ARIA_E2E_SRTP_A").map(|v| SrtpMode::from_str(&v)).unwrap_or_default(),
-            srtp_b: var("ARIA_E2E_SRTP_B").map(|v| SrtpMode::from_str(&v)).unwrap_or_default(),
+            srtp_a: var("ARIA_E2E_SRTP_A")
+                .map(|v| SrtpMode::from_str(&v))
+                .unwrap_or_default(),
+            srtp_b: var("ARIA_E2E_SRTP_B")
+                .map(|v| SrtpMode::from_str(&v))
+                .unwrap_or_default(),
         })
     }
 
@@ -186,10 +190,15 @@ impl Endpoint {
             match state {
                 RegistrationState::Registered => break,
                 RegistrationState::Error => {
-                    return Err(format!("{label}: registration failed: {}", err.unwrap_or_default()))
+                    return Err(format!(
+                        "{label}: registration failed: {}",
+                        err.unwrap_or_default()
+                    ))
                 }
                 _ if tokio::time::Instant::now() >= deadline => {
-                    return Err(format!("{label}: registration did not settle in 15 s ({state:?})"))
+                    return Err(format!(
+                        "{label}: registration did not settle in 15 s ({state:?})"
+                    ))
                 }
                 _ => tokio::time::sleep(Duration::from_millis(100)).await,
             }
@@ -198,7 +207,12 @@ impl Endpoint {
             "[{label}] registered {ext}@{} via {} (srtp {srtp_mode:?})",
             env.domain, env.server
         );
-        Ok(Self { label, mgr, rx, account_id })
+        Ok(Self {
+            label,
+            mgr,
+            rx,
+            account_id,
+        })
     }
 
     /// The next call event in one of `states`, for `call_id` when given.
@@ -221,7 +235,9 @@ impl Endpoint {
                         "{}: no {} event{} within {timeout:?}",
                         self.label,
                         states.join("/"),
-                        call_id.map(|c| format!(" for call {c}")).unwrap_or_default()
+                        call_id
+                            .map(|c| format!(" for call {c}"))
+                            .unwrap_or_default()
                     ))
                 }
             };
@@ -237,10 +253,16 @@ impl Endpoint {
                     return Ok(e);
                 }
                 SipEvent::CallStateChanged(e) => {
-                    eprintln!("[{}] call {} -> {} (passing)", self.label, e.call_id, e.state);
+                    eprintln!(
+                        "[{}] call {} -> {} (passing)",
+                        self.label, e.call_id, e.state
+                    );
                 }
                 SipEvent::TransferProgress(t) => {
-                    eprintln!("[{}] transfer {}: {} {}", self.label, t.call_id, t.status, t.message);
+                    eprintln!(
+                        "[{}] transfer {}: {} {}",
+                        self.label, t.call_id, t.status, t.message
+                    );
                 }
                 _ => {}
             }
@@ -249,7 +271,9 @@ impl Endpoint {
 
     /// Wait for `call_id` to reach `state`.
     async fn wait_state(&mut self, call_id: &str, state: &str, timeout: Duration) -> Step<()> {
-        self.next_call_event(Some(call_id), &[state], timeout).await.map(|_| ())
+        self.next_call_event(Some(call_id), &[state], timeout)
+            .await
+            .map(|_| ())
     }
 
     /// The manager's view of `call_id`, as the diagnostics panel sees it.
@@ -282,8 +306,16 @@ impl Endpoint {
             stats.codec_name,
             status.srtp_active
         );
-        check!(stats.packets_sent > 0, "{}: no RTP sent on call {call_id}", self.label);
-        check!(stats.packets_received > 0, "{}: no RTP received on call {call_id}", self.label);
+        check!(
+            stats.packets_sent > 0,
+            "{}: no RTP sent on call {call_id}",
+            self.label
+        );
+        check!(
+            stats.packets_received > 0,
+            "{}: no RTP received on call {call_id}",
+            self.label
+        );
         Ok(stats)
     }
 
@@ -293,7 +325,11 @@ impl Endpoint {
     /// for a call is not allowed to change between the INVITE and its
     /// authenticated retry, or between the first answer and a re-INVITE's.
     /// Prints what it found, so a passing run shows the addresses too.
-    async fn assert_consistent_sdp(&self, sip_call_id: &str, start: &str) -> Step<Vec<(String, String)>> {
+    async fn assert_consistent_sdp(
+        &self,
+        sip_call_id: &str,
+        start: &str,
+    ) -> Step<Vec<(String, String)>> {
         let found: Vec<(String, String)> = self
             .mgr
             .get_diagnostics()
@@ -308,7 +344,10 @@ impl Endpoint {
             .map(|log| {
                 let body = log.raw.split("\r\n\r\n").nth(1).unwrap_or_default();
                 let line = |prefix: &str| {
-                    body.lines().find(|l| l.starts_with(prefix)).unwrap_or_default().to_owned()
+                    body.lines()
+                        .find(|l| l.starts_with(prefix))
+                        .unwrap_or_default()
+                        .to_owned()
                 };
                 (line("c="), line("m="))
             })
@@ -316,12 +355,24 @@ impl Endpoint {
         for (c, m) in &found {
             eprintln!("[{}] sent {start}: {c}  {m}", self.label);
         }
-        check!(!found.is_empty(), "{}: sent no {start} with SDP for {sip_call_id}", self.label);
+        check!(
+            !found.is_empty(),
+            "{}: sent no {start} with SDP for {sip_call_id}",
+            self.label
+        );
         let (c0, m0) = &found[0];
         let port = |m: &str| m.split_whitespace().nth(1).unwrap_or_default().to_owned();
         for (c, m) in &found[1..] {
-            check!(c == c0, "{}: {start} changed its media address: {c0} then {c}", self.label);
-            check!(port(m) == port(m0), "{}: {start} changed its media port: {m0} then {m}", self.label);
+            check!(
+                c == c0,
+                "{}: {start} changed its media address: {c0} then {c}",
+                self.label
+            );
+            check!(
+                port(m) == port(m0),
+                "{}: {start} changed its media port: {m0} then {m}",
+                self.label
+            );
         }
         Ok(found)
     }
@@ -347,7 +398,10 @@ impl Endpoint {
             .unregister_account(Some(&self.account_id))
             .await
             .map_err(|e| format!("{}: unregister failed: {e}", self.label))?;
-        let (state, _) = self.mgr.registration_state_for_account(Some(&self.account_id)).await;
+        let (state, _) = self
+            .mgr
+            .registration_state_for_account(Some(&self.account_id))
+            .await;
         check!(
             !matches!(state, RegistrationState::Registered),
             "{}: still registered after unregister: {state:?}",
@@ -416,9 +470,15 @@ async fn inbound_call_through_the_pbx() {
             eprintln!("[B] dialing {} as call {b_call}", env.uri(&env.ext_a));
 
             // A sees the inbound INVITE.
-            let incoming = a.next_call_event(None, &["incoming"], Duration::from_secs(10)).await?;
+            let incoming = a
+                .next_call_event(None, &["incoming"], Duration::from_secs(10))
+                .await?;
             let a_call = incoming.call_id.clone();
-            check!(incoming.direction == "inbound", "A: direction was {:?}, not inbound", incoming.direction);
+            check!(
+                incoming.direction == "inbound",
+                "A: direction was {:?}, not inbound",
+                incoming.direction
+            );
             check!(
                 incoming.remote_uri.contains(&env.ext_b),
                 "A: inbound call is from {:?}, expected extension {}",
@@ -426,13 +486,27 @@ async fn inbound_call_through_the_pbx() {
                 env.ext_b
             );
             let a_status = a.status(&a_call).await?;
-            check!(a_status.direction == "inbound", "A: status direction {:?}", a_status.direction);
-            eprintln!("[A] inbound INVITE from {} (SIP Call-ID {})", incoming.remote_uri, a_status.sip_call_id);
+            check!(
+                a_status.direction == "inbound",
+                "A: status direction {:?}",
+                a_status.direction
+            );
+            eprintln!(
+                "[A] inbound INVITE from {} (SIP Call-ID {})",
+                incoming.remote_uri, a_status.sip_call_id
+            );
 
             // A answers; both legs connect.
-            a.mgr.answer(&a_call).await.map_err(|e| format!("A: answer failed: {e}"))?;
-            let a_connected = a.next_call_event(Some(&a_call), &["connected"], Duration::from_secs(10)).await?;
-            let b_connected = b.next_call_event(Some(&b_call), &["connected"], Duration::from_secs(10)).await?;
+            a.mgr
+                .answer(&a_call)
+                .await
+                .map_err(|e| format!("A: answer failed: {e}"))?;
+            let a_connected = a
+                .next_call_event(Some(&a_call), &["connected"], Duration::from_secs(10))
+                .await?;
+            let b_connected = b
+                .next_call_event(Some(&b_call), &["connected"], Duration::from_secs(10))
+                .await?;
             eprintln!(
                 "[A] answered; srtp_active={:?}  [B] connected; srtp_active={:?}",
                 a_connected.srtp_active, b_connected.srtp_active
@@ -453,37 +527,77 @@ async fn inbound_call_through_the_pbx() {
             // Likewise every 200 OK A sent for an INVITE in its dialog: the
             // first answer and any re-INVITE refresh the PBX sent meanwhile.
             let a_sip_call_id = a.status(&a_call).await?.sip_call_id;
-            a.assert_consistent_sdp(&a_sip_call_id, "SIP/2.0 200").await?;
+            a.assert_consistent_sdp(&a_sip_call_id, "SIP/2.0 200")
+                .await?;
 
             // DTMF from the caller. rtp-engine has no receive-side DTMF
             // counter, so this is only asserted not to fail.
-            b.mgr.send_dtmf(&b_call, "1").await.map_err(|e| format!("B: send_dtmf failed: {e}"))?;
+            b.mgr
+                .send_dtmf(&b_call, "1")
+                .await
+                .map_err(|e| format!("B: send_dtmf failed: {e}"))?;
             eprintln!("[B] sent DTMF 1");
 
             // Hold and resume on the callee. Hold is local (the FSM state and
             // muted media), so it is asserted from the status report.
-            a.mgr.hold(&a_call, true).await.map_err(|e| format!("A: hold failed: {e}"))?;
+            a.mgr
+                .hold(&a_call, true)
+                .await
+                .map_err(|e| format!("A: hold failed: {e}"))?;
             let held = a.status(&a_call).await?;
-            check!(held.state == "held", "A: state after hold was {:?}", held.state);
+            check!(
+                held.state == "held",
+                "A: state after hold was {:?}",
+                held.state
+            );
             eprintln!("[A] held");
             tokio::time::sleep(Duration::from_secs(1)).await;
-            a.mgr.hold(&a_call, false).await.map_err(|e| format!("A: resume failed: {e}"))?;
+            a.mgr
+                .hold(&a_call, false)
+                .await
+                .map_err(|e| format!("A: resume failed: {e}"))?;
             let resumed = a.status(&a_call).await?;
-            check!(resumed.state == "connected", "A: state after resume was {:?}", resumed.state);
+            check!(
+                resumed.state == "connected",
+                "A: state after resume was {:?}",
+                resumed.state
+            );
             eprintln!("[A] resumed");
 
             // The call still carries audio after the hold.
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let before = a.status(&a_call).await?.rtp_stats.map(|s| s.packets_received).unwrap_or(0);
+            let before = a
+                .status(&a_call)
+                .await?
+                .rtp_stats
+                .map(|s| s.packets_received)
+                .unwrap_or(0);
             tokio::time::sleep(Duration::from_secs(1)).await;
-            let after = a.status(&a_call).await?.rtp_stats.map(|s| s.packets_received).unwrap_or(0);
-            check!(after > before, "A: no RTP received after resume ({before} -> {after})");
+            let after = a
+                .status(&a_call)
+                .await?
+                .rtp_stats
+                .map(|s| s.packets_received)
+                .unwrap_or(0);
+            check!(
+                after > before,
+                "A: no RTP received after resume ({before} -> {after})"
+            );
 
             // B hangs up; A sees the BYE.
-            b.mgr.hangup(&b_call).await.map_err(|e| format!("B: hangup failed: {e}"))?;
+            b.mgr
+                .hangup(&b_call)
+                .await
+                .map_err(|e| format!("B: hangup failed: {e}"))?;
             eprintln!("[B] hung up");
-            let ended = a.next_call_event(Some(&a_call), &["ended"], Duration::from_secs(5)).await?;
-            check!(ended.direction == "inbound", "A: ended event direction {:?}", ended.direction);
+            let ended = a
+                .next_call_event(Some(&a_call), &["ended"], Duration::from_secs(5))
+                .await?;
+            check!(
+                ended.direction == "inbound",
+                "A: ended event direction {:?}",
+                ended.direction
+            );
             eprintln!("[A] saw BYE; call ended");
             Ok(())
         }
@@ -508,11 +622,20 @@ async fn sdes_offer_is_answered_by_the_pbx() {
                 .make_call(&env.uri(&env.ext_a))
                 .await
                 .map_err(|e| format!("B: make_call failed: {e}"))?;
-            let incoming = a.next_call_event(None, &["incoming"], Duration::from_secs(10)).await?;
+            let incoming = a
+                .next_call_event(None, &["incoming"], Duration::from_secs(10))
+                .await?;
             let a_call = incoming.call_id.clone();
-            a.mgr.answer(&a_call).await.map_err(|e| format!("A: answer failed: {e}"))?;
-            let a_connected = a.next_call_event(Some(&a_call), &["connected"], Duration::from_secs(10)).await?;
-            let b_connected = b.next_call_event(Some(&b_call), &["connected"], Duration::from_secs(10)).await?;
+            a.mgr
+                .answer(&a_call)
+                .await
+                .map_err(|e| format!("A: answer failed: {e}"))?;
+            let a_connected = a
+                .next_call_event(Some(&a_call), &["connected"], Duration::from_secs(10))
+                .await?;
+            let b_connected = b
+                .next_call_event(Some(&b_call), &["connected"], Duration::from_secs(10))
+                .await?;
             eprintln!(
                 "[A] answered with srtp_active={:?}; [B] connected with srtp_active={:?}",
                 a_connected.srtp_active, b_connected.srtp_active
@@ -524,7 +647,11 @@ async fn sdes_offer_is_answered_by_the_pbx() {
                 let stats = status
                     .rtp_stats
                     .ok_or_else(|| format!("{}: call {call} has no media session", ep.label))?;
-                check!(stats.packets_sent > 0, "{}: no RTP sent on call {call}", ep.label);
+                check!(
+                    stats.packets_sent > 0,
+                    "{}: no RTP sent on call {call}",
+                    ep.label
+                );
                 eprintln!(
                     "[{}] srtp_active={} sent {} received {} (0 received with srtp_active means \
                      the PBX's relayed SRTP did not authenticate)",
@@ -532,8 +659,12 @@ async fn sdes_offer_is_answered_by_the_pbx() {
                 );
             }
 
-            b.mgr.hangup(&b_call).await.map_err(|e| format!("B: hangup failed: {e}"))?;
-            a.wait_state(&a_call, "ended", Duration::from_secs(5)).await?;
+            b.mgr
+                .hangup(&b_call)
+                .await
+                .map_err(|e| format!("B: hangup failed: {e}"))?;
+            a.wait_state(&a_call, "ended", Duration::from_secs(5))
+                .await?;
             Ok(())
         }
         .await;
@@ -564,15 +695,24 @@ async fn outbound_call_to_voicemail() {
                 .await
                 .map_err(|e| format!("A: make_call failed: {e}"))?;
             eprintln!("[A] dialing {} as call {call}", env.uri(&target));
-            let connected = a.next_call_event(Some(&call), &["connected"], Duration::from_secs(15)).await?;
-            check!(connected.direction == "outbound", "A: direction {:?}", connected.direction);
+            let connected = a
+                .next_call_event(Some(&call), &["connected"], Duration::from_secs(15))
+                .await?;
+            check!(
+                connected.direction == "outbound",
+                "A: direction {:?}",
+                connected.direction
+            );
             let hold = std::env::var("ARIA_E2E_VOICEMAIL_HOLD_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3);
             tokio::time::sleep(Duration::from_secs(hold)).await;
             a.assert_media_flowing(&call).await?;
-            a.mgr.hangup(&call).await.map_err(|e| format!("A: hangup failed: {e}"))?;
+            a.mgr
+                .hangup(&call)
+                .await
+                .map_err(|e| format!("A: hangup failed: {e}"))?;
             a.wait_state(&call, "ended", Duration::from_secs(5)).await?;
             eprintln!("[A] hung up; call ended");
             Ok(())
@@ -616,11 +756,18 @@ async fn blind_transfer_through_the_pbx() {
                 .make_call(&env.uri(&env.ext_a))
                 .await
                 .map_err(|e| format!("B: make_call failed: {e}"))?;
-            let incoming = a.next_call_event(None, &["incoming"], Duration::from_secs(10)).await?;
+            let incoming = a
+                .next_call_event(None, &["incoming"], Duration::from_secs(10))
+                .await?;
             let a_call = incoming.call_id.clone();
-            a.mgr.answer(&a_call).await.map_err(|e| format!("A: answer failed: {e}"))?;
-            a.wait_state(&a_call, "connected", Duration::from_secs(10)).await?;
-            b.wait_state(&b_call, "connected", Duration::from_secs(10)).await?;
+            a.mgr
+                .answer(&a_call)
+                .await
+                .map_err(|e| format!("A: answer failed: {e}"))?;
+            a.wait_state(&a_call, "connected", Duration::from_secs(10))
+                .await?;
+            b.wait_state(&b_call, "connected", Duration::from_secs(10))
+                .await?;
             tokio::time::sleep(Duration::from_secs(2)).await;
 
             a.mgr
@@ -630,7 +777,9 @@ async fn blind_transfer_through_the_pbx() {
             eprintln!("[A] sent REFER to {}", env.uri(&ext_c));
 
             // The PBX rings C with B's call.
-            let c_incoming = c.next_call_event(None, &["incoming"], Duration::from_secs(15)).await?;
+            let c_incoming = c
+                .next_call_event(None, &["incoming"], Duration::from_secs(15))
+                .await?;
             let c_call = c_incoming.call_id.clone();
             check!(
                 c_incoming.remote_uri.contains(&env.ext_b),
@@ -638,8 +787,12 @@ async fn blind_transfer_through_the_pbx() {
                 c_incoming.remote_uri,
                 env.ext_b
             );
-            c.mgr.answer(&c_call).await.map_err(|e| format!("C: answer failed: {e}"))?;
-            c.wait_state(&c_call, "connected", Duration::from_secs(10)).await?;
+            c.mgr
+                .answer(&c_call)
+                .await
+                .map_err(|e| format!("C: answer failed: {e}"))?;
+            c.wait_state(&c_call, "connected", Duration::from_secs(10))
+                .await?;
             eprintln!("[C] answered the transferred call");
 
             // A's leg ends once the PBX reports the transfer complete (a
@@ -654,7 +807,12 @@ async fn blind_transfer_through_the_pbx() {
                 match event {
                     SipEvent::TransferProgress(t) if t.call_id == a_call => {
                         eprintln!("[A] transfer: {} {}", t.status, t.message);
-                        check!(t.status < 400, "A: PBX refused the REFER: {} {}", t.status, t.message);
+                        check!(
+                            t.status < 400,
+                            "A: PBX refused the REFER: {} {}",
+                            t.status,
+                            t.message
+                        );
                     }
                     SipEvent::CallStateChanged(e) if e.call_id == a_call && e.state == "ended" => {
                         eprintln!("[A] leg ended after the transfer");
@@ -686,9 +844,14 @@ async fn blind_transfer_through_the_pbx() {
                 }
             }
 
-            b.mgr.hangup(&b_call).await.map_err(|e| format!("B: hangup failed: {e}"))?;
-            b.wait_state(&b_call, "ended", Duration::from_secs(5)).await?;
-            c.wait_state(&c_call, "ended", Duration::from_secs(5)).await?;
+            b.mgr
+                .hangup(&b_call)
+                .await
+                .map_err(|e| format!("B: hangup failed: {e}"))?;
+            b.wait_state(&b_call, "ended", Duration::from_secs(5))
+                .await?;
+            c.wait_state(&c_call, "ended", Duration::from_secs(5))
+                .await?;
             eprintln!("[C] saw BYE; transferred call ended");
             Ok(())
         }
@@ -708,12 +871,18 @@ mod env_tests {
 
     #[test]
     fn a_bare_server_name_leaves_the_port_to_srv() {
-        assert_eq!(parse_server("sip.ariaroute.com"), ("sip.ariaroute.com".to_string(), 0));
+        assert_eq!(
+            parse_server("sip.ariaroute.com"),
+            ("sip.ariaroute.com".to_string(), 0)
+        );
     }
 
     #[test]
     fn a_server_with_a_port_pins_that_port() {
-        assert_eq!(parse_server("sip.ariaroute.com:5080"), ("sip.ariaroute.com".to_string(), 5080));
+        assert_eq!(
+            parse_server("sip.ariaroute.com:5080"),
+            ("sip.ariaroute.com".to_string(), 5080)
+        );
     }
 
     #[test]

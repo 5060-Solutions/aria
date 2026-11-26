@@ -395,7 +395,9 @@ impl CallFSM {
             sdp_session_id,
             sdp_version: 0,
             last_local_sdp: None,
-            state: CallState::Incoming { raw_invite: params.raw_invite },
+            state: CallState::Incoming {
+                raw_invite: params.raw_invite,
+            },
         }
     }
 
@@ -449,8 +451,9 @@ impl CallFSM {
     /// Get the time the call was connected
     pub fn connected_at(&self) -> Option<std::time::Instant> {
         match &self.state {
-            CallState::Connected { connected_at, .. } |
-            CallState::Held { connected_at, .. } => Some(*connected_at),
+            CallState::Connected { connected_at, .. } | CallState::Held { connected_at, .. } => {
+                Some(*connected_at)
+            }
             _ => None,
         }
     }
@@ -458,8 +461,12 @@ impl CallFSM {
     /// Get the session expiry time in seconds
     pub fn session_expires(&self) -> u32 {
         match &self.state {
-            CallState::Connected { session_expires, .. } |
-            CallState::Held { session_expires, .. } => *session_expires,
+            CallState::Connected {
+                session_expires, ..
+            }
+            | CallState::Held {
+                session_expires, ..
+            } => *session_expires,
             _ => 1800,
         }
     }
@@ -591,13 +598,22 @@ impl CallFSM {
         self.last_local_sdp = Some(body);
         crate::sip::builder::with_sdp_origin(
             sdp,
-            crate::sip::builder::SdpOrigin { id: self.sdp_session_id, version: self.sdp_version },
+            crate::sip::builder::SdpOrigin {
+                id: self.sdp_session_id,
+                version: self.sdp_version,
+            },
         )
     }
 
     /// Check if early media is already established
     pub fn has_early_media(&self) -> bool {
-        matches!(&self.state, CallState::Ringing { early_media: Some(_), .. })
+        matches!(
+            &self.state,
+            CallState::Ringing {
+                early_media: Some(_),
+                ..
+            }
+        )
     }
 
     /// Take early media session out of a ringing call (consumes it)
@@ -670,7 +686,10 @@ impl CallFSM {
                 (None, TransitionResult::Ok)
             }
             (CallState::Dialing { .. }, CallFSMEvent::RemoteRinging) => (
-                Some(CallState::Ringing { to_tag: None, early_media: None }),
+                Some(CallState::Ringing {
+                    to_tag: None,
+                    early_media: None,
+                }),
                 TransitionResult::Ok,
             ),
             (
@@ -768,7 +787,10 @@ impl CallFSM {
             // Incoming call transitions
             (
                 CallState::Incoming { .. },
-                CallFSMEvent::LocalAnswer { media, remote_rtp: _ },
+                CallFSMEvent::LocalAnswer {
+                    media,
+                    remote_rtp: _,
+                },
             ) => (
                 Some(CallState::Connected {
                     media: Some(media),
@@ -792,10 +814,7 @@ impl CallFSM {
             ),
 
             // Connected transitions
-            (
-                CallState::Connected { .. },
-                CallFSMEvent::Hold,
-            ) => {
+            (CallState::Connected { .. }, CallFSMEvent::Hold) => {
                 // Move media to Held state - handled by hold() method
                 (None, TransitionResult::Ok)
             }
@@ -811,10 +830,7 @@ impl CallFSM {
                 }),
                 TransitionResult::Ok,
             ),
-            (
-                CallState::Connected { .. },
-                CallFSMEvent::MediaEstablished { media: _ },
-            ) => {
+            (CallState::Connected { .. }, CallFSMEvent::MediaEstablished { media: _ }) => {
                 // Update media session - handled by set_media() method
                 (None, TransitionResult::Ok)
             }
@@ -1161,12 +1177,12 @@ mod tests {
         );
 
         assert!(!call.auth_attempted());
-        
+
         // Receive 401/407 auth challenge
         let result = call.process(CallFSMEvent::AuthChallenge { status: 401 });
         assert!(matches!(result, TransitionResult::Ok));
         assert_eq!(call.state_name(), "dialing"); // Back to dialing to retry with auth
-        
+
         call.set_auth_attempted();
         assert!(call.auth_attempted());
     }
@@ -1395,10 +1411,16 @@ mod tests {
 
     /// A real session to loopback; no device needs to open for the mute flag.
     async fn session() -> MediaSession {
-        let port = crate::sip::media::allocate_free_rtp_port().await.expect("a port");
-        MediaSession::start(port, "127.0.0.1:9".parse().unwrap(), rtp_engine::CodecType::Pcmu)
+        let port = crate::sip::media::allocate_free_rtp_port()
             .await
-            .expect("a session")
+            .expect("a port");
+        MediaSession::start(
+            port,
+            "127.0.0.1:9".parse().unwrap(),
+            rtp_engine::CodecType::Pcmu,
+        )
+        .await
+        .expect("a session")
     }
 
     /// S5/M2: Mute, Hold, Resume used to open the microphone, because hold
@@ -1413,7 +1435,10 @@ mod tests {
         call.hold();
         assert!(call.media().unwrap().is_muted());
         call.unhold();
-        assert!(call.media().unwrap().is_muted(), "resume opened a muted microphone");
+        assert!(
+            call.media().unwrap().is_muted(),
+            "resume opened a muted microphone"
+        );
         call.set_user_mute(false);
         assert!(!call.media().unwrap().is_muted());
     }
@@ -1427,7 +1452,10 @@ mod tests {
         call.hold();
         call.set_user_mute(true);
         call.set_user_mute(false);
-        assert!(call.media().unwrap().is_muted(), "unmuting a held call opened the microphone");
+        assert!(
+            call.media().unwrap().is_muted(),
+            "unmuting a held call opened the microphone"
+        );
         call.unhold();
         assert!(!call.media().unwrap().is_muted());
     }
@@ -1440,7 +1468,10 @@ mod tests {
         call.process(CallFSMEvent::RemoteRinging);
         call.set_user_mute(true);
         call.set_early_media(session().await);
-        assert!(call.media_any().unwrap().is_muted(), "early media started unmuted");
+        assert!(
+            call.media_any().unwrap().is_muted(),
+            "early media started unmuted"
+        );
 
         // Connects on the early session (the 200 handler takes and re-sets it).
         let early = call.take_early_media().unwrap();
@@ -1481,11 +1512,17 @@ mod tests {
         let b = "v=0\r\no=aria 5 5 IN IP4 10.0.0.2\r\nm=audio 30002 RTP/AVP 0\r\n";
         let id = crate::sip::builder::sdp_session_id("call-mute");
         let first = call.stamp_local_sdp(a);
-        assert!(first.contains(&format!("o=aria {id} 2 IN IP4 10.0.0.2\r\n")), "{first}");
+        assert!(
+            first.contains(&format!("o=aria {id} 2 IN IP4 10.0.0.2\r\n")),
+            "{first}"
+        );
         let again = call.stamp_local_sdp(a);
         assert_eq!(again, first, "an unchanged SDP keeps its version");
         let moved = call.stamp_local_sdp(b);
-        assert!(moved.contains(&format!("o=aria {id} 3 IN IP4 10.0.0.2\r\n")), "{moved}");
+        assert!(
+            moved.contains(&format!("o=aria {id} 3 IN IP4 10.0.0.2\r\n")),
+            "{moved}"
+        );
 
         // An inbound call's first answer is version 1.
         let mut inbound = CallFSM::new_inbound(InboundCallParams {
@@ -1499,6 +1536,8 @@ mod tests {
             local_uri: "sip:me@y".into(),
         });
         let id = crate::sip::builder::sdp_session_id("in-1");
-        assert!(inbound.stamp_local_sdp(a).contains(&format!("o=aria {id} 1 IN")));
+        assert!(inbound
+            .stamp_local_sdp(a)
+            .contains(&format!("o=aria {id} 1 IN")));
     }
 }

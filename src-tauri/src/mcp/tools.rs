@@ -89,8 +89,11 @@ pub trait CallControl: Send + Sync {
         call_id: &'a str,
         target_uri: &'a str,
     ) -> OpFuture<'a, Result<(), String>>;
-    fn send_dtmf<'a>(&'a self, call_id: &'a str, digit: &'a str)
-        -> OpFuture<'a, Result<(), String>>;
+    fn send_dtmf<'a>(
+        &'a self,
+        call_id: &'a str,
+        digit: &'a str,
+    ) -> OpFuture<'a, Result<(), String>>;
 }
 
 impl CallControl for SipManager {
@@ -428,7 +431,9 @@ fn status_line(raw: &str) -> Option<(u16, String)> {
 fn header(raw: &str, name: &str) -> Option<String> {
     raw.lines().find_map(|line| {
         let (k, v) = line.split_once(':')?;
-        k.trim().eq_ignore_ascii_case(name).then(|| v.trim().to_string())
+        k.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| v.trim().to_string())
     })
 }
 
@@ -653,7 +658,11 @@ impl AriaMcp {
             call_id: Some(call.call_id.clone()),
             remote: Some(call.remote.clone()),
         });
-        let decision = self.ctx.consent.wait(&request_id, rx, CONSENT_TIMEOUT).await;
+        let decision = self
+            .ctx
+            .consent
+            .wait(&request_id, rx, CONSENT_TIMEOUT)
+            .await;
         if decision.allowed && decision.call_id.as_deref() == Some(call.call_id.as_str()) {
             return Ok(());
         }
@@ -958,7 +967,10 @@ impl AriaMcp {
         let number = crate::commands::checked_target(&params.number)
             .map_err(tool_error)?
             .to_string();
-        let account_label = params.account_id.clone().unwrap_or_else(|| "aria".to_string());
+        let account_label = params
+            .account_id
+            .clone()
+            .unwrap_or_else(|| "aria".to_string());
 
         let (request_id, rx) = self.ctx.consent.begin();
         self.ctx.requests.request(CallRequest {
@@ -969,7 +981,11 @@ impl AriaMcp {
             call_id: None,
             remote: None,
         });
-        let decision: Decision = self.ctx.consent.wait(&request_id, rx, CONSENT_TIMEOUT).await;
+        let decision: Decision = self
+            .ctx
+            .consent
+            .wait(&request_id, rx, CONSENT_TIMEOUT)
+            .await;
 
         match decision {
             Decision {
@@ -1027,8 +1043,13 @@ impl AriaMcp {
                 call.call_id, call.state
             )));
         }
-        self.ask_for_call(RequestKind::Answer, &call, &call.remote, "answer the call from")
-            .await?;
+        self.ask_for_call(
+            RequestKind::Answer,
+            &call,
+            &call.remote,
+            "answer the call from",
+        )
+        .await?;
         let result = self.ctx.calls.answer(&call.call_id).await;
         self.run_action(&call, "answer", result).await
     }
@@ -1073,20 +1094,30 @@ impl AriaMcp {
             "send digits to",
         )?;
         if !self.ctx.consent.dtmf_allowed(&call.call_id) {
-            self.ask_for_call(RequestKind::Dtmf, &call, &digits, "send keypad tones to the call with")
-                .await?;
+            self.ask_for_call(
+                RequestKind::Dtmf,
+                &call,
+                &digits,
+                "send keypad tones to the call with",
+            )
+            .await?;
             self.ctx.consent.allow_dtmf(&call.call_id);
         }
         let mut result = Ok(());
         for d in digits.chars() {
-            result = self.ctx.calls.send_dtmf(&call.call_id, &d.to_string()).await;
+            result = self
+                .ctx
+                .calls
+                .send_dtmf(&call.call_id, &d.to_string())
+                .await;
             if result.is_err() {
                 break;
             }
             // Keep tones distinguishable at the far end.
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         }
-        self.run_action(&call, &format!("dtmf {digits}"), result).await
+        self.run_action(&call, &format!("dtmf {digits}"), result)
+            .await
     }
 
     /// Put a call on hold, or resume it.
@@ -1129,9 +1160,18 @@ impl AriaMcp {
                 .ok_or_else(|| tool_error("The call's account is no longer configured"))?;
             format!("sip:{target}@{domain}")
         };
-        self.ask_for_call(RequestKind::Transfer, &call, &target_uri, "transfer the call with")
-            .await?;
-        let result = self.ctx.calls.transfer_blind(&call.call_id, &target_uri).await;
+        self.ask_for_call(
+            RequestKind::Transfer,
+            &call,
+            &target_uri,
+            "transfer the call with",
+        )
+        .await?;
+        let result = self
+            .ctx
+            .calls
+            .transfer_blind(&call.call_id, &target_uri)
+            .await;
         self.run_action(&call, &format!("transfer to {target_uri}"), result)
             .await
     }

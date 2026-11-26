@@ -157,7 +157,9 @@ mod enabled {
 
     /// Bring the engine up if it is not already. Safe to call repeatedly.
     fn ensure_init() -> Result<(), String> {
-        let mut guard = state().lock().map_err(|_| "AI state poisoned".to_string())?;
+        let mut guard = state()
+            .lock()
+            .map_err(|_| "AI state poisoned".to_string())?;
         if guard.is_some() {
             return Ok(());
         }
@@ -186,8 +188,12 @@ mod enabled {
     /// Run `f` against the initialised state.
     fn with<T>(f: impl FnOnce(&Desktop) -> Result<T, String>) -> Result<T, String> {
         ensure_init()?;
-        let guard = state().lock().map_err(|_| "AI state poisoned".to_string())?;
-        let desktop = guard.as_ref().ok_or_else(|| "AI not initialised".to_string())?;
+        let guard = state()
+            .lock()
+            .map_err(|_| "AI state poisoned".to_string())?;
+        let desktop = guard
+            .as_ref()
+            .ok_or_else(|| "AI not initialised".to_string())?;
         f(desktop)
     }
 
@@ -241,8 +247,12 @@ mod enabled {
 
     pub fn models() -> Result<Vec<AiModelDto>, String> {
         with(|d| {
-            let installed: Vec<String> =
-                d.engine.installed_models().into_iter().map(|m| m.id).collect();
+            let installed: Vec<String> = d
+                .engine
+                .installed_models()
+                .into_iter()
+                .map(|m| m.id)
+                .collect();
             Ok(d.engine
                 .availability()
                 .into_iter()
@@ -308,7 +318,11 @@ mod enabled {
     ///
     /// Blocking and slow — seconds to minutes — so callers must run it off the
     /// UI thread. Tauri commands marked `async` already do.
-    pub fn transcribe_recording(call_id: &str, wav_path: &Path, remote_label: &str) -> Result<AiInsightDto, String> {
+    pub fn transcribe_recording(
+        call_id: &str,
+        wav_path: &Path,
+        remote_label: &str,
+    ) -> Result<AiInsightDto, String> {
         // Inference takes seconds to minutes. Holding the state lock across it
         // would block every other command — listing models, polling a download
         // — for that whole time, so the lock is only held to hand out the
@@ -372,7 +386,8 @@ mod enabled {
             lost_audio: false,
         };
 
-        let (summary, llm_model_id, status) = summarize_transcript(&transcript, remote_label, duration_secs);
+        let (summary, llm_model_id, status) =
+            summarize_transcript(&transcript, remote_label, duration_secs);
         let insight = aria_ai_core::types::CallInsight {
             call_id: call_id.to_string(),
             created_at: now_secs(),
@@ -416,24 +431,42 @@ mod enabled {
         use aria_ai_core::types::InsightStatus;
 
         let only = |reason: String| InsightStatus::TranscriptOnly { reason };
-        let Some(llm_id) = models()
-            .ok()
-            .and_then(|ms| ms.into_iter().find(|m| m.kind == "llm" && m.installed).map(|m| m.id))
-        else {
+        let Some(llm_id) = models().ok().and_then(|ms| {
+            ms.into_iter()
+                .find(|m| m.kind == "llm" && m.installed)
+                .map(|m| m.id)
+        }) else {
             return (None, None, only("no summary model installed".to_string()));
         };
         let summarizer = match with(|d| d.engine.summarizer(&llm_id).map_err(|e| e.to_string())) {
             Ok(s) => s,
-            Err(e) => return (None, Some(llm_id), only(format!("summary model could not be loaded: {e}"))),
+            Err(e) => {
+                return (
+                    None,
+                    Some(llm_id),
+                    only(format!("summary model could not be loaded: {e}")),
+                )
+            }
         };
         let ctx = CallContext {
             remote_label: remote_label.to_string(),
             date_label: super::date_label(now_secs()),
             duration_secs,
         };
-        match summarize(transcript, summarizer.as_ref(), &ctx, &SummaryConfig::default()) {
-            Ok(outcome) => (Some(outcome.summary), Some(outcome.model_id), InsightStatus::Complete),
-            Err(e @ aria_ai_core::AiError::TranscriptTooShort { .. }) => (None, Some(llm_id), only(e.to_string())),
+        match summarize(
+            transcript,
+            summarizer.as_ref(),
+            &ctx,
+            &SummaryConfig::default(),
+        ) {
+            Ok(outcome) => (
+                Some(outcome.summary),
+                Some(outcome.model_id),
+                InsightStatus::Complete,
+            ),
+            Err(e @ aria_ai_core::AiError::TranscriptTooShort { .. }) => {
+                (None, Some(llm_id), only(e.to_string()))
+            }
             Err(e) => {
                 log::warn!("summary failed: {e}");
                 (None, Some(llm_id), only(format!("summary failed: {e}")))
@@ -508,7 +541,7 @@ mod enabled {
         })
     }
 
-fn now_secs() -> i64 {
+    fn now_secs() -> i64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
@@ -609,7 +642,11 @@ mod disabled {
         Err(OFF.to_string())
     }
 
-    pub fn transcribe_recording(_call_id: &str, _wav_path: &Path, _remote_label: &str) -> Result<AiInsightDto, String> {
+    pub fn transcribe_recording(
+        _call_id: &str,
+        _wav_path: &Path,
+        _remote_label: &str,
+    ) -> Result<AiInsightDto, String> {
         Err(OFF.to_string())
     }
 

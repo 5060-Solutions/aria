@@ -36,7 +36,9 @@ async fn is_stale_final_response(
     call_id_header: &str,
     text: &str,
 ) -> bool {
-    let Some(cseq) = response_cseq(text) else { return false };
+    let Some(cseq) = response_cseq(text) else {
+        return false;
+    };
     let s = state.read().await;
     s.find_call_by_header(call_id_header)
         .is_some_and(|(_, call)| cseq < call.invite_cseq)
@@ -63,7 +65,9 @@ async fn bye_crossed_dialog(
 ) {
     let bye = {
         let mut s = state.write().await;
-        let Some((_, call)) = s.find_call_by_header_mut(call_id_header) else { return };
+        let Some((_, call)) = s.find_call_by_header_mut(call_id_header) else {
+            return;
+        };
         if call.bye_sent {
             return;
         }
@@ -73,7 +77,9 @@ async fn bye_crossed_dialog(
         let local_uri = call.local_uri.clone();
         let from_tag = call.from_tag.clone();
         let account_id = call.account_id.clone();
-        let Some(account) = s.get_account(&account_id) else { return };
+        let Some(account) = s.get_account(&account_id) else {
+            return;
+        };
         let (Some(transport), Some(server_addr)) = (account.transport.clone(), account.server_addr)
         else {
             return;
@@ -94,7 +100,10 @@ async fn bye_crossed_dialog(
         (msg, transport, server_addr)
     };
     let (msg, transport, server_addr) = bye;
-    log::info!("200 OK crossed our CANCEL for {}; sending BYE", call_id_header);
+    log::info!(
+        "200 OK crossed our CANCEL for {}; sending BYE",
+        call_id_header
+    );
     if let Err(e) = crate::sip::send_non_invite(state, &transport, server_addr, msg).await {
         log::warn!("Could not send the BYE for {}: {}", call_id_header, e);
     }
@@ -123,26 +132,29 @@ pub async fn handle_invite_response(
 
             // Check for SDP in provisional response (early media)
             let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
-            let has_sdp = (status == 180 || status == 181 || status == 183) && !sdp.trim().is_empty() && sdp.contains("m=audio");
+            let has_sdp = (status == 180 || status == 181 || status == 183)
+                && !sdp.trim().is_empty()
+                && sdp.contains("m=audio");
 
             // Extract data needed for early media before taking write lock.
             // The 183's SDP is the answer to our offer: the codec is its first
             // one we carry, the same pick a 200 would get.
             let early_media_plan = if has_sdp {
                 let s = state.read().await;
-                s.find_call_by_header(&call_id_header).and_then(|(_, call)| {
-                    if call.has_early_media() {
-                        return None; // Already have early media
-                    }
-                    let remote = media::remote_media(sdp, None)?;
-                    Some(media::MediaPlan {
-                        local_port: call.local_rtp_port,
-                        remote,
-                        local_srtp_key: call.local_srtp_key.clone(),
-                        input_device: s.preferred_input_device.clone(),
-                        output_device: s.preferred_output_device.clone(),
+                s.find_call_by_header(&call_id_header)
+                    .and_then(|(_, call)| {
+                        if call.has_early_media() {
+                            return None; // Already have early media
+                        }
+                        let remote = media::remote_media(sdp, None)?;
+                        Some(media::MediaPlan {
+                            local_port: call.local_rtp_port,
+                            remote,
+                            local_srtp_key: call.local_srtp_key.clone(),
+                            input_device: s.preferred_input_device.clone(),
+                            output_device: s.preferred_output_device.clone(),
+                        })
                     })
-                })
             } else {
                 None
             };
@@ -191,11 +203,13 @@ pub async fn handle_invite_response(
 
                 // Notify frontend when the call moves to ringing, or when early media arrives.
                 // A stray 180 for a connected call must not tell the UI it is ringing again.
-                if (transitioned && !was_ringing) || (had_early_session && has_early_media && call.is_ringing()) {
+                if (transitioned && !was_ringing)
+                    || (had_early_session && has_early_media && call.is_ringing())
+                {
                     let _ = event_tx.send(SipEvent::CallStateChanged(
                         CallEvent::new(&account_id, &call_id, "ringing", &remote_uri, "outbound")
                             .with_sip_call_id(&call_id_header)
-                            .with_early_media(has_early_media)
+                            .with_early_media(has_early_media),
                     ));
                 }
             }
@@ -205,7 +219,7 @@ pub async fn handle_invite_response(
             let to_tag = extract_to_tag(text).unwrap_or_default();
             let sdp = text.split("\r\n\r\n").nth(1).unwrap_or("");
             let rtp_target = parse_sdp_connection(sdp);
-            
+
             // Parse remote SRTP key from SDP answer
             let remote_srtp_key = rtp_engine::srtp::parse_sdp_crypto(sdp);
             if remote_srtp_key.is_some() {
@@ -226,36 +240,57 @@ pub async fn handle_invite_response(
             // Extract all needed data in one read lock scope
             let call_data = {
                 let s = state.read().await;
-                s.find_call_by_header(&call_id_header).map(|(account, call)| {
-                    let transport = account.transport.clone();
-                    let server_addr = account.server_addr;
-                    let local_addr = account.local_addr.unwrap_or_else(|| {
-                        account.transport.as_ref().map(|t| t.local_addr()).unwrap_or_else(|| "0.0.0.0:0".parse().unwrap())
-                    });
-                    let transport_param = account.config.transport.param().to_string();
-                    (
-                        transport,
-                        server_addr,
-                        local_addr,
-                        transport_param,
-                        call.remote_uri.clone(),
-                        call.call_id_header.clone(),
-                        // The ACK for a 2xx carries the INVITE's CSeq number
-                        // (RFC 3261 §13.2.2.4), not the dialog's latest: a
-                        // CANCEL or BYE sent since must not change it.
-                        call.invite_cseq,
-                        call.from_tag.clone(),
-                        call.id.clone(),
-                        call.local_rtp_port,
-                        call.account_id.clone(),
-                        call.local_srtp_key.clone(),
-                        call.is_established() || call.is_ended(),
-                    )
-                })
+                s.find_call_by_header(&call_id_header)
+                    .map(|(account, call)| {
+                        let transport = account.transport.clone();
+                        let server_addr = account.server_addr;
+                        let local_addr = account.local_addr.unwrap_or_else(|| {
+                            account
+                                .transport
+                                .as_ref()
+                                .map(|t| t.local_addr())
+                                .unwrap_or_else(|| "0.0.0.0:0".parse().unwrap())
+                        });
+                        let transport_param = account.config.transport.param().to_string();
+                        (
+                            transport,
+                            server_addr,
+                            local_addr,
+                            transport_param,
+                            call.remote_uri.clone(),
+                            call.call_id_header.clone(),
+                            // The ACK for a 2xx carries the INVITE's CSeq number
+                            // (RFC 3261 §13.2.2.4), not the dialog's latest: a
+                            // CANCEL or BYE sent since must not change it.
+                            call.invite_cseq,
+                            call.from_tag.clone(),
+                            call.id.clone(),
+                            call.local_rtp_port,
+                            call.account_id.clone(),
+                            call.local_srtp_key.clone(),
+                            call.is_established() || call.is_ended(),
+                        )
+                    })
             };
 
-            let (transport, server_addr, local_addr, transport_param, remote_uri, sip_call_id, cseq, from_tag, call_internal_id, local_rtp_port, account_id, local_srtp_key, already_answered) = match call_data {
-                Some((Some(t), Some(sa), la, tp, ru, sci, cs, ft, cid, rp, aid, lsk, done)) => (t, sa, la, tp, ru, sci, cs, ft, cid, rp, aid, lsk, done),
+            let (
+                transport,
+                server_addr,
+                local_addr,
+                transport_param,
+                remote_uri,
+                sip_call_id,
+                cseq,
+                from_tag,
+                call_internal_id,
+                local_rtp_port,
+                account_id,
+                local_srtp_key,
+                already_answered,
+            ) = match call_data {
+                Some((Some(t), Some(sa), la, tp, ru, sci, cs, ft, cid, rp, aid, lsk, done)) => {
+                    (t, sa, la, tp, ru, sci, cs, ft, cid, rp, aid, lsk, done)
+                }
                 _ => return,
             };
 
@@ -268,7 +303,10 @@ pub async fn handle_invite_response(
                 if let Some((_, call)) = s.find_call_by_header(&call_id_header) {
                     (call.local_uri.clone(), call.remote_uri.clone())
                 } else {
-                    (format!("sip:unknown@{}", local_addr.ip()), remote_uri.clone())
+                    (
+                        format!("sip:unknown@{}", local_addr.ip()),
+                        remote_uri.clone(),
+                    )
                 }
             };
 
@@ -322,9 +360,8 @@ pub async fn handle_invite_response(
                 return;
             }
 
-            let remote_rtp_addr = rtp_target.and_then(|(ip, port)| {
-                format!("{}:{}", ip, port).parse::<SocketAddr>().ok()
-            });
+            let remote_rtp_addr = rtp_target
+                .and_then(|(ip, port)| format!("{}:{}", ip, port).parse::<SocketAddr>().ok());
 
             // Built when auto-record starts. Sent after the call-state event
             // below, so the frontend has the call in its list before it is told
@@ -337,37 +374,36 @@ pub async fn handle_invite_response(
 
                 // Take the early-media session out first, so the mutable borrow
                 // of the call ends before start_auto_record reads the account.
-                let early_media = if let Some((_, call)) =
-                    s.find_call_by_header_mut(&call_id_header)
-                {
-                    call.remote_contact = remote_contact_uri.clone();
-                    let early_media = call.take_early_media();
-                    call.set_to_tag(to_tag.clone());
-                    let result = call.process(CallFSMEvent::Answered {
-                        to_tag: to_tag.clone(),
-                        remote_rtp: remote_rtp_addr,
-                        route_set: route_set.clone(),
-                        session_expires,
-                    });
-                    if matches!(result, TransitionResult::AlreadyEnded) {
-                        // Hung up between the check above and here: same
-                        // crossed CANCEL/200 case, one lock scope later.
-                        drop(s);
-                        drop(early_media);
-                        bye_crossed_dialog(
-                            state,
-                            &call_id_header,
-                            &to_tag,
-                            remote_contact_uri.as_deref(),
-                            &route_set,
-                        )
-                        .await;
-                        return;
-                    }
-                    early_media
-                } else {
-                    None
-                };
+                let early_media =
+                    if let Some((_, call)) = s.find_call_by_header_mut(&call_id_header) {
+                        call.remote_contact = remote_contact_uri.clone();
+                        let early_media = call.take_early_media();
+                        call.set_to_tag(to_tag.clone());
+                        let result = call.process(CallFSMEvent::Answered {
+                            to_tag: to_tag.clone(),
+                            remote_rtp: remote_rtp_addr,
+                            route_set: route_set.clone(),
+                            session_expires,
+                        });
+                        if matches!(result, TransitionResult::AlreadyEnded) {
+                            // Hung up between the check above and here: same
+                            // crossed CANCEL/200 case, one lock scope later.
+                            drop(s);
+                            drop(early_media);
+                            bye_crossed_dialog(
+                                state,
+                                &call_id_header,
+                                &to_tag,
+                                remote_contact_uri.as_deref(),
+                                &route_set,
+                            )
+                            .await;
+                            return;
+                        }
+                        early_media
+                    } else {
+                        None
+                    };
                 has_media = early_media.is_some();
 
                 // If we had early media, set it on the now-connected call.
@@ -380,17 +416,21 @@ pub async fn handle_invite_response(
                 // (another address, codec or SRTP key): then the early session
                 // is talking to the wrong place, and is replaced.
                 if let Some(session) = early_media {
-                    let stale = s.find_call_by_header(&call_id_header).and_then(|(_, call)| {
-                        let early = call.remote_media.as_ref()?;
-                        let answered = media::remote_media(sdp, None)?;
-                        early.needs_restart_for(&answered).then(|| media::MediaPlan {
-                            local_port: call.local_rtp_port,
-                            remote: answered,
-                            local_srtp_key: call.local_srtp_key.clone(),
-                            input_device: s.preferred_input_device.clone(),
-                            output_device: s.preferred_output_device.clone(),
-                        })
-                    });
+                    let stale = s
+                        .find_call_by_header(&call_id_header)
+                        .and_then(|(_, call)| {
+                            let early = call.remote_media.as_ref()?;
+                            let answered = media::remote_media(sdp, None)?;
+                            early
+                                .needs_restart_for(&answered)
+                                .then(|| media::MediaPlan {
+                                    local_port: call.local_rtp_port,
+                                    remote: answered,
+                                    local_srtp_key: call.local_srtp_key.clone(),
+                                    input_device: s.preferred_input_device.clone(),
+                                    output_device: s.preferred_output_device.clone(),
+                                })
+                        });
                     if let Some(plan) = stale {
                         log::info!(
                             "The 200 OK moves call {}'s media from its early-media session; restarting it",
@@ -423,7 +463,11 @@ pub async fn handle_invite_response(
             if has_media {
                 log::info!("Early media session already active, skipping new media setup");
             } else if let Some(remote) = media::remote_media(sdp, None) {
-                log::info!("Negotiated codec: {:?} on payload type {}", remote.audio.codec, remote.audio.pt);
+                log::info!(
+                    "Negotiated codec: {:?} on payload type {}",
+                    remote.audio.codec,
+                    remote.audio.pt
+                );
 
                 // Get preferred audio devices, and whether this account asked
                 // for encryption. srtp_mode was only ever consulted when
@@ -431,9 +475,9 @@ pub async fn handle_invite_response(
                 // back, so a peer could strip the line and get cleartext.
                 let (input_dev, output_dev, srtp_preferred) = {
                     let s = state.read().await;
-                    let preferred = s
-                        .get_account(&account_id)
-                        .is_some_and(|a| a.config.srtp_mode != crate::sip::account::SrtpMode::Disabled);
+                    let preferred = s.get_account(&account_id).is_some_and(|a| {
+                        a.config.srtp_mode != crate::sip::account::SrtpMode::Disabled
+                    });
                     (
                         s.preferred_input_device.clone(),
                         s.preferred_output_device.clone(),
@@ -472,7 +516,8 @@ pub async fn handle_invite_response(
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {
                             call.srtp_active = started.srtp_active;
                             call.set_remote_rtp(plan.remote.addr);
-                            call.remote_media = Some(plan.remote.clone().for_session(started.srtp_active));
+                            call.remote_media =
+                                Some(plan.remote.clone().for_session(started.srtp_active));
                             call.set_media(started.session);
                         }
 
@@ -508,9 +553,15 @@ pub async fn handle_invite_response(
             };
 
             let _ = event_tx.send(SipEvent::CallStateChanged(
-                CallEvent::new(&account_id, call_internal_id, "connected", remote_uri, "outbound")
-                    .with_sip_call_id(&call_id_header)
-                    .with_srtp_active(srtp_active)
+                CallEvent::new(
+                    &account_id,
+                    call_internal_id,
+                    "connected",
+                    remote_uri,
+                    "outbound",
+                )
+                .with_sip_call_id(&call_id_header)
+                .with_srtp_active(srtp_active),
             ));
 
             if let Some(event) = recording_event {
@@ -530,10 +581,17 @@ pub async fn handle_invite_response(
                 let remote_uri = call.remote_uri.clone();
                 // A rejection for an already-ended call changes nothing; the
                 // UI has had its ended event.
-                if matches!(call.process(CallFSMEvent::Reject { status }), TransitionResult::Ok) {
-                    let _ = event_tx.send(SipEvent::CallStateChanged(
-                        CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                    ));
+                if matches!(
+                    call.process(CallFSMEvent::Reject { status }),
+                    TransitionResult::Ok
+                ) {
+                    let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+                        &account_id,
+                        &call_id,
+                        "ended",
+                        &remote_uri,
+                        "outbound",
+                    )));
                 }
             }
         }
@@ -559,7 +617,10 @@ pub async fn handle_invite_response(
                     // closes the INVITE, and answering the challenge would
                     // ring the callee for a call the caller has abandoned.
                     if call.is_ended() {
-                        log::info!("INVITE challenged ({}) after the call ended; not retrying", status);
+                        log::info!(
+                            "INVITE challenged ({}) after the call ended; not retrying",
+                            status
+                        );
                         return;
                     }
                     if call.auth_attempted() {
@@ -570,9 +631,13 @@ pub async fn handle_invite_response(
                             reason: "Auth loop prevented".to_string(),
                         });
                         if matches!(result, TransitionResult::Ok) {
-                            let _ = event_tx.send(SipEvent::CallStateChanged(
-                                CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                            ));
+                            let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+                                &account_id,
+                                &call_id,
+                                "ended",
+                                &remote_uri,
+                                "outbound",
+                            )));
                         }
                         return;
                     }
@@ -603,26 +668,42 @@ pub async fn handle_invite_response(
             // Get account and call info for auth retry
             let retry_data = {
                 let s = state.read().await;
-                s.find_call_by_header(&call_id_header).map(|(account, call)| {
-                    (
-                        account.config.id.clone(),
-                        account.config.clone(),
-                        account.local_addr,
-                        account.server_addr,
-                        account.transport.clone(),
-                        call.remote_uri.clone(),
-                        call.call_id_header.clone(),
-                        call.from_tag.clone(),
-                        call.local_rtp_port,
-                        call.sdp_public_ip,
-                        account.public_addr,
-                        call.local_srtp_key.clone(),
-                    )
-                })
+                s.find_call_by_header(&call_id_header)
+                    .map(|(account, call)| {
+                        (
+                            account.config.id.clone(),
+                            account.config.clone(),
+                            account.local_addr,
+                            account.server_addr,
+                            account.transport.clone(),
+                            call.remote_uri.clone(),
+                            call.call_id_header.clone(),
+                            call.from_tag.clone(),
+                            call.local_rtp_port,
+                            call.sdp_public_ip,
+                            account.public_addr,
+                            call.local_srtp_key.clone(),
+                        )
+                    })
             };
 
-            let (_account_id, account_config, local_addr, server_addr, transport, remote_uri, sip_call_id, from_tag, rtp_port, offered_ip, public_addr, _existing_srtp_key) = match retry_data {
-                Some((aid, ac, Some(la), Some(sa), Some(t), ru, sci, ft, rp, oi, pa, sk)) => (aid, ac, la, sa, t, ru, sci, ft, rp, oi, pa, sk),
+            let (
+                _account_id,
+                account_config,
+                local_addr,
+                server_addr,
+                transport,
+                remote_uri,
+                sip_call_id,
+                from_tag,
+                rtp_port,
+                offered_ip,
+                public_addr,
+                _existing_srtp_key,
+            ) = match retry_data {
+                Some((aid, ac, Some(la), Some(sa), Some(t), ru, sci, ft, rp, oi, pa, sk)) => {
+                    (aid, ac, la, sa, t, ru, sci, ft, rp, oi, pa, sk)
+                }
                 _ => return,
             };
 
@@ -691,7 +772,9 @@ pub async fn handle_invite_response(
             let branch = extract_via_branch(&invite);
             let call_id = {
                 let mut s = state.write().await;
-                let Some((_, call)) = s.find_call_by_header_mut(&sip_call_id) else { return };
+                let Some((_, call)) = s.find_call_by_header_mut(&sip_call_id) else {
+                    return;
+                };
                 // Hung up while the credentials were being worked out.
                 if call.is_ended() {
                     return;
@@ -706,7 +789,8 @@ pub async fn handle_invite_response(
             };
 
             if let Err(e) =
-                crate::sip::send_invite(state, event_tx, &call_id, &transport, server_addr, invite).await
+                crate::sip::send_invite(state, event_tx, &call_id, &transport, server_addr, invite)
+                    .await
             {
                 log::error!("Failed to send authenticated INVITE: {}", e);
             }
@@ -726,9 +810,13 @@ pub async fn handle_invite_response(
                     reason: format!("Call failed: {}", status),
                 });
                 if matches!(result, TransitionResult::Ok) {
-                    let _ = event_tx.send(SipEvent::CallStateChanged(
-                        CallEvent::new(&account_id, &call_id, "ended", &remote_uri, "outbound")
-                    ));
+                    let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+                        &account_id,
+                        &call_id,
+                        "ended",
+                        &remote_uri,
+                        "outbound",
+                    )));
                 }
             }
         }
@@ -737,36 +825,48 @@ pub async fn handle_invite_response(
 }
 
 /// Send a hop-by-hop ACK request for non-2xx final responses (RFC 3261 Section 17.1.1.3).
-async fn send_non_2xx_ack(
-    state: &Arc<RwLock<ManagerState>>,
-    call_id_header: &str,
-    text: &str,
-) {
+async fn send_non_2xx_ack(state: &Arc<RwLock<ManagerState>>, call_id_header: &str, text: &str) {
     let ack_info = {
         let s = state.read().await;
-        s.find_call_by_header(call_id_header).and_then(|(account, call)| {
-            let transport = account.transport.clone()?;
-            let server_addr = account.server_addr?;
-            let local_addr = account.local_addr.unwrap_or_else(|| transport.local_addr());
-            let transport_param = account.config.transport.param().to_string();
-            let via_branch = call.last_invite_branch.clone().unwrap_or_else(builder::generate_branch);
-            Some((
-                transport,
-                server_addr,
-                local_addr,
-                transport_param,
-                call.remote_uri.clone(),
-                call.call_id_header.clone(),
-                // The INVITE's CSeq, as its branch is (RFC 3261 §17.1.1.3).
-                call.invite_cseq,
-                call.from_tag.clone(),
-                call.local_uri.clone(),
-                via_branch,
-            ))
-        })
+        s.find_call_by_header(call_id_header)
+            .and_then(|(account, call)| {
+                let transport = account.transport.clone()?;
+                let server_addr = account.server_addr?;
+                let local_addr = account.local_addr.unwrap_or_else(|| transport.local_addr());
+                let transport_param = account.config.transport.param().to_string();
+                let via_branch = call
+                    .last_invite_branch
+                    .clone()
+                    .unwrap_or_else(builder::generate_branch);
+                Some((
+                    transport,
+                    server_addr,
+                    local_addr,
+                    transport_param,
+                    call.remote_uri.clone(),
+                    call.call_id_header.clone(),
+                    // The INVITE's CSeq, as its branch is (RFC 3261 §17.1.1.3).
+                    call.invite_cseq,
+                    call.from_tag.clone(),
+                    call.local_uri.clone(),
+                    via_branch,
+                ))
+            })
     };
 
-    if let Some((transport, server_addr, local_addr, transport_param, remote_uri, sip_call_id, cseq, from_tag, local_uri, via_branch)) = ack_info {
+    if let Some((
+        transport,
+        server_addr,
+        local_addr,
+        transport_param,
+        remote_uri,
+        sip_call_id,
+        cseq,
+        from_tag,
+        local_uri,
+        via_branch,
+    )) = ack_info
+    {
         let to_tag = extract_to_tag(text).unwrap_or_default();
         let ack = build_ack(
             &remote_uri,

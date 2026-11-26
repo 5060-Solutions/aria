@@ -56,7 +56,11 @@ pub async fn handle_response(
                 let call_id_header = extract_header(text, "Call-ID").unwrap_or_default();
                 let s = state.read().await;
                 if let Some(account) = s.get_account(account_id) {
-                    if let Some(call) = account.calls.iter().find(|c| c.call_id_header == call_id_header) {
+                    if let Some(call) = account
+                        .calls
+                        .iter()
+                        .find(|c| c.call_id_header == call_id_header)
+                    {
                         let _ = event_tx.send(SipEvent::TransferProgress(TransferEvent {
                             account_id: account_id.to_string(),
                             call_id: call.id.clone(),

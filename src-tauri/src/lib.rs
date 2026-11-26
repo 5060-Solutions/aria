@@ -4,9 +4,9 @@ mod commands;
 mod desktop_context;
 mod diagnostics_window;
 mod mcp;
-mod messaging;
 #[cfg(target_os = "macos")]
 mod menu;
+mod messaging;
 mod pbx_binding;
 mod pbx_me;
 mod provision;
@@ -63,7 +63,10 @@ fn surface_for_incoming_call(app: &tauri::AppHandle) {
 /// unreachable, as opposed to the entry being missing.
 #[cfg(any(target_os = "linux", test))]
 fn credential_store_unavailable(probe: &keyring::Result<String>) -> bool {
-    matches!(probe, Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_)))
+    matches!(
+        probe,
+        Err(keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))
+    )
 }
 
 /// Fall back to the kernel keyring alone when there is no Secret Service.
@@ -80,7 +83,8 @@ fn credential_store_unavailable(probe: &keyring::Result<String>) -> bool {
 /// Must run before anything creates a keyring entry.
 #[cfg(target_os = "linux")]
 fn use_session_keyring_without_secret_service() {
-    let probe = keyring::Entry::new("aria-softphone", "keyring-probe").and_then(|e| e.get_password());
+    let probe =
+        keyring::Entry::new("aria-softphone", "keyring-probe").and_then(|e| e.get_password());
     if credential_store_unavailable(&probe) {
         log::warn!(
             "No Secret Service is available ({}); saved credentials are kept in the kernel keyring \
@@ -152,7 +156,9 @@ pub fn run() {
         .manage(audio_test_manager)
         .manage(std::sync::Arc::new(voicemail::VoicemailState::new()))
         .manage(messaging::MessagingLive::default())
-        .manage(std::sync::Arc::new(pbx_binding::PbxBindings::load(app_data_root().map(|d| d.join("pbx_bindings.json")))))
+        .manage(std::sync::Arc::new(pbx_binding::PbxBindings::load(
+            app_data_root().map(|d| d.join("pbx_bindings.json")),
+        )))
         .setup(move |app| {
             // Start the manager's sweeper and timers. setup() itself runs on
             // the main thread from the event loop's Ready handler, with no
@@ -166,7 +172,7 @@ pub fn run() {
 
             // Set up event forwarding from SIP manager to frontend ONCE at startup
             let app_handle = app.handle().clone();
-            
+
             // Spawn the event forwarding task with the receiver we took earlier
             let mut rx = event_rx;
             let call_manager = app.state::<sip::SipManager>().inner().clone();
@@ -177,87 +183,94 @@ pub fn run() {
                 // text there if you change it here.
                 log::info!("SIP event forwarding started");
                 while let Some(event) = rx.recv().await {
-                        match event {
-                            sip::SipEvent::RegistrationChanged(reg_event) => {
-                                let payload = serde_json::json!({
-                                    "accountId": reg_event.account_id,
-                                    "state": reg_event.state,
-                                    "error": reg_event.error,
-                                });
-                                log::info!("Emitting sip-registration event: {:?}", payload);
-                                let _ = app_handle.emit("sip-registration", payload);
+                    match event {
+                        sip::SipEvent::RegistrationChanged(reg_event) => {
+                            let payload = serde_json::json!({
+                                "accountId": reg_event.account_id,
+                                "state": reg_event.state,
+                                "error": reg_event.error,
+                            });
+                            log::info!("Emitting sip-registration event: {:?}", payload);
+                            let _ = app_handle.emit("sip-registration", payload);
+                        }
+                        sip::SipEvent::ConnectionReport(report) => {
+                            let payload = serde_json::json!({
+                                "accountId": report.account_id,
+                                "report": report,
+                            });
+                            let _ = app_handle.emit("sip-connection", payload);
+                        }
+                        sip::SipEvent::CallStateChanged(call_event) => {
+                            if call_event.state == "incoming" {
+                                surface_for_incoming_call(&app_handle);
                             }
-                            sip::SipEvent::ConnectionReport(report) => {
-                                let payload = serde_json::json!({
-                                    "accountId": report.account_id,
-                                    "report": report,
-                                });
-                                let _ = app_handle.emit("sip-connection", payload);
+                            // The padlock needs the signalling transport as
+                            // well as SRTP: an SDES key sent over UDP/TCP is
+                            // readable by anyone on the path.
+                            let mut payload = serde_json::to_value(&call_event).unwrap_or_default();
+                            if call_event.srtp_active.is_some() {
+                                let tls =
+                                    call_manager.signaling_is_tls(&call_event.account_id).await;
+                                payload["signalingTls"] = serde_json::Value::Bool(tls);
                             }
-                            sip::SipEvent::CallStateChanged(call_event) => {
-                                if call_event.state == "incoming" {
-                                    surface_for_incoming_call(&app_handle);
-                                }
-                                // The padlock needs the signalling transport as
-                                // well as SRTP: an SDES key sent over UDP/TCP is
-                                // readable by anyone on the path.
-                                let mut payload = serde_json::to_value(&call_event).unwrap_or_default();
-                                if call_event.srtp_active.is_some() {
-                                    let tls = call_manager.signaling_is_tls(&call_event.account_id).await;
-                                    payload["signalingTls"] = serde_json::Value::Bool(tls);
-                                }
-                                let _ = app_handle.emit("sip-call", payload);
-                            }
-                            sip::SipEvent::DiagnosticMessage(log_entry) => {
-                                let _ = app_handle.emit("sip-diagnostic", log_entry);
-                            }
-                            sip::SipEvent::TransferProgress(transfer_event) => {
-                                let _ = app_handle.emit("sip-transfer", transfer_event);
-                            }
-                            sip::SipEvent::PresenceChanged(account_id, blf_entries) => {
-                                let payload = serde_json::json!({
-                                    "accountId": account_id,
-                                    "entries": blf_entries,
-                                });
-                                let _ = app_handle.emit("sip-presence", payload);
-                            }
-                            sip::SipEvent::ConferenceCreated { conference_id, call_ids } => {
-                                let payload = serde_json::json!({
-                                    "conferenceId": conference_id,
-                                    "callIds": call_ids,
-                                });
-                                let _ = app_handle.emit("sip-conference-created", payload);
-                            }
-                            sip::SipEvent::ConferenceSplit { conference_id, call_id } => {
-                                let payload = serde_json::json!({
-                                    "conferenceId": conference_id,
-                                    "callId": call_id,
-                                });
-                                let _ = app_handle.emit("sip-conference-split", payload);
-                            }
-                            sip::SipEvent::ConferenceEnded { conference_id } => {
-                                let payload = serde_json::json!({
-                                    "conferenceId": conference_id,
-                                });
-                                let _ = app_handle.emit("sip-conference-ended", payload);
-                            }
-                            sip::SipEvent::RecordingStateChanged(rec) => {
-                                let _ = app_handle.emit("sip-recording", rec);
-                            }
-                            sip::SipEvent::VoicemailStatus(vm) => {
-                                let payload = serde_json::json!({
-                                    "accountId": vm.account_id,
-                                    "hasMessages": vm.messages_waiting,
-                                    "newMessages": vm.new_messages,
-                                    "oldMessages": vm.old_messages,
-                                });
-                                let _ = app_handle.emit("sip-voicemail", payload);
-                            }
+                            let _ = app_handle.emit("sip-call", payload);
+                        }
+                        sip::SipEvent::DiagnosticMessage(log_entry) => {
+                            let _ = app_handle.emit("sip-diagnostic", log_entry);
+                        }
+                        sip::SipEvent::TransferProgress(transfer_event) => {
+                            let _ = app_handle.emit("sip-transfer", transfer_event);
+                        }
+                        sip::SipEvent::PresenceChanged(account_id, blf_entries) => {
+                            let payload = serde_json::json!({
+                                "accountId": account_id,
+                                "entries": blf_entries,
+                            });
+                            let _ = app_handle.emit("sip-presence", payload);
+                        }
+                        sip::SipEvent::ConferenceCreated {
+                            conference_id,
+                            call_ids,
+                        } => {
+                            let payload = serde_json::json!({
+                                "conferenceId": conference_id,
+                                "callIds": call_ids,
+                            });
+                            let _ = app_handle.emit("sip-conference-created", payload);
+                        }
+                        sip::SipEvent::ConferenceSplit {
+                            conference_id,
+                            call_id,
+                        } => {
+                            let payload = serde_json::json!({
+                                "conferenceId": conference_id,
+                                "callId": call_id,
+                            });
+                            let _ = app_handle.emit("sip-conference-split", payload);
+                        }
+                        sip::SipEvent::ConferenceEnded { conference_id } => {
+                            let payload = serde_json::json!({
+                                "conferenceId": conference_id,
+                            });
+                            let _ = app_handle.emit("sip-conference-ended", payload);
+                        }
+                        sip::SipEvent::RecordingStateChanged(rec) => {
+                            let _ = app_handle.emit("sip-recording", rec);
+                        }
+                        sip::SipEvent::VoicemailStatus(vm) => {
+                            let payload = serde_json::json!({
+                                "accountId": vm.account_id,
+                                "hasMessages": vm.messages_waiting,
+                                "newMessages": vm.new_messages,
+                                "oldMessages": vm.old_messages,
+                            });
+                            let _ = app_handle.emit("sip-voicemail", payload);
                         }
                     }
+                }
                 log::warn!("SIP event forwarding loop ended");
             });
-            
+
             // Resolve the recordings directory once, here, where the app data
             // dir is available. The auto-record paths used to build their own
             // from a hardcoded identifier that did not match the bundle's, so
@@ -285,7 +298,9 @@ pub fn run() {
             // the token from the keychain must not hold up the window.
             // The Diagnostics window docks to the main window and follows
             // it; see diagnostics_window.rs.
-            app.manage(diagnostics_window::DiagnosticsWindow::load(app.path().app_data_dir().ok()));
+            app.manage(diagnostics_window::DiagnosticsWindow::load(
+                app.path().app_data_dir().ok(),
+            ));
             if let Some(main) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
                 main.on_window_event(move |event| match event {
@@ -302,13 +317,20 @@ pub fn run() {
             match app.path().app_data_dir() {
                 Ok(data_dir) => {
                     let sip_manager = app.state::<sip::SipManager>().inner().clone();
-                    app.manage(mcp::McpState::new(app.handle().clone(), sip_manager, data_dir));
+                    app.manage(mcp::McpState::new(
+                        app.handle().clone(),
+                        sip_manager,
+                        data_dir,
+                    ));
                     let handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
                         handle.state::<mcp::McpState>().start_if_enabled().await;
                     });
                 }
-                Err(e) => log::error!("Could not resolve app data dir; MCP server is unavailable: {}", e),
+                Err(e) => log::error!(
+                    "Could not resolve app data dir; MCP server is unavailable: {}",
+                    e
+                ),
             }
 
             // Listen for health probe requests from frontend (network/visibility changes)
@@ -447,7 +469,9 @@ pub fn run() {
                 // through. Until the bindings are cleared the PBX keeps
                 // sending calls to a phone that is no longer there, for as
                 // long as the registration had left to run.
-                tauri::RunEvent::ExitRequested { api, code: None, .. } => {
+                tauri::RunEvent::ExitRequested {
+                    api, code: None, ..
+                } => {
                     api.prevent_exit();
                     let handle = app_handle.clone();
                     tauri::async_runtime::spawn(async move {
@@ -477,9 +501,8 @@ mod tests {
     /// auto-recordings ended up invisible.
     #[test]
     fn bundle_identifier_matches_config() {
-        let config: serde_json::Value =
-            serde_json::from_str(include_str!("../tauri.conf.json"))
-                .expect("tauri.conf.json should be valid JSON");
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json should be valid JSON");
         let identifier = config["identifier"]
             .as_str()
             .expect("tauri.conf.json should have a string identifier");
@@ -506,7 +529,11 @@ mod tests {
         let failure = || -> Box<dyn std::error::Error + Send + Sync> { "no secret service".into() };
         assert!(!credential_store_unavailable(&Ok("x".into())));
         assert!(!credential_store_unavailable(&Err(keyring::Error::NoEntry)));
-        assert!(credential_store_unavailable(&Err(keyring::Error::PlatformFailure(failure()))));
-        assert!(credential_store_unavailable(&Err(keyring::Error::NoStorageAccess(failure()))));
+        assert!(credential_store_unavailable(&Err(
+            keyring::Error::PlatformFailure(failure())
+        )));
+        assert!(credential_store_unavailable(&Err(
+            keyring::Error::NoStorageAccess(failure())
+        )));
     }
 }

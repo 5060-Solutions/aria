@@ -6,4 +6,6 @@
 
 // Re-export additional types that may be needed
 #[allow(unused_imports)]
-pub use rtp_engine::codec::{create_decoder, create_encoder, AudioDecoder, AudioEncoder, CodecType};
+pub use rtp_engine::codec::{
+    create_decoder, create_encoder, AudioDecoder, AudioEncoder, CodecType,
+};

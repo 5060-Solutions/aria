@@ -88,7 +88,13 @@ pub async fn subscribe_after_registration(
         };
         // On the list before the request goes out, so a fast challenge finds it.
         account.subscriptions.push(sub.clone());
-        (account.config.clone(), local_addr, server_addr, transport, sub)
+        (
+            account.config.clone(),
+            local_addr,
+            server_addr,
+            transport,
+            sub,
+        )
     };
 
     let msg = build_subscribe(
@@ -105,7 +111,16 @@ pub async fn subscribe_after_registration(
     );
     // Resent until answered; dropped (so the next registration tries again)
     // if never answered.
-    if let Err(e) = crate::sip::send_subscribe(state, account_id, &sub.call_id, &transport, server_addr, msg).await {
+    if let Err(e) = crate::sip::send_subscribe(
+        state,
+        account_id,
+        &sub.call_id,
+        &transport,
+        server_addr,
+        msg,
+    )
+    .await
+    {
         let mut s = state.write().await;
         if let Some(account) = s.get_account_mut(account_id) {
             account.subscriptions.retain(|x| x.id != sub.id);
@@ -124,7 +139,10 @@ pub fn note_subscribe_failure(account: &mut AccountState, call_id: &str) {
         .iter()
         .any(|s| s.call_id == call_id && s.event_type == EventType::MessageSummary);
     if is_mwi {
-        log::warn!("Server refused message-summary for {}; not asking again", account.config.id);
+        log::warn!(
+            "Server refused message-summary for {}; not asking again",
+            account.config.id
+        );
         account.mwi_refused = true;
     }
 }
@@ -141,7 +159,11 @@ pub async fn track_notify_state(state: &Arc<RwLock<ManagerState>>, account_id: &
     let Some(account) = s.get_account_mut(account_id) else {
         return;
     };
-    let Some(sub) = account.subscriptions.iter_mut().find(|x| x.call_id == call_id) else {
+    let Some(sub) = account
+        .subscriptions
+        .iter_mut()
+        .find(|x| x.call_id == call_id)
+    else {
         return;
     };
     match subscription_state_action(&header) {
@@ -169,7 +191,11 @@ fn subscription_state_action(header: &str) -> StateAction {
         "active" => StateAction::Active,
         "pending" => StateAction::Pending,
         "terminated" => {
-            let reason = parts.find_map(|p| p.trim().strip_prefix("reason=").map(|r| r.trim().to_lowercase()));
+            let reason = parts.find_map(|p| {
+                p.trim()
+                    .strip_prefix("reason=")
+                    .map(|r| r.trim().to_lowercase())
+            });
             match reason.as_deref() {
                 Some("timeout" | "deactivated" | "probation" | "giveup") => StateAction::Renew,
                 _ => StateAction::Drop,
@@ -230,10 +256,19 @@ mod tests {
 
     #[test]
     fn subscription_state_reasons() {
-        assert_eq!(subscription_state_action("active;expires=3600"), StateAction::Active);
+        assert_eq!(
+            subscription_state_action("active;expires=3600"),
+            StateAction::Active
+        );
         assert_eq!(subscription_state_action("pending"), StateAction::Pending);
-        assert_eq!(subscription_state_action("terminated;reason=timeout"), StateAction::Renew);
-        assert_eq!(subscription_state_action("terminated;reason=noresource"), StateAction::Drop);
+        assert_eq!(
+            subscription_state_action("terminated;reason=timeout"),
+            StateAction::Renew
+        );
+        assert_eq!(
+            subscription_state_action("terminated;reason=noresource"),
+            StateAction::Drop
+        );
         assert_eq!(subscription_state_action("terminated"), StateAction::Drop);
         assert_eq!(subscription_state_action(""), StateAction::None);
     }
@@ -271,7 +306,10 @@ mod tests {
             MWI_EXPIRES,
             None,
         );
-        assert!(msg.starts_with("SUBSCRIBE sip:1001@pbx.example SIP/2.0\r\n"), "{msg}");
+        assert!(
+            msg.starts_with("SUBSCRIBE sip:1001@pbx.example SIP/2.0\r\n"),
+            "{msg}"
+        );
         assert!(msg.contains("Event: message-summary\r\n"));
         assert!(msg.contains("Accept: application/simple-message-summary\r\n"));
         assert!(msg.contains("To: <sip:1001@pbx.example>\r\n"));

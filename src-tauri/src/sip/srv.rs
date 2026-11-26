@@ -90,8 +90,13 @@ pub trait DnsResolver: Send + Sync {
 /// Where the resolver configuration comes from: the operating system, or a
 /// test's stand-in.
 type ConfigSource = Box<
-    dyn Fn() -> Result<(hickory_resolver::config::ResolverConfig, hickory_resolver::config::ResolverOpts), String>
-        + Send
+    dyn Fn() -> Result<
+            (
+                hickory_resolver::config::ResolverConfig,
+                hickory_resolver::config::ResolverOpts,
+            ),
+            String,
+        > + Send
         + Sync,
 >;
 
@@ -126,8 +131,13 @@ impl Default for SystemResolver {
 
 impl SystemResolver {
     pub fn with_config_source(
-        source: impl Fn() -> Result<(hickory_resolver::config::ResolverConfig, hickory_resolver::config::ResolverOpts), String>
-            + Send
+        source: impl Fn() -> Result<
+                (
+                    hickory_resolver::config::ResolverConfig,
+                    hickory_resolver::config::ResolverOpts,
+                ),
+                String,
+            > + Send
             + Sync
             + 'static,
     ) -> Self {
@@ -149,8 +159,8 @@ impl SystemResolver {
     async fn resolver(&self) -> Result<Arc<hickory_resolver::TokioResolver>, String> {
         use hickory_resolver::TokioResolver;
 
-        let (config, opts) =
-            (self.source)().map_err(|e| format!("no usable system DNS configuration for SRV lookups: {e}"))?;
+        let (config, opts) = (self.source)()
+            .map_err(|e| format!("no usable system DNS configuration for SRV lookups: {e}"))?;
         let fingerprint = format!("{config:?}");
         let mut cached = self.cached.lock().await;
         if let Some((known, resolver)) = cached.as_ref() {
@@ -159,15 +169,19 @@ impl SystemResolver {
             }
             log::info!("system DNS configuration changed; rebuilding the SRV resolver");
         }
-        let resolver = TokioResolver::builder_with_config(config, hickory_resolver::net::runtime::TokioRuntimeProvider::default())
-            .with_options(opts)
-            .build()
-            .map(Arc::new)
-            .map_err(|e| {
-                log::error!("no usable system DNS configuration for SRV: {e}");
-                format!("no usable system DNS configuration for SRV lookups: {e}")
-            })?;
-        self.builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let resolver = TokioResolver::builder_with_config(
+            config,
+            hickory_resolver::net::runtime::TokioRuntimeProvider::default(),
+        )
+        .with_options(opts)
+        .build()
+        .map(Arc::new)
+        .map_err(|e| {
+            log::error!("no usable system DNS configuration for SRV: {e}");
+            format!("no usable system DNS configuration for SRV lookups: {e}")
+        })?;
+        self.builds
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *cached = Some((fingerprint, resolver.clone()));
         Ok(resolver)
     }
@@ -1533,11 +1547,16 @@ mod system_resolver_tests {
     async fn a_changed_system_configuration_rebuilds_the_resolver() {
         let current = Arc::new(Mutex::new("192.0.2.1".to_string()));
         let source = current.clone();
-        let resolver = SystemResolver::with_config_source(move || Ok(conf(&source.lock().unwrap())));
+        let resolver =
+            SystemResolver::with_config_source(move || Ok(conf(&source.lock().unwrap())));
 
         resolver.resolver().await.unwrap();
         resolver.resolver().await.unwrap();
-        assert_eq!(resolver.builds(), 1, "the same configuration keeps its resolver");
+        assert_eq!(
+            resolver.builds(),
+            1,
+            "the same configuration keeps its resolver"
+        );
 
         *current.lock().unwrap() = "192.0.2.2".to_string();
         resolver.resolver().await.unwrap();
@@ -1551,9 +1570,15 @@ mod system_resolver_tests {
     async fn a_failed_lookup_drops_the_resolver() {
         // TEST-NET-1 never answers (and the name is not one hickory settles locally).
         let resolver = SystemResolver::with_config_source(|| Ok(conf("192.0.2.1")));
-        assert!(resolver.srv("_sip._udp.pbx.aria-dns-test.net").await.is_err());
+        assert!(resolver
+            .srv("_sip._udp.pbx.aria-dns-test.net")
+            .await
+            .is_err());
         assert_eq!(resolver.builds(), 1);
-        assert!(resolver.srv("_sip._udp.pbx.aria-dns-test.net").await.is_err());
+        assert!(resolver
+            .srv("_sip._udp.pbx.aria-dns-test.net")
+            .await
+            .is_err());
         assert_eq!(resolver.builds(), 2, "rebuilt after the failure");
     }
 
