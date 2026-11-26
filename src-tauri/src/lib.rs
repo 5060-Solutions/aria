@@ -414,6 +414,8 @@ pub fn run() {
             commands::messaging_stop,
             commands::pbx_me_request,
             commands::callmove_expect,
+            commands::callmove_request_started,
+            commands::callmove_request_finished,
             commands::sip_instance_urn,
             commands::desktop_context,
             commands::network_fingerprint,

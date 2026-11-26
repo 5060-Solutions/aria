@@ -3,8 +3,9 @@
 //! which network this is.
 //!
 //! No raw identifiers leave the machine. The network is reduced to a SHA-256
-//! of its subnet and gateway; the same network gives the same hash on every
-//! device, which is all the PBX needs to call two devices "near".
+//! of the user's extension id, its gateway and its subnet (the contract's
+//! `aria-net-v1` formula); the same user on the same network gets the same
+//! hash on every device, which is all the PBX needs to call two devices "near".
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -22,9 +23,17 @@ fn subnet(ip: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Addr {
     Ipv4Addr::from(u32::from(ip) & u32::from(mask))
 }
 
-/// `sha256("aria-lan-v1|<subnet>|<gateway>")`, hex.
-pub fn network_hash(ip: Ipv4Addr, mask: Ipv4Addr, gateway: Ipv4Addr) -> String {
-    let digest = Sha256::digest(format!("aria-lan-v1|{}|{gateway}", subnet(ip, mask)).as_bytes());
+/// The call-move contract's `network_hash`, identical on every platform:
+/// `lowercase_hex(sha256("aria-net-v1|" + extension_id + "|" + gateway + "|" + network/prefix))`.
+/// The extension id (a lowercase UUID) salts it per user.
+pub fn network_hash(extension_id: &str, ip: Ipv4Addr, mask: Ipv4Addr, gateway: Ipv4Addr) -> String {
+    let input = format!(
+        "aria-net-v1|{}|{gateway}|{}/{}",
+        extension_id.to_ascii_lowercase(),
+        subnet(ip, mask),
+        mask.octets().iter().map(|b| b.count_ones()).sum::<u32>()
+    );
+    let digest = Sha256::digest(input.as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -89,11 +98,11 @@ fn run(program: &str, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The hash of this network, or `None` when offline or the gateway is unknown.
-pub fn network_fingerprint() -> Option<String> {
+/// The hash of this network, or `None` with no IPv4 default route.
+pub fn network_fingerprint(extension_id: &str) -> Option<String> {
     let ip = local_ipv4()?;
     let (gateway, mask) = gateway_and_mask(ip)?;
-    Some(network_hash(ip, mask, gateway))
+    Some(network_hash(extension_id, ip, mask, gateway))
 }
 
 /// `HIDIdleTime` (nanoseconds) in `ioreg -c IOHIDSystem` output.
@@ -162,23 +171,34 @@ pub fn context() -> DesktopContext {
 mod tests {
     use super::*;
 
+    const EXT: &str = "ce0284f1-9c1e-420e-8bff-3b7b1f33cc25";
+
+    /// The vector every app asserts: extension, gateway 192.168.1.1, network 192.168.1.0/24.
+    #[test]
+    fn the_hash_matches_the_shared_vector() {
+        let h = network_hash(EXT, Ipv4Addr::new(192, 168, 1, 20), Ipv4Addr::new(255, 255, 255, 0), Ipv4Addr::new(192, 168, 1, 1));
+        assert_eq!(h, "c220200c4e27272ef046b841eba83e316a8c004fd8c5a91289d6df1936ba90a3");
+    }
+
     #[test]
     fn the_hash_is_of_the_subnet_and_gateway_not_the_host() {
         let gw = Ipv4Addr::new(192, 168, 1, 1);
         let mask = Ipv4Addr::new(255, 255, 255, 0);
-        let a = network_hash(Ipv4Addr::new(192, 168, 1, 20), mask, gw);
-        let b = network_hash(Ipv4Addr::new(192, 168, 1, 99), mask, gw);
+        let a = network_hash(EXT, Ipv4Addr::new(192, 168, 1, 20), mask, gw);
+        let b = network_hash(&EXT.to_uppercase(), Ipv4Addr::new(192, 168, 1, 99), mask, gw);
         assert_eq!(a, b);
         assert_eq!(a.len(), 64);
         assert!(!a.contains("192"), "no raw address in the hash text");
     }
 
     #[test]
-    fn another_network_is_another_hash() {
+    fn another_network_or_user_is_another_hash() {
         let mask = Ipv4Addr::new(255, 255, 255, 0);
-        let a = network_hash(Ipv4Addr::new(192, 168, 1, 20), mask, Ipv4Addr::new(192, 168, 1, 1));
-        let b = network_hash(Ipv4Addr::new(10, 0, 0, 20), mask, Ipv4Addr::new(10, 0, 0, 1));
+        let a = network_hash(EXT, Ipv4Addr::new(192, 168, 1, 20), mask, Ipv4Addr::new(192, 168, 1, 1));
+        let b = network_hash(EXT, Ipv4Addr::new(10, 0, 0, 20), mask, Ipv4Addr::new(10, 0, 0, 1));
+        let c = network_hash("someone-else", Ipv4Addr::new(192, 168, 1, 20), mask, Ipv4Addr::new(192, 168, 1, 1));
         assert_ne!(a, b);
+        assert_ne!(a, c);
     }
 
     #[test]

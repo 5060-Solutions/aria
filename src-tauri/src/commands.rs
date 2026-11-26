@@ -2020,6 +2020,19 @@ pub fn callmove_expect(move_id: String) -> Result<(), String> {
     }
 }
 
+/// A move request is about to be posted: an INVITE with `X-Aria-Move` that
+/// arrives before its 202 is held (up to 2 s) instead of ringing.
+#[tauri::command]
+pub fn callmove_request_started() {
+    crate::sip::call_move::pending().request_started();
+}
+
+/// The move request was answered or failed (always paired with the start).
+#[tauri::command]
+pub fn callmove_request_finished() {
+    crate::sip::call_move::pending().request_finished();
+}
+
 /// This install's `+sip.instance` value, as the PBX matches it.
 #[tauri::command]
 pub fn sip_instance_urn() -> String {
@@ -2034,10 +2047,18 @@ pub async fn desktop_context() -> crate::desktop_context::DesktopContext {
         .unwrap_or(crate::desktop_context::DesktopContext { locked: false, idle_secs: 0 })
 }
 
-/// A hash of this network's subnet and gateway, or null when unknown.
+/// The contract's `network_hash` for this network, or null with no IPv4
+/// default route. Salted by the signed-in user's extension id.
 #[tauri::command]
-pub async fn network_fingerprint() -> Option<String> {
-    tokio::task::spawn_blocking(crate::desktop_context::network_fingerprint).await.ok().flatten()
+pub async fn network_fingerprint(
+    mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
+    state: State<'_, std::sync::Arc<VoicemailState>>,
+) -> Result<Option<String>, MessagingError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
+    let password = messaging_password(&mailbox.account_id).await?;
+    let extension_id = crate::pbx_me::extension_id(&state, &mailbox, &password).await?;
+    Ok(tokio::task::spawn_blocking(move || crate::desktop_context::network_fingerprint(&extension_id)).await.ok().flatten())
 }
 
 // ── Which PBX API an account's password may go to ───────────────────────────

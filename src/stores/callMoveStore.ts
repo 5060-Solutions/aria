@@ -123,6 +123,10 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
   },
 
   move: async (mailbox, call, toRegistrationId) => {
+    // The PBX may INVITE before the 202 arrives: tell the backend a request
+    // is in flight so that INVITE is held for the move id instead of ringing.
+    const toThisDevice = toRegistrationId === get().current;
+    if (toThisDevice) await invoke("callmove_request_started");
     try {
       const res = await meRequest<{ move_id?: string }>(mailbox, "POST", `/me/calls/${encodeURIComponent(call.id)}/move`, {
         to_registration_id: toRegistrationId,
@@ -136,6 +140,8 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
       log.warn("[callMove] move refused:", e);
       notifyError(i18n.t(moveFailureKey(statusOf(e))));
       return false;
+    } finally {
+      if (toThisDevice) await invoke("callmove_request_finished").catch(() => {});
     }
   },
 
@@ -158,11 +164,17 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
 
   reportContext: async (mailbox, kind) => {
     const urn = await invoke<string>("sip_instance_urn");
-    const res = parseContextResult(
-      await meRequest<unknown>(mailbox, "POST", withSipInstance("/me/devices/current/context", urn), contextBody(kind)),
-    );
-    if (res.action === "moved" && res.callId && res.moveId) await get().expectMove(res.callId, res.moveId);
-    return res;
+    // A `moved` answer means an INVITE may be on its way ahead of this reply.
+    await invoke("callmove_request_started");
+    try {
+      const res = parseContextResult(
+        await meRequest<unknown>(mailbox, "POST", withSipInstance("/me/devices/current/context", urn), contextBody(kind)),
+      );
+      if (res.action === "moved" && res.callId && res.moveId) await get().expectMove(res.callId, res.moveId);
+      return res;
+    } finally {
+      await invoke("callmove_request_finished").catch(() => {});
+    }
   },
 
   pendingFor: (moveId, now = Date.now()) => {

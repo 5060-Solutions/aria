@@ -6,17 +6,26 @@
 //! the header rings normally, so a stranger cannot make the phone pick up.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 
 pub const HEADER: &str = "X-Aria-Move";
 /// How long a requested move waits for its INVITE.
 pub const PENDING_TTL: Duration = Duration::from_secs(30);
+/// How long an INVITE carrying `X-Aria-Move` waits for the 202 of a move
+/// request still in flight: the PBX may send the INVITE before the API's
+/// answer reaches this app.
+pub const REQUEST_GRACE: Duration = Duration::from_secs(2);
 
 /// Moves this app started and is waiting for.
 #[derive(Default)]
 pub struct PendingMoves {
     waiting: Mutex<HashMap<String, Instant>>,
+    /// Move requests posted and not yet answered.
+    in_flight: AtomicUsize,
+    changed: Notify,
 }
 
 /// What an incoming INVITE's `X-Aria-Move` header means.
@@ -44,7 +53,45 @@ impl PendingMoves {
         let mut w = self.waiting.lock().unwrap_or_else(|p| p.into_inner());
         w.retain(|_, at| now.duration_since(*at) < PENDING_TTL);
         w.insert(id, now);
+        drop(w);
+        self.changed.notify_waiters();
         true
+    }
+
+    /// A move request is about to be posted.
+    pub fn request_started(&self) {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A move request was answered (or failed): release any held INVITE.
+    pub fn request_finished(&self) {
+        let _ = self.in_flight.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+        self.changed.notify_waiters();
+    }
+
+    fn holds(&self, id: &str) -> bool {
+        self.waiting.lock().unwrap_or_else(|p| p.into_inner()).contains_key(id)
+    }
+
+    /// [`classify`](Self::classify), but an INVITE with a move header whose id
+    /// is not known yet is held for up to [`REQUEST_GRACE`] while this app has
+    /// a move request in flight, since the 202 that names the id may be behind it.
+    pub async fn classify_waiting(&self, header: Option<&str>, grace: Duration) -> MoveInvite {
+        if let Some(id) = header.and_then(clean) {
+            let deadline = tokio::time::Instant::now() + grace;
+            loop {
+                let notified = self.changed.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if self.holds(&id) || self.in_flight.load(Ordering::SeqCst) == 0 {
+                    break;
+                }
+                if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                    break;
+                }
+            }
+        }
+        self.classify(header, Instant::now())
     }
 
     /// Classify an INVITE's header. A pending id is used up: the PBX sends
@@ -117,6 +164,57 @@ mod tests {
         assert_eq!(p.classify(Some("  "), Instant::now()), MoveInvite::None);
         assert_eq!(p.classify(Some("a b;c"), Instant::now()), MoveInvite::None);
         assert!(!p.register("a b", Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn an_invite_ahead_of_the_202_waits_for_it() {
+        let p = std::sync::Arc::new(PendingMoves::default());
+        p.request_started();
+        let q = p.clone();
+        let late = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            q.register(ID, Instant::now());
+            q.request_finished();
+        });
+        let got = p.classify_waiting(Some(ID), REQUEST_GRACE).await;
+        late.await.unwrap();
+        assert_eq!(got, MoveInvite::AutoAnswer(ID.into()));
+    }
+
+    #[tokio::test]
+    async fn an_invite_with_no_request_in_flight_is_not_held() {
+        let p = PendingMoves::default();
+        let t = std::time::Instant::now();
+        assert_eq!(p.classify_waiting(Some(ID), REQUEST_GRACE).await, MoveInvite::Ring(ID.into()));
+        assert!(t.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn an_invite_waits_no_longer_than_the_grace_then_rings() {
+        let p = PendingMoves::default();
+        p.request_started();
+        let t = std::time::Instant::now();
+        assert_eq!(p.classify_waiting(Some(ID), Duration::from_millis(200)).await, MoveInvite::Ring(ID.into()));
+        assert!(t.elapsed() >= Duration::from_millis(150));
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_releases_the_invite_to_ring() {
+        let p = std::sync::Arc::new(PendingMoves::default());
+        p.request_started();
+        let q = p.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            q.request_finished();
+        });
+        assert_eq!(p.classify_waiting(Some(ID), REQUEST_GRACE).await, MoveInvite::Ring(ID.into()));
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_invite_is_never_held() {
+        let p = PendingMoves::default();
+        p.request_started();
+        assert_eq!(p.classify_waiting(None, REQUEST_GRACE).await, MoveInvite::None);
     }
 
     #[test]

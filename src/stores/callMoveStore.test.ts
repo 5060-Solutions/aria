@@ -30,7 +30,7 @@ const wire = {
 function pbx(routes: Record<string, unknown | Error>) {
   invoke.mockImplementation(async (cmd: string, args?: { method?: string; path?: string }) => {
     if (cmd === "sip_instance_urn") return "urn:uuid:abc";
-    if (cmd === "callmove_expect") return undefined;
+    if (cmd === "callmove_expect" || cmd === "callmove_request_started" || cmd === "callmove_request_finished") return undefined;
     if (cmd !== "pbx_me_request") throw new Error(`unexpected ${cmd}`);
     const hit = routes[`${args?.method} ${args?.path}`];
     if (hit === undefined) throw new Error(`unrouted ${args?.method} ${args?.path}`);
@@ -136,6 +136,38 @@ describe("callMoveStore", () => {
     store().clearPending();
     await store().reportContext(mailbox, "desktop_idle");
     expect(store().pending).toBeNull();
+  });
+
+  it("holds the INVITE for the 202: a request is in flight until the move id is registered", async () => {
+    const order: string[] = [];
+    pbx({
+      "GET /me/devices/current?sip_instance=urn%3Auuid%3Aabc": { registration_id: "r-mac" },
+      "POST /me/calls/11111111-1111-4111-8111-111111111111/move": { move_id: "M-3" },
+    });
+    const base = invoke.getMockImplementation() as (cmd: string, args?: unknown) => Promise<unknown>;
+    invoke.mockImplementation(async (cmd: string, args?: unknown) => {
+      order.push(cmd);
+      return base(cmd, args);
+    });
+    const [call] = parseActiveCalls([wire]);
+    await store().moveHere(mailbox, call);
+    expect(order.filter((c) => c.startsWith("callmove"))).toEqual(["callmove_request_started", "callmove_expect", "callmove_request_finished"]);
+  });
+
+  it("releases the held INVITE when the move request fails", async () => {
+    const order: string[] = [];
+    pbx({
+      "GET /me/devices/current?sip_instance=urn%3Auuid%3Aabc": { registration_id: "r-mac" },
+      "POST /me/calls/11111111-1111-4111-8111-111111111111/move": new Error("down"),
+    });
+    const base = invoke.getMockImplementation() as (cmd: string, args?: unknown) => Promise<unknown>;
+    invoke.mockImplementation(async (cmd: string, args?: unknown) => {
+      order.push(cmd);
+      return base(cmd, args);
+    });
+    const [call] = parseActiveCalls([wire]);
+    expect(await store().moveHere(mailbox, call)).toBe(false);
+    expect(order.filter((c) => c.startsWith("callmove"))).toEqual(["callmove_request_started", "callmove_request_finished"]);
   });
 
   it("ignores a move between two other devices", () => {

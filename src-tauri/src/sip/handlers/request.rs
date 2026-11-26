@@ -196,7 +196,11 @@ pub async fn handle_incoming_request(
                     "inbound",
                 ).with_sip_call_id(&sip_call_id);
                 match crate::sip::call_move::pending()
-                    .classify(extract_header(text, crate::sip::call_move::HEADER).as_deref(), std::time::Instant::now())
+                    .classify_waiting(
+                        extract_header(text, crate::sip::call_move::HEADER).as_deref(),
+                        crate::sip::call_move::REQUEST_GRACE,
+                    )
+                    .await
                 {
                     MoveInvite::AutoAnswer(id) => {
                         log::info!("INVITE is the call move this app asked for ({id})");

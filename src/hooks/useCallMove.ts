@@ -21,7 +21,7 @@ export function useMoveMailbox(): Mailbox | null {
 
 /** Report which network this computer is on, as a hash. */
 export async function reportProximity(mailbox: Mailbox): Promise<void> {
-  const hash = await invoke<string | null>("network_fingerprint");
+  const hash = await invoke<string | null>("network_fingerprint", { mailbox });
   if (!hash) return;
   const urn = await invoke<string>("sip_instance_urn");
   await meRequest(mailbox, "POST", withSipInstance("/me/devices/current/proximity", urn), proximityBody(hash));
@@ -45,7 +45,9 @@ export function useCallMove(): void {
       if (event) useCallMoveStore.getState().applyEvent(event, mailbox);
     });
 
+    // A hidden window does not poll: it refreshes when it is shown again.
     const refresh = () => {
+      if (document.visibilityState === "hidden") return;
       void store.refreshCalls(mailbox);
     };
     const proximity = () => {
@@ -63,14 +65,24 @@ export function useCallMove(): void {
       refresh();
       proximity();
     };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") onFocus();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onFocus);
     window.addEventListener("online", proximity);
     const poll = setInterval(refresh, POLL_MS);
+    // About every 60 s while the window is visible.
+    const proximityPoll = setInterval(() => {
+      if (document.visibilityState !== "hidden") proximity();
+    }, 60_000);
     return () => {
       void unlisten.then((fn) => fn());
+      document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("online", proximity);
       clearInterval(poll);
+      clearInterval(proximityPoll);
     };
   }, [mailbox]);
 

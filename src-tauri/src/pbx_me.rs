@@ -98,6 +98,34 @@ pub async fn request(
     serde_json::from_slice(&bytes).map_err(|_| VoicemailError::Malformed.into())
 }
 
+/// The signed-in user's extension id (the salt of `network_hash`), from the
+/// session, cached per account.
+pub async fn extension_id(
+    state: &VoicemailState,
+    mailbox: &Mailbox,
+    password: &str,
+) -> Result<String, MessagingError> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let key = format!("{}|{}|{}", mailbox.account_id, mailbox.extension, mailbox.domain);
+    if let Some(id) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
+        return Ok(id.clone());
+    }
+    let seen = std::sync::Mutex::new(String::new());
+    call(state, mailbox, password, &|http, api, s| {
+        *seen.lock().unwrap_or_else(|p| p.into_inner()) = s.extension_id.clone();
+        http.get(route(api, &["api", "v1", "me", "devices"])).bearer_auth(&s.jwt)
+    })
+    .await?;
+    let id = seen.into_inner().unwrap_or_else(|p| p.into_inner());
+    if id.is_empty() {
+        return Err(VoicemailError::Malformed.into());
+    }
+    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(key, id.clone());
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
