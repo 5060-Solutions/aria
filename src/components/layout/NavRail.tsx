@@ -84,6 +84,9 @@ export function NavRail() {
     <Box
       sx={{
         width: 72,
+        flexShrink: 0,
+        // Narrow window: icons only (each keeps its tooltip and aria-label).
+        "@media (max-width: 480px)": { width: 56 },
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -116,6 +119,7 @@ export function NavRail() {
                 gap: 0.5,
                 width: "100%",
                 px: 1.5,
+                "@media (max-width: 480px)": { px: 0.5 },
                 py: 0.5,
                 borderRadius: "12px",
                 color: active ? "primary.main" : "text.secondary",
@@ -130,6 +134,7 @@ export function NavRail() {
                 className="nav-pill"
                 sx={{
                   width: 48,
+                  "@media (max-width: 480px)": { width: 44 },
                   height: 32,
                   borderRadius: "16px",
                   display: "flex",
@@ -155,6 +160,10 @@ export function NavRail() {
                   fontSize: "0.7rem",
                   fontWeight: active ? 600 : 400,
                   lineHeight: 1,
+                  maxWidth: "100%",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  "@media (max-width: 480px)": { display: "none" },
                 }}
               >
                 {label}
