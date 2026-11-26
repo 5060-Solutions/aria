@@ -633,6 +633,7 @@
     "autoMoveOnLock": "Move the call when this computer locks",
     "autoMoveOnLockHint": "If you lock this computer during a call, the call moves to your phone.",
     "ble": "Bluetooth proximity",
-    "bleUnavailable": "Not available in the desktop app yet."
+    "bleUnavailable": "Not available in the desktop app yet.",
+    "devicesUnavailable": "Your other devices could not be read from the PBX. Check the connection and try again."
   }
 }

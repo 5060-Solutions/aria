@@ -633,6 +633,7 @@
     "autoMoveOnLock": "Déplacer l'appel au verrouillage de cet ordinateur",
     "autoMoveOnLockHint": "Si vous verrouillez cet ordinateur pendant un appel, l'appel passe sur votre téléphone.",
     "ble": "Proximité Bluetooth",
-    "bleUnavailable": "Pas encore disponible dans l'application de bureau."
+    "bleUnavailable": "Pas encore disponible dans l'application de bureau.",
+    "devicesUnavailable": "Vos autres appareils n'ont pas pu être lus depuis le PBX. Vérifiez la connexion et réessayez."
   }
 }

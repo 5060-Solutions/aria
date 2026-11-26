@@ -38,9 +38,10 @@ export function CallMoveBanner() {
 
   if (!mailbox) return null;
 
-  // Continue on <device>: for the call held here.
-  if (suggestion && hasLive) {
-    const call = calls.find((c) => c.id === suggestion.callId);
+  // Continue on <device>: for the call held here, and only that one.
+  const suggested = suggestion ? calls.find((c) => c.id === suggestion.callId) : undefined;
+  if (suggestion && suggested && liveSipIds.includes(suggested.sipCallId)) {
+    const call = suggested;
     const device = suggestion.device.label || t("callMove.anotherDevice");
     return (
       <Box role="status" sx={{ ...bar, bgcolor: (th) => alpha(th.palette.primary.main, 0.08) }}>

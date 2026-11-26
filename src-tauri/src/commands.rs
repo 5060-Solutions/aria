@@ -2012,8 +2012,8 @@ pub async fn pbx_me_request(
 /// Remember a move this app asked the PBX for, so the INVITE that carries its
 /// `X-Aria-Move` is answered without ringing. Expires after 30 seconds.
 #[tauri::command]
-pub fn callmove_expect(move_id: String) -> Result<(), String> {
-    if crate::sip::call_move::pending().register(&move_id, std::time::Instant::now()) {
+pub fn callmove_expect(account_id: String, move_id: String) -> Result<(), String> {
+    if crate::sip::call_move::pending().register(&account_id, &move_id, std::time::Instant::now()) {
         Ok(())
     } else {
         Err("not a move id".into())
@@ -2023,13 +2023,15 @@ pub fn callmove_expect(move_id: String) -> Result<(), String> {
 /// A move request is about to be posted: an INVITE with `X-Aria-Move` that
 /// arrives before its 202 is held (up to 2 s) instead of ringing.
 #[tauri::command]
-pub fn callmove_request_started() {
-    crate::sip::call_move::pending().request_started();
+pub fn callmove_request_started(account_id: String) {
+    let _ = account_id;
+    crate::sip::call_move::pending().request_started(std::time::Instant::now());
 }
 
 /// The move request was answered or failed (always paired with the start).
 #[tauri::command]
-pub fn callmove_request_finished() {
+pub fn callmove_request_finished(account_id: String) {
+    let _ = account_id;
     crate::sip::call_move::pending().request_finished();
 }
 

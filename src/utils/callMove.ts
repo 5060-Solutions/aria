@@ -245,11 +245,22 @@ export function parseContextResult(raw: unknown): ContextResult {
 /** A call_moved from this device counts for a BYE this soon after it, or before it. */
 export const MOVED_WINDOW_MS = 15_000;
 
+/** What a `call_moved` for this device's own leg remembered. */
+export interface MovedTo {
+  label: string;
+  at: number;
+  /** The Call-ID of the leg that moved; null when the list did not know it. */
+  sipCallId: string | null;
+}
+
 /**
  * Whether a call that just ended was moved away, from the `call_moved` seen
  * for this device: the device's label ("" when unknown), or null for an
- * ordinary end. The PBX's BYE and its event can arrive in either order.
+ * ordinary end. The PBX's BYE and its event can arrive in either order, and
+ * only the leg the event named counts (any leg when it is unknown).
  */
-export function movedAway(moved: { label: string; at: number } | null, now: number): string | null {
-  return moved && Math.abs(now - moved.at) < MOVED_WINDOW_MS ? moved.label : null;
+export function movedAway(moved: MovedTo | null, now: number, sipCallId: string | null | undefined): string | null {
+  if (!moved || Math.abs(now - moved.at) >= MOVED_WINDOW_MS) return null;
+  if (moved.sipCallId && sipCallId && moved.sipCallId !== sipCallId) return null;
+  return moved.label;
 }

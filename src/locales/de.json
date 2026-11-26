@@ -633,6 +633,7 @@
     "autoMoveOnLock": "Anruf beim Sperren dieses Computers verschieben",
     "autoMoveOnLockHint": "Wenn Sie diesen Computer während eines Anrufs sperren, wechselt der Anruf auf Ihr Telefon.",
     "ble": "Bluetooth-Nähe",
-    "bleUnavailable": "In der Desktop-App noch nicht verfügbar."
+    "bleUnavailable": "In der Desktop-App noch nicht verfügbar.",
+    "devicesUnavailable": "Deine anderen Geräte konnten nicht von der PBX gelesen werden. Prüfe die Verbindung und versuche es erneut."
   }
 }

@@ -633,6 +633,7 @@
     "autoMoveOnLock": "Mover la llamada al bloquear este equipo",
     "autoMoveOnLockHint": "Si bloqueas este equipo durante una llamada, la llamada pasa a tu teléfono.",
     "ble": "Proximidad por Bluetooth",
-    "bleUnavailable": "Aún no está disponible en la aplicación de escritorio."
+    "bleUnavailable": "Aún no está disponible en la aplicación de escritorio.",
+    "devicesUnavailable": "No se pudieron leer tus otros dispositivos desde la PBX. Comprueba la conexión e inténtalo de nuevo."
   }
 }

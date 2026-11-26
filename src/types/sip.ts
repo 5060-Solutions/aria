@@ -223,6 +223,8 @@ export interface ActiveCall {
    */
   moveId?: string;
   moveAuto?: boolean;
+  /** For a moved call: when it originally started, so the timer carries over once it connects. */
+  moveStartTime?: number;
   /** The device a ringing move comes from, when known. */
   moveFrom?: string;
   /** The device the PBX moved this call to, once it has (the call then ends). */

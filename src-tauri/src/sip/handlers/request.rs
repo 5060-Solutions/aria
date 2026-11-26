@@ -188,31 +188,40 @@ pub async fn handle_incoming_request(
                     }
                 }
 
-                let mut event = CallEvent::new(
+                let event = CallEvent::new(
                     account_id,
                     &call_id_for_event,
                     "incoming",
                     &remote_uri_for_event,
                     "inbound",
                 ).with_sip_call_id(&sip_call_id);
-                match crate::sip::call_move::pending()
-                    .classify_waiting(
-                        extract_header(text, crate::sip::call_move::HEADER).as_deref(),
-                        crate::sip::call_move::REQUEST_GRACE,
-                    )
-                    .await
-                {
-                    MoveInvite::AutoAnswer(id) => {
-                        log::info!("INVITE is the call move this app asked for ({id})");
-                        event = event.with_move(id, true);
-                    }
-                    MoveInvite::Ring(id) => {
-                        log::info!("INVITE carries a call move this app did not ask for ({id}); ringing");
-                        event = event.with_move(id, false);
-                    }
-                    MoveInvite::None => {}
+                let move_header = extract_header(text, crate::sip::call_move::HEADER);
+                if move_header.is_none() {
+                    let _ = event_tx.send(SipEvent::CallStateChanged(event));
+                } else {
+                    // A move INVITE may wait up to the grace period for its
+                    // 202; that wait must not stall the account's receive
+                    // loop (BYEs, re-INVITEs, NOTIFYs), so it runs aside.
+                    let event_tx = event_tx.clone();
+                    let account_for_move = account_id.to_string();
+                    tokio::spawn(async move {
+                        let event = match crate::sip::call_move::pending()
+                            .classify_waiting(&account_for_move, move_header.as_deref(), crate::sip::call_move::REQUEST_GRACE)
+                            .await
+                        {
+                            MoveInvite::AutoAnswer(id) => {
+                                log::info!("INVITE is the call move this app asked for");
+                                event.with_move(id, true)
+                            }
+                            MoveInvite::Ring(id) => {
+                                log::info!("INVITE carries a call move this app did not ask for; ringing");
+                                event.with_move(id, false)
+                            }
+                            MoveInvite::None => event,
+                        };
+                        let _ = event_tx.send(SipEvent::CallStateChanged(event));
+                    });
                 }
-                let _ = event_tx.send(SipEvent::CallStateChanged(event));
             }
         }
         "BYE" => {

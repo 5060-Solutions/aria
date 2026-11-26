@@ -404,7 +404,7 @@ pub async fn handle_invite_with_replaces(
         replaces::Outcome::Replace(_) => None,
     };
     if let Some((code, reason)) = refusal {
-        log::warn!("INVITE with Replaces refused: {code} ({replaces_hdr})");
+        log::warn!("INVITE with Replaces refused: {code}");
         if let Some(resp) = build_simple_response(text, code, reason) {
             let s = state.read().await;
             if let Some(transport) = s.get_account(account_id).and_then(|a| a.transport.clone()) {

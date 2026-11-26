@@ -37,6 +37,8 @@ export function useCallMove(): void {
   const mailbox = useMoveMailbox();
 
   useEffect(() => {
+    // Another account's calls, devices and registration id are not this one's.
+    useCallMoveStore.getState().forAccount(mailbox?.accountId ?? null);
     if (!mailbox) return;
     const store = useCallMoveStore.getState();
     const unlisten = listen<{ accountId: string; event: unknown }>("pbx-call-event", (e) => {
@@ -93,6 +95,12 @@ export function useCallMove(): void {
     const timer = setTimeout(() => useCallMoveStore.getState().clearPending(), Math.max(0, pending.expiresAt - Date.now()));
     return () => clearTimeout(timer);
   }, [pending]);
+
+  // A suggestion is about the call held here: once no call is, it is stale.
+  const hasLive = useAppStore((s) => s.activeCalls.some((c) => c.state !== "ended"));
+  useEffect(() => {
+    if (!hasLive && useCallMoveStore.getState().suggestion) useCallMoveStore.getState().dismissSuggestion();
+  }, [hasLive]);
 
   // Context: while a call is up on this device, say when the computer locks
   // or the person has gone idle. Once per kind per call.

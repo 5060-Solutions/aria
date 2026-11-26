@@ -44,7 +44,7 @@ const store = () => useCallMoveStore.getState();
 describe("callMoveStore", () => {
   beforeEach(() => {
     invoke.mockReset();
-    useCallMoveStore.setState({ calls: [], devices: [], current: null, pending: null, movedTo: null, suggestion: null });
+    useCallMoveStore.setState({ accountId: "acct", calls: [], devices: [], current: null, currentAt: 0, requesting: false, pending: null, movedTo: null, suggestion: null });
     useToastStore.setState({ current: null, queue: [] });
     useAppStore.setState({ activeCalls: [] });
   });
@@ -68,7 +68,7 @@ describe("callMoveStore", () => {
       path: "/me/calls/11111111-1111-4111-8111-111111111111/move",
       body: { to_registration_id: "r-mac" },
     });
-    expect(invoke).toHaveBeenCalledWith("callmove_expect", { moveId: "M-1" });
+    expect(invoke).toHaveBeenCalledWith("callmove_expect", { accountId: "acct", moveId: "M-1" });
     const p = store().pending;
     expect(p).toMatchObject({ moveId: "m-1", startedAt: Date.parse("2026-11-25T22:00:00Z") });
     expect(store().pendingFor("M-1")).toBe(p);
@@ -130,7 +130,7 @@ describe("callMoveStore", () => {
     const res = await store().reportContext(mailbox, "desktop_locked");
     expect(res.action).toBe("moved");
     expect(invoke).toHaveBeenCalledWith("pbx_me_request", { mailbox, method: "POST", path, body: { event: "desktop_locked" } });
-    expect(invoke).toHaveBeenCalledWith("callmove_expect", { moveId: "M-2" });
+    expect(invoke).toHaveBeenCalledWith("callmove_expect", { accountId: "acct", moveId: "M-2" });
     expect(store().pendingFor("m-2")?.callId).toBe("c1");
     pbx({ [`POST ${path}`]: { action: "suggested", call_id: "c1", move_id: null } });
     store().clearPending();
@@ -190,5 +190,96 @@ describe("callMoveStore", () => {
     useCallMoveStore.setState({ devices: [{ registrationId: "r-ios", label: "Aria iOS", online: true }] });
     store().applyEvent({ type: "handoff_suggested", raw: { call_id: "c1", to_registration_id: "r-ios", reason: "nearby" } }, null);
     expect(store().suggestion?.device.label).toBe("Aria iOS");
+  });
+
+  it("forgets one account's state when another becomes active", () => {
+    useCallMoveStore.setState({ accountId: "acct", calls: parseActiveCalls([wire]), current: "r-mac", pending: { moveId: "m", callId: "c", startedAt: null, expiresAt: Date.now() + 1000 } });
+    store().forAccount("acct");
+    expect(store().current).toBe("r-mac");
+    store().forAccount("acct-2");
+    expect(store().accountId).toBe("acct-2");
+    expect(store().calls).toEqual([]);
+    expect(store().current).toBeNull();
+    expect(store().pending).toBeNull();
+  });
+
+  it("re-reads its own registration id before a move, so a re-register or account switch cannot use a stale one", async () => {
+    pbx({
+      "GET /me/devices/current?sip_instance=urn%3Auuid%3Aabc": { registration_id: "r-mac" },
+      "POST /me/calls/11111111-1111-4111-8111-111111111111/move": { move_id: "M-9" },
+    });
+    useCallMoveStore.setState({ current: "r-stale", currentAt: 0 });
+    const [call] = parseActiveCalls([wire]);
+    expect(await store().moveHere(mailbox, call)).toBe(true);
+    const posted = invoke.mock.calls.find((c) => c[0] === "pbx_me_request" && (c[1] as { method: string }).method === "POST");
+    expect((posted?.[1] as { body: { to_registration_id: string } }).body.to_registration_id).toBe("r-mac");
+    expect(store().pendingFor("m-9")).not.toBeNull();
+  });
+
+  it("has the pending move in place before the backend releases the held INVITE", async () => {
+    pbx({
+      "GET /me/devices/current?sip_instance=urn%3Auuid%3Aabc": { registration_id: "r-mac" },
+      "POST /me/calls/11111111-1111-4111-8111-111111111111/move": { move_id: "M-4" },
+    });
+    const base = invoke.getMockImplementation() as (cmd: string, args?: unknown) => Promise<unknown>;
+    let pendingAtExpect: unknown = "unset";
+    invoke.mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === "callmove_expect") pendingAtExpect = store().pending?.moveId ?? null;
+      return base(cmd, args);
+    });
+    const [call] = parseActiveCalls([wire]);
+    await store().moveHere(mailbox, call);
+    expect(pendingAtExpect).toBe("m-4");
+  });
+
+  it("refuses a second move request while one is still being posted", async () => {
+    let release: (v: unknown) => void = () => {};
+    const slow = new Promise((r) => (release = r));
+    pbx({
+      "GET /me/devices/current?sip_instance=urn%3Auuid%3Aabc": { registration_id: "r-mac" },
+    });
+    const base = invoke.getMockImplementation() as (cmd: string, args?: { method?: string }) => Promise<unknown>;
+    invoke.mockImplementation(async (cmd: string, args?: { method?: string }) => {
+      if (cmd === "pbx_me_request" && args?.method === "POST") return slow.then(() => ({ move_id: "M-5" }));
+      return base(cmd, args);
+    });
+    const [call] = parseActiveCalls([wire]);
+    const first = store().moveHere(mailbox, call);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store().requesting).toBe(true);
+    expect(await store().move(mailbox, call, "r-ios")).toBe(false);
+    release(null);
+    expect(await first).toBe(true);
+    expect(store().requesting).toBe(false);
+    expect(invoke.mock.calls.filter((c) => c[0] === "pbx_me_request" && (c[1] as { method: string }).method === "POST")).toHaveLength(1);
+  });
+
+  it("ties Moved to <device> to the leg that moved, and says it once that leg is gone", () => {
+    const [call] = parseActiveCalls([wire]);
+    useCallMoveStore.setState({ calls: [call], current: "r-mac", devices: [{ registrationId: "r-ios", label: "Aria iOS", online: true }] });
+    // Another call is still up here: the moved one (leg-1) is already gone.
+    useAppStore.setState({ activeCalls: [{ id: "y", state: "connected", sipCallId: "leg-2" } as never] });
+    store().applyEvent({ type: "call_moved", callId: call.id, fromRegistrationId: "r-mac", toRegistrationId: "r-ios" }, null);
+    expect(useToastStore.getState().current?.message).toBe("callMove.movedTo:Aria iOS");
+    expect(store().movedTo).toBeNull();
+  });
+
+  it("keeps Moved to for the leg still up, with its Call-ID", () => {
+    const [call] = parseActiveCalls([wire]);
+    useCallMoveStore.setState({ calls: [call], current: "r-mac", devices: [{ registrationId: "r-ios", label: "Aria iOS", online: true }] });
+    useAppStore.setState({ activeCalls: [{ id: "x", state: "connected", sipCallId: "leg-1" } as never] });
+    store().applyEvent({ type: "call_moved", callId: call.id, fromRegistrationId: "r-mac", toRegistrationId: "r-ios" }, null);
+    expect(store().movedTo).toMatchObject({ label: "Aria iOS", sipCallId: "leg-1" });
+  });
+
+  it("drops a suggestion once its call ends or moves", () => {
+    useCallMoveStore.setState({ devices: [{ registrationId: "r-ios", label: "Aria iOS", online: true }] });
+    store().applyEvent({ type: "handoff_suggested", raw: { call_id: "c1", to_registration_id: "r-ios", reason: "nearby" } }, null);
+    expect(store().suggestion).not.toBeNull();
+    store().applyEvent({ type: "call_ended", callId: "c1" }, null);
+    expect(store().suggestion).toBeNull();
+    store().applyEvent({ type: "handoff_suggested", raw: { call_id: "c2", to_registration_id: "r-ios", reason: "nearby" } }, null);
+    store().applyEvent({ type: "call_moved", callId: "c2", fromRegistrationId: "r-a", toRegistrationId: "r-b" }, null);
+    expect(store().suggestion).toBeNull();
   });
 });

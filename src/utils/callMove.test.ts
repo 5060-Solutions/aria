@@ -112,10 +112,10 @@ describe("moving", () => {
   });
 
   it("calls a BYE after call_moved a move, in either order, and only soon after", () => {
-    expect(movedAway({ label: "Aria iOS", at: 1000 }, 2000)).toBe("Aria iOS");
-    expect(movedAway({ label: "", at: 1000 }, 2000)).toBe("");
-    expect(movedAway({ label: "x", at: 1000 }, 1000 + 60_000)).toBeNull();
-    expect(movedAway(null, 5)).toBeNull();
+    expect(movedAway({ label: "Aria iOS", at: 1000, sipCallId: null }, 2000, "leg")).toBe("Aria iOS");
+    expect(movedAway({ label: "", at: 1000, sipCallId: null }, 2000, undefined)).toBe("");
+    expect(movedAway({ label: "x", at: 1000, sipCallId: null }, 1000 + 60_000, "leg")).toBeNull();
+    expect(movedAway(null, 5, "leg")).toBeNull();
   });
 });
 
@@ -162,5 +162,13 @@ describe("handoff", () => {
   it("reads the context answer", () => {
     expect(parseContextResult({ action: "moved", call_id: "c", move_id: "m" })).toEqual({ action: "moved", callId: "c", moveId: "m" });
     expect(parseContextResult({ action: "none", call_id: null, move_id: null })).toEqual({ action: "none", callId: null, moveId: null });
+  });
+
+  it("movedAway matches the leg that moved, or any leg when the moved leg is unknown", () => {
+    const at = 1_000_000;
+    expect(movedAway({ label: "Aria iOS", at, sipCallId: "leg-1" }, at + 100, "leg-1")).toBe("Aria iOS");
+    expect(movedAway({ label: "Aria iOS", at, sipCallId: "leg-1" }, at + 100, "leg-2")).toBeNull();
+    expect(movedAway({ label: "Aria iOS", at, sipCallId: null }, at + 100, "leg-2")).toBe("Aria iOS");
+    expect(movedAway({ label: "Aria iOS", at, sipCallId: "leg-1" }, at + 20_000, "leg-1")).toBeNull();
   });
 });

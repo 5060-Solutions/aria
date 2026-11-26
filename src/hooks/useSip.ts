@@ -336,7 +336,7 @@ function finishCall(
   });
   // The PBX BYEs this leg after swapping the call to another device; if it
   // said so, the call did not end, it moved.
-  const away = movedAway(useCallMoveStore.getState().movedTo, endTime);
+  const away = movedAway(useCallMoveStore.getState().movedTo, endTime, details.sipCallId ?? call.sipCallId);
   const movedTo = away === null ? undefined : away || i18n.t("callMove.anotherDevice");
   store.updateCall(callId, { state: "ended", endTime, recording: false, ...(movedTo ? { movedTo } : {}) });
   if (movedTo) {
@@ -492,7 +492,9 @@ export function useSipEvents() {
           state: "incoming",
           direction: "inbound",
           startTime: move.startTime ?? Date.now(),
-          connectTime: move.startTime,
+          // The original call's start, taken as the connect time once this
+          // leg connects; a move that never connects is still a missed call.
+          moveStartTime: move.startTime,
           muted: false,
           held: false,
           recording: false,
@@ -504,8 +506,13 @@ export function useSipEvents() {
         });
         store.setCurrentView("dialer");
         if (move.auto) {
-          // A move this app asked for: pick it up now, with no ring.
-          void sipAnswer(p.callId).catch((e) => log.error("[callMove] could not answer the move:", e));
+          // A move this app asked for: pick it up now, with no ring. If that
+          // fails, the call rings like any other so the person can still
+          // answer or decline it by hand.
+          void sipAnswer(p.callId).catch((e) => {
+            log.error("[callMove] could not answer the move:", e);
+            store.updateCall(p.callId, { moveAuto: false });
+          });
         }
         return;
       }
@@ -544,7 +551,7 @@ export function useSipEvents() {
       store.updateCall(p.callId, {
         state: p.state as CallState,
         connectTime:
-          p.state === "connected" && !call.connectTime ? Date.now() : call.connectTime,
+          p.state === "connected" && !call.connectTime ? (call.moveStartTime ?? Date.now()) : call.connectTime,
         sipCallId: p.sipCallId ?? call.sipCallId,
         srtpActive: p.srtpActive ?? call.srtpActive,
         signalingTls: p.signalingTls ?? call.signalingTls,
