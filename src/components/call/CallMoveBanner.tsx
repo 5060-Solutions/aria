@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Box, Button, IconButton, Typography, alpha } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
@@ -33,7 +34,13 @@ export function CallMoveBanner() {
   const moveHere = useCallMoveStore((s) => s.moveHere);
   const move = useCallMoveStore((s) => s.move);
   const dismiss = useCallMoveStore((s) => s.dismissSuggestion);
-  const liveSipIds = useAppStore((s) => s.activeCalls.filter((c) => c.state !== "ended").map((c) => c.sipCallId ?? ""));
+  // Selected as the store holds it: a selector that built a new array on
+  // every call made React re-render without end (the snapshot never matched).
+  const activeCalls = useAppStore((s) => s.activeCalls);
+  const liveSipIds = useMemo(
+    () => activeCalls.filter((c) => c.state !== "ended").map((c) => c.sipCallId ?? ""),
+    [activeCalls],
+  );
   const hasLive = liveSipIds.length > 0;
 
   if (!mailbox) return null;
