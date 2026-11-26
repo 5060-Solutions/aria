@@ -37,6 +37,7 @@ import { CallTranscript } from "./CallTranscript";
 import { callerDisplay } from "../../utils/callerDisplay";
 import type { CallHistoryEntry } from "../../types/sip";
 import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
+import { formatDisplayNumber } from "../../utils/phoneFormat";
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -74,30 +75,15 @@ function getFlagEmoji(countryCode: string): string {
 
 function getNumberInfo(uri: string, defaultCountry: CountryCode) {
   const number = uri.replace(/^sip:/, "").split("@")[0];
-  
-  // Don't try to format short numbers (likely extensions) or non-numeric strings
-  const digitsOnly = number.replace(/\D/g, "");
-  if (digitsOnly.length < 7 || !/^\+?\d+$/.test(number.replace(/[\s\-()]/g, ""))) {
-    return {
-      formatted: number,
-      country: null,
-      raw: number,
-    };
-  }
-  
+  // Extensions, star codes and names stay as they are; a valid number reads
+  // nationally for the default country and internationally otherwise.
+  const formatted = formatDisplayNumber(number, defaultCountry);
+  if (formatted === number) return { formatted: number, country: null, raw: number };
   try {
-    const parsed = parsePhoneNumber(number, defaultCountry);
-    if (parsed && parsed.isValid()) {
-      return {
-        formatted: parsed.formatInternational(),
-        country: parsed.country || null,
-        raw: number,
-      };
-    }
+    return { formatted, country: parsePhoneNumber(number, defaultCountry).country || null, raw: number };
   } catch {
-    // Ignore parsing errors
+    return { formatted, country: null, raw: number };
   }
-  return { formatted: number, country: null, raw: number };
 }
 
 function CallIcon_({ entry }: { entry: CallHistoryEntry }) {

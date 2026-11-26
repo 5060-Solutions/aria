@@ -40,7 +40,10 @@ pub struct ContactsError {
 
 impl ContactsError {
     pub fn new(kind: ContactsErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+        Self {
+            kind,
+            message: message.into(),
+        }
     }
 }
 
@@ -74,9 +77,13 @@ pub fn flatten(raw: &[RawContact]) -> Vec<SystemContact> {
     let mut out = Vec::new();
     for person in raw {
         let full = squeeze(&format!("{} {}", person.given_name, person.family_name));
-        let name = [full, squeeze(&person.organization_name), squeeze(&person.nickname)]
-            .into_iter()
-            .find(|n| !n.is_empty());
+        let name = [
+            full,
+            squeeze(&person.organization_name),
+            squeeze(&person.nickname),
+        ]
+        .into_iter()
+        .find(|n| !n.is_empty());
         let phones = person
             .phones
             .iter()
@@ -125,8 +132,8 @@ pub const PRIVACY_SETTINGS_URL: &str =
 mod macos {
     use super::{ContactsError, ContactsErrorKind, RawContact, RawPhone};
     use objc2::rc::Retained;
-use objc2::AllocAnyThread;
     use objc2::runtime::{Bool, ProtocolObject};
+    use objc2::AllocAnyThread;
     use objc2_contacts::{
         CNAuthorizationStatus, CNContact, CNContactFamilyNameKey, CNContactFetchRequest,
         CNContactGivenNameKey, CNContactNicknameKey, CNContactOrganizationNameKey,
@@ -181,7 +188,8 @@ use objc2::AllocAnyThread;
             } else {
                 // SAFETY: the framework hands us either null or a live NSError
                 // for the duration of this callback.
-                let detail = unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string());
+                let detail =
+                    unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string());
                 Err(detail.unwrap_or_default())
             };
             if let Some(tx) = tx.lock().ok().and_then(|mut slot| slot.take()) {
@@ -190,7 +198,9 @@ use objc2::AllocAnyThread;
         });
         // Kept alive until the answer arrives: the request belongs to it.
         let store = unsafe { CNContactStore::new() };
-        unsafe { store.requestAccessForEntityType_completionHandler(CNEntityType::Contacts, &handler) };
+        unsafe {
+            store.requestAccessForEntityType_completionHandler(CNEntityType::Contacts, &handler)
+        };
         match rx.recv() {
             Ok(Ok(())) => Ok(()),
             Ok(Err(detail)) => Err(denied(Some(detail))),
@@ -214,8 +224,9 @@ use objc2::AllocAnyThread;
             ]
         };
         let keys = NSArray::from_slice(&keys);
-        let request =
-            unsafe { CNContactFetchRequest::initWithKeysToFetch(CNContactFetchRequest::alloc(), &keys) };
+        let request = unsafe {
+            CNContactFetchRequest::initWithKeysToFetch(CNContactFetchRequest::alloc(), &keys)
+        };
         let store = unsafe { CNContactStore::new() };
 
         let found = RefCell::new(Vec::new());
@@ -227,10 +238,17 @@ use objc2::AllocAnyThread;
         });
         let mut error: Option<Retained<NSError>> = None;
         let ok = unsafe {
-            store.enumerateContactsWithFetchRequest_error_usingBlock(&request, Some(&mut error), &each)
+            store.enumerateContactsWithFetchRequest_error_usingBlock(
+                &request,
+                Some(&mut error),
+                &each,
+            )
         };
         if !ok {
-            return Err(ContactsError::new(ContactsErrorKind::Failed, describe(error)));
+            return Err(ContactsError::new(
+                ContactsErrorKind::Failed,
+                describe(error),
+            ));
         }
         Ok(found.into_inner())
     }
@@ -241,7 +259,10 @@ use objc2::AllocAnyThread;
             .iter()
             .map(|labeled| {
                 let label = unsafe { labeled.label() }
-                    .map(|l| unsafe { CNLabeledValue::<CNPhoneNumber>::localizedStringForLabel(&l) }.to_string())
+                    .map(|l| {
+                        unsafe { CNLabeledValue::<CNPhoneNumber>::localizedStringForLabel(&l) }
+                            .to_string()
+                    })
                     .filter(|l| !l.is_empty());
                 let number = unsafe { labeled.value().stringValue() }.to_string();
                 RawPhone { label, number }
@@ -297,7 +318,12 @@ mod tests {
 
     #[test]
     fn a_person_with_one_number_is_one_contact() {
-        let got = flatten(&[person("ABC", "Franco", "Rossi", &[("mobile", "+39 333 1234567")])]);
+        let got = flatten(&[person(
+            "ABC",
+            "Franco",
+            "Rossi",
+            &[("mobile", "+39 333 1234567")],
+        )]);
         assert_eq!(
             got,
             vec![SystemContact {
@@ -311,8 +337,16 @@ mod tests {
 
     #[test]
     fn every_number_becomes_its_own_contact_with_a_position_in_the_id() {
-        let got = flatten(&[person("ABC", "Franco", "Rossi", &[("mobile", "+39 333 1234567"), ("work", "+39 02 1234567")])]);
-        assert_eq!(got.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["ABC:0", "ABC:1"]);
+        let got = flatten(&[person(
+            "ABC",
+            "Franco",
+            "Rossi",
+            &[("mobile", "+39 333 1234567"), ("work", "+39 02 1234567")],
+        )]);
+        assert_eq!(
+            got.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["ABC:0", "ABC:1"]
+        );
         assert!(got.iter().all(|c| c.name == "Franco Rossi"));
         assert_eq!(got[1].label.as_deref(), Some("work"));
     }
@@ -324,9 +358,15 @@ mod tests {
             nickname: "ac".into(),
             ..person("ORG", "", "", &[("", "0212345")])
         };
-        let nick = RawContact { nickname: "Fra".into(), ..person("NICK", " ", "", &[("", "333")]) };
+        let nick = RawContact {
+            nickname: "Fra".into(),
+            ..person("NICK", " ", "", &[("", "333")])
+        };
         let bare = person("BARE", "", "", &[("", "+1 555 0100")]);
-        let names: Vec<String> = flatten(&[org, nick, bare]).into_iter().map(|c| c.name).collect();
+        let names: Vec<String> = flatten(&[org, nick, bare])
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
         assert_eq!(names, ["Acme SpA", "Fra", "+1 555 0100"]);
     }
 
@@ -353,7 +393,10 @@ mod tests {
     #[test]
     fn errors_serialize_with_a_snake_case_kind_for_the_frontend() {
         let e = ContactsError::new(ContactsErrorKind::Denied, "no");
-        assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"kind":"denied","message":"no"}"#);
+        assert_eq!(
+            serde_json::to_string(&e).unwrap(),
+            r#"{"kind":"denied","message":"no"}"#
+        );
     }
 }
 
@@ -371,15 +414,23 @@ mod bundle_declarations {
     #[test]
     fn info_plist_explains_why_aria_wants_contacts() {
         let plist = read("Info.plist");
-        assert!(plist.contains("<key>NSContactsUsageDescription</key>"), "Info.plist lacks NSContactsUsageDescription");
+        assert!(
+            plist.contains("<key>NSContactsUsageDescription</key>"),
+            "Info.plist lacks NSContactsUsageDescription"
+        );
     }
 
     #[test]
     fn the_hardened_runtime_is_entitled_to_read_contacts() {
         let entitlements = read("entitlements.plist");
         let key = "<key>com.apple.security.personal-information.addressbook</key>";
-        let at = entitlements.find(key).unwrap_or_else(|| panic!("entitlements.plist lacks {key}"));
+        let at = entitlements
+            .find(key)
+            .unwrap_or_else(|| panic!("entitlements.plist lacks {key}"));
         let after = &entitlements[at + key.len()..];
-        assert!(after.trim_start().starts_with("<true/>"), "the addressbook entitlement is not <true/>");
+        assert!(
+            after.trim_start().starts_with("<true/>"),
+            "the addressbook entitlement is not <true/>"
+        );
     }
 }

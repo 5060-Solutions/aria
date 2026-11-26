@@ -9,10 +9,11 @@ import { useAppStore } from "../../stores/appStore";
 import { placeCall } from "../../hooks/useSip";
 import { dialUri } from "../../utils/sipUri";
 import { contactForNumber, dialerMatches, formatNumber, uriUser } from "../../utils/callerDisplay";
-import { numberFontSize } from "../../utils/dialerNumber";
 import type { Contact } from "../../types/sip";
 import { DialerButton } from "./DialerButton";
-import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
+import { parsePhoneNumber, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
+import { useFitFont } from "../../hooks/useFitFont";
+import { dialHint, formatAsYouType } from "../../utils/phoneFormat";
 
 const keys = [
   { digit: "1", letters: "" },
@@ -71,45 +72,12 @@ export function Dialer() {
     }
   }, [countryDisplayNames]);
 
-  // The number row's width, measured, so the number's font size can be the
-  // largest that fits it (utils/dialerNumber).
-  const numberRowRef = useRef<HTMLDivElement | null>(null);
-  const [numberRowWidth, setNumberRowWidth] = useState(0);
-  useEffect(() => {
-    const el = numberRowRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver((entries) => {
-      setNumberRowWidth(Math.floor(entries[0]?.contentRect.width ?? 0));
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  const formattedNumber = useMemo(() => {
-    if (!dialInput) return "";
-    if (/[a-z]/i.test(dialInput)) return dialInput;
-    
-    // Get just the digits to check length
-    const digits = dialInput.replace(/\D/g, "");
-    
-    // Don't format short numbers (extensions, test numbers like 9998)
-    // unless they start with + (international format)
-    const isInternational = dialInput.startsWith("+");
-    const isShortNumber = digits.length <= 6 && !isInternational;
-    
-    if (isShortNumber) {
-      return dialInput; // Return as-is for extensions
-    }
-    
-    try {
-      const formatter = new AsYouType(defaultCountry);
-      return formatter.input(dialInput);
-    } catch {
-      return dialInput;
-    }
-  }, [dialInput, defaultCountry]);
-
-  const numberFontPx = numberFontSize(formattedNumber.length, numberRowWidth);
+  // Display only: what is dialled is the digits as typed (`dialDigits`), so
+  // an extension or a star code is never changed by the formatting.
+  const formattedNumber = useMemo(() => formatAsYouType(dialInput, defaultCountry), [dialInput, defaultCountry]);
+  const hint = useMemo(() => dialHint(dialInput, defaultCountry), [dialInput, defaultCountry]);
+  const numberRef = useRef<HTMLDivElement>(null);
+  useFitFont(numberRef, formattedNumber || t("dialer.enterNumber"), 35, 16);
 
   const detectedCountry = useMemo(() => {
     if (!dialInput) return null;
@@ -487,71 +455,51 @@ export function Dialer() {
           )
         )}
 
-        <Box sx={{ position: "relative", width: "100%" }}>
-          <Box
-            ref={numberRowRef}
-            sx={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}
-          >
-            {/* A spacer the width of the clear button keeps the number centred
-                while the button sits at the right edge, on the number's own
-                centre line. */}
-            <Box sx={{ width: 36, flexShrink: 0 }} aria-hidden />
-            {/* The number is updated in place. It used to be keyed on its value
-                inside AnimatePresence mode="wait", which must finish the old
-                element's exit before mounting the new one; two changes in the
-                same tick (a click and a double-click on Delete) left the exit
-                stuck and the display frozen on a stale number (#80). */}
-            <Box
-              sx={{
-                flex: 1,
-                minWidth: 0,
-                textAlign: "center",
-                // Sized to fit: a long number shrinks rather than being cut
-                // with an ellipsis, which hid the digits just typed.
-                fontSize: `${numberFontPx}px`,
-                fontWeight: 200,
-                fontFamily: '"Google Sans", sans-serif',
-                color: dialInput ? "text.primary" : "text.secondary",
-                letterSpacing: dialInput ? "0.06em" : "0",
-                transition: "font-size 0.15s ease",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                lineHeight: 1.15,
-              }}
-            >
-              {formattedNumber || t("dialer.enterNumber")}
-            </Box>
-            <Box sx={{ width: 36, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <AnimatePresence>
-                {dialInput && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.7 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.7 }}
-                    transition={{ duration: 0.15 }}
-                    style={{ display: "flex" }}
-                  >
-                    <Tooltip title={t("dialer.clearAll", "Clear")}>
-                      <IconButton
-                        onClick={clearDialInput}
-                        size="small"
-                        aria-label={t("dialer.clearAll", "Clear")}
-                        sx={{
-                          color: "text.secondary",
-                          p: 0.5,
-                          "&:hover": {
-                            color: "text.primary",
-                            bgcolor: alpha(theme.palette.text.secondary, 0.08),
-                          },
-                        }}
-                      >
-                        <CancelRoundedIcon sx={{ fontSize: 20 }} />
-                      </IconButton>
-                    </Tooltip>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </Box>
+        <Box
+          sx={{
+            position: "relative",
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          {/* The number is updated in place. It used to be keyed on its value
+              inside AnimatePresence mode="wait", which must finish the old
+              element's exit before mounting the new one; two changes in the
+              same tick (a click and a double-click on Delete) left the exit
+              stuck and the display frozen on a stale number (#80). */}
+          <Box sx={{ flex: 1, minWidth: 0, textAlign: "center" }}>
+              <Box
+                ref={numberRef}
+                data-testid="dial-number"
+                sx={{
+                  // The size is set by useFitFont: as large as fits, never
+                  // below 16px; past that the number scrolls sideways.
+                  fontSize: "2.2rem",
+                  fontWeight: 200,
+                  fontFamily: '"Google Sans", sans-serif',
+                  color: dialInput ? "text.primary" : "text.secondary",
+                  letterSpacing: dialInput ? "0.04em" : "0",
+                  px: 1,
+                  whiteSpace: "nowrap",
+                  overflowX: "auto",
+                  overflowY: "hidden",
+                  scrollbarWidth: "none",
+                  "&::-webkit-scrollbar": { display: "none" },
+                  maxWidth: "100%",
+                }}
+              >
+                {formattedNumber || t("dialer.enterNumber")}
+              </Box>
+              {hint && (
+                <Box
+                  data-testid="dial-hint"
+                  sx={{ mt: 0.25, fontSize: "0.8rem", color: "text.secondary", opacity: 0.8, letterSpacing: "0.02em" }}
+                >
+                  {hint}
+                </Box>
+              )}
           </Box>
           {matches.length > 0 && (
             <Box
@@ -628,6 +576,40 @@ export function Dialer() {
             </Box>
           )}
 
+          {/* A fixed slot at the end of the row, so the button sits beside the number and never over it. */}
+          <Box sx={{ width: 32, flexShrink: 0, display: "flex", justifyContent: "center", order: 2 }}>
+            <AnimatePresence>
+              {dialInput && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.7 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.7 }}
+                  transition={{ duration: 0.15 }}
+                  style={{ display: "flex" }}
+                >
+                  <Tooltip title={t("dialer.clearAll", "Clear")}>
+                    <IconButton
+                      onClick={clearDialInput}
+                      size="small"
+                      aria-label={t("dialer.clearAll", "Clear")}
+                      sx={{
+                        color: "text.secondary",
+                        p: 0.5,
+                        "&:hover": {
+                          color: "text.primary",
+                          bgcolor: alpha(theme.palette.text.secondary, 0.08),
+                        },
+                      }}
+                    >
+                      <CancelRoundedIcon sx={{ fontSize: 20 }} />
+                    </IconButton>
+                  </Tooltip>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </Box>
+          {/* Mirrors the slot so the number stays centred. */}
+          <Box sx={{ width: 32, flexShrink: 0, order: -1 }} />
         </Box>
       </Box>
 
@@ -648,6 +630,7 @@ export function Dialer() {
             digit={digit}
             letters={letters || undefined}
             onPress={appendDigit}
+            onLongPress={digit === "0" ? () => appendDigit("+") : undefined}
           />
         ))}
       </Box>

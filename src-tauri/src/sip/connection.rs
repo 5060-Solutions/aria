@@ -521,7 +521,12 @@ mod tests {
         let mut r = ConnectionReport::start(&sample_account("sip.example.com", None));
         r.running(StepKind::Register);
         r.running(StepKind::Authenticate);
-        r.failed(StepKind::Authenticate, FailureKind::Auth, "403: Authentication failed", None);
+        r.failed(
+            StepKind::Authenticate,
+            FailureKind::Auth,
+            "403: Authentication failed",
+            None,
+        );
         assert_eq!(r.step(StepKind::Register).status, StepStatus::Pending);
         assert_eq!(r.step(StepKind::Authenticate).status, StepStatus::Failed);
         r.running(StepKind::Register);

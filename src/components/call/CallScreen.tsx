@@ -2,10 +2,14 @@ import { Box, Typography, Avatar, alpha, useTheme, Tooltip } from "@mui/material
 import LockIcon from "@mui/icons-material/Lock";
 import LockOpenIcon from "@mui/icons-material/LockOpen";
 import PersonIcon from "@mui/icons-material/Person";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { useAppStore } from "../../stores/appStore";
 import { CallControls } from "./CallControls";
+import { InCallKeypad } from "./InCallKeypad";
+import { sipSendDtmf } from "../../hooks/useSip";
+import { appendSent, callLayout, digitsFor, type SentDigits } from "../../utils/inCallKeypad";
 import { AudioLevelMeter } from "./AudioLevelMeter";
 import { RecordingIndicator } from "./RecordingIndicator";
 import { useCallTimer } from "../../hooks/useCallTimer";
@@ -148,8 +152,12 @@ export function CallScreen() {
   const defaultCountry = useAppStore((s) => s.defaultCountry) as CountryCode;
   const theme = useTheme();
   const elapsed = useCallTimer(activeCall?.connectTime ?? null);
+  const [keypadOpen, setKeypadOpen] = useState(false);
+  const [sent, setSent] = useState<SentDigits | null>(null);
 
   if (!activeCall) return null;
+  const layout = callLayout(keypadOpen);
+  const sentDigits = digitsFor(sent, activeCall.id);
 
   // A name when one is known, the number underneath; never the SIP host,
   // which belongs in Diagnostics, not in front of the person on the call.
@@ -193,7 +201,8 @@ export function CallScreen() {
     >
       <Box
         sx={{
-          flex: "0 1 auto",
+          // With the keypad open the caller never gives way: the keypad does.
+          flex: layout.showKeypad ? "0 0 auto" : "0 1 auto",
           minHeight: 0,
           width: "100%",
           overflow: "hidden",
@@ -204,6 +213,7 @@ export function CallScreen() {
           gap: 1,
         }}
       >
+        {layout.showAvatar && (
         <motion.div
           animate={
             isRinging
@@ -240,6 +250,7 @@ export function CallScreen() {
             )}
           </Avatar>
         </motion.div>
+        )}
 
         <Typography
           variant="h5"
@@ -304,14 +315,24 @@ export function CallScreen() {
         )}
       </Box>
 
-      {isConnected && (
+      {isConnected && layout.showMeter && (
         <Box sx={{ width: "100%", maxWidth: 280, px: 1, flexShrink: 0 }}>
           <AudioLevelMeter compact />
         </Box>
       )}
 
+      {layout.showKeypad && (
+        <InCallKeypad
+          digits={sentDigits}
+          onDigit={(d) => {
+            setSent((prev) => appendSent(prev, activeCall.id, d));
+            sipSendDtmf(activeCall.id, d).catch(() => {});
+          }}
+        />
+      )}
+
       <Box sx={{ width: "100%", maxWidth: 360, flexShrink: 0 }}>
-        <CallControls />
+        <CallControls keypadOpen={keypadOpen} onToggleKeypad={() => setKeypadOpen((open) => !open)} />
       </Box>
     </Box>
   );

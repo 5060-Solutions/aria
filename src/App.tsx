@@ -20,6 +20,7 @@ import { AppToast } from "./components/layout/AppToast";
 import { useAppMenu } from "./hooks/useAppMenu";
 import { useMessaging } from "./hooks/useMessaging";
 import { useCallMove } from "./hooks/useCallMove";
+import { usePbxCountry } from "./hooks/usePbxCountry";
 import { provisionFlow } from "./components/provision/provisionApi";
 import "./i18n";
 
@@ -51,6 +52,7 @@ function MainApp() {
   useAppMenu();
   useMessaging();
   useCallMove();
+  usePbxCountry();
 
   // The engine's audio processing setting lives in memory and resets with the
   // process, so the saved preference has to be pushed down on every launch.

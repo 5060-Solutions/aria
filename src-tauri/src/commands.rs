@@ -1,4 +1,3 @@
-
 /// Resolve a caller-supplied path and confirm it is inside `base`.
 ///
 /// The webview is not trusted: a compromised renderer can invoke any command
@@ -46,11 +45,10 @@ async fn ask_save_path(
 ) -> Option<std::path::PathBuf> {
     use tauri_plugin_dialog::DialogExt;
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let mut dialog = app
-        .dialog()
-        .file()
-        .set_file_name(default_name)
-        .add_filter(filter_name.unwrap_or_else(|| extension.to_uppercase()), &[extension]);
+    let mut dialog = app.dialog().file().set_file_name(default_name).add_filter(
+        filter_name.unwrap_or_else(|| extension.to_uppercase()),
+        &[extension],
+    );
     if let Some(title) = title {
         dialog = dialog.set_title(title);
     }
@@ -96,10 +94,18 @@ use crate::sip::{self, SipManager};
 
 // ── PCAP helpers ────────────────────────────────────────────────────────────
 
-fn write_u8(buf: &mut Vec<u8>, v: u8) { buf.push(v); }
-fn write_u16le(buf: &mut Vec<u8>, v: u16) { buf.extend_from_slice(&v.to_le_bytes()); }
-fn write_u32le(buf: &mut Vec<u8>, v: u32) { buf.extend_from_slice(&v.to_le_bytes()); }
-fn write_i32le(buf: &mut Vec<u8>, v: i32) { buf.extend_from_slice(&v.to_le_bytes()); }
+fn write_u8(buf: &mut Vec<u8>, v: u8) {
+    buf.push(v);
+}
+fn write_u16le(buf: &mut Vec<u8>, v: u16) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+fn write_u32le(buf: &mut Vec<u8>, v: u32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
+fn write_i32le(buf: &mut Vec<u8>, v: i32) {
+    buf.extend_from_slice(&v.to_le_bytes());
+}
 
 /// Build a minimal PCAP file (LINKTYPE_IPV4 = 228) from SIP diagnostic logs.
 /// Each SIP message is wrapped in a fake IPv4 + UDP header so Wireshark
@@ -109,12 +115,12 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
 
     // Global header
     write_u32le(&mut buf, 0xa1b2c3d4); // magic
-    write_u16le(&mut buf, 2);           // version major
-    write_u16le(&mut buf, 4);           // version minor
-    write_i32le(&mut buf, 0);           // UTC offset
-    write_u32le(&mut buf, 0);           // timestamp accuracy
-    write_u32le(&mut buf, 65535);       // snaplen
-    write_u32le(&mut buf, 228);         // LINKTYPE_IPV4
+    write_u16le(&mut buf, 2); // version major
+    write_u16le(&mut buf, 4); // version minor
+    write_i32le(&mut buf, 0); // UTC offset
+    write_u32le(&mut buf, 0); // timestamp accuracy
+    write_u32le(&mut buf, 65535); // snaplen
+    write_u32le(&mut buf, 228); // LINKTYPE_IPV4
 
     for log in logs {
         // App-level entries are not SIP and have no peer to attribute them to.
@@ -129,7 +135,10 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
         // can be bigger than that; writing it would truncate the lengths and
         // give Wireshark a malformed frame it may stop dissecting at.
         if ip_len > u16::MAX as usize {
-            log::warn!("Skipping {}-byte SIP message in PCAP export: too large for one UDP frame", sip_len);
+            log::warn!(
+                "Skipping {}-byte SIP message in PCAP export: too large for one UDP frame",
+                sip_len
+            );
             continue;
         }
 
@@ -160,14 +169,14 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
         write_u32le(&mut buf, ip_len as u32);
 
         // IPv4 header (20 bytes, no options)
-        write_u8(&mut buf, 0x45);                        // version=4, IHL=5
-        write_u8(&mut buf, 0x00);                        // DSCP/ECN
-        write_u16le(&mut buf, ip_len as u16);            // total length
-        write_u16le(&mut buf, 0);                        // identification
-        write_u16le(&mut buf, 0x4000);                   // flags=DF, frag=0
-        write_u8(&mut buf, 64);                          // TTL
-        write_u8(&mut buf, 17);                          // protocol=UDP
-        write_u16le(&mut buf, 0);                        // checksum (0 = unchecked)
+        write_u8(&mut buf, 0x45); // version=4, IHL=5
+        write_u8(&mut buf, 0x00); // DSCP/ECN
+        write_u16le(&mut buf, ip_len as u16); // total length
+        write_u16le(&mut buf, 0); // identification
+        write_u16le(&mut buf, 0x4000); // flags=DF, frag=0
+        write_u8(&mut buf, 64); // TTL
+        write_u8(&mut buf, 17); // protocol=UDP
+        write_u16le(&mut buf, 0); // checksum (0 = unchecked)
         buf.extend_from_slice(&src_v4);
         buf.extend_from_slice(&dst_v4);
 
@@ -175,7 +184,7 @@ fn build_pcap(logs: &[sip::diagnostics::DiagnosticLog]) -> Vec<u8> {
         write_u16le(&mut buf, src_port);
         write_u16le(&mut buf, dst_port);
         write_u16le(&mut buf, udp_len as u16);
-        write_u16le(&mut buf, 0);                        // checksum (0 = unchecked)
+        write_u16le(&mut buf, 0); // checksum (0 = unchecked)
 
         // SIP payload
         buf.extend_from_slice(payload);
@@ -223,7 +232,10 @@ pub async fn provision_from_qr(
 ) -> Result<String, String> {
     log::info!(
         "provision_from_qr: server={}, username={}, port={}, transport={:?}",
-        payload.server, payload.username, payload.port, payload.transport
+        payload.server,
+        payload.username,
+        payload.port,
+        payload.transport
     );
 
     let transport = match payload.transport.as_deref().unwrap_or("udp") {
@@ -235,7 +247,9 @@ pub async fn provision_from_qr(
     };
 
     let account_id = uuid::Uuid::new_v4().to_string();
-    let display_name = payload.display_name.unwrap_or_else(|| payload.username.clone());
+    let display_name = payload
+        .display_name
+        .unwrap_or_else(|| payload.username.clone());
 
     let account = sip::AccountConfig {
         id: account_id.clone(),
@@ -393,37 +407,47 @@ fn account_from_config(config: SipAccountConfig) -> Result<sip::AccountConfig, S
     };
 
     // Parse codec preferences from config
-    let codecs = config.codecs.map(|codec_list| {
-        let mut prefs: Vec<sip::account::CodecPreference> = codec_list
-            .into_iter()
-            .filter_map(|c| {
-                let codec = match c.codec.as_str() {
-                    "pcmu" => Some(rtp_engine::CodecType::Pcmu),
-                    "pcma" => Some(rtp_engine::CodecType::Pcma),
-                    "g729" => Some(rtp_engine::CodecType::G729),
-                    "opus" => Some(rtp_engine::CodecType::Opus),
-                    _ => None,
-                };
-                codec.map(|ct| sip::account::CodecPreference {
-                    codec: ct,
-                    enabled: c.enabled,
-                    priority: c.priority,
+    let codecs = config
+        .codecs
+        .map(|codec_list| {
+            let mut prefs: Vec<sip::account::CodecPreference> = codec_list
+                .into_iter()
+                .filter_map(|c| {
+                    let codec = match c.codec.as_str() {
+                        "pcmu" => Some(rtp_engine::CodecType::Pcmu),
+                        "pcma" => Some(rtp_engine::CodecType::Pcma),
+                        "g729" => Some(rtp_engine::CodecType::G729),
+                        "opus" => Some(rtp_engine::CodecType::Opus),
+                        _ => None,
+                    };
+                    codec.map(|ct| sip::account::CodecPreference {
+                        codec: ct,
+                        enabled: c.enabled,
+                        priority: c.priority,
+                    })
                 })
-            })
-            .collect();
-        prefs.sort_by_key(|p| p.priority);
-        prefs
-    }).unwrap_or_else(sip::account::default_codec_preferences);
+                .collect();
+            prefs.sort_by_key(|p| p.priority);
+            prefs
+        })
+        .unwrap_or_else(sip::account::default_codec_preferences);
 
-    let srtp_mode = config.srtp_mode
+    let srtp_mode = config
+        .srtp_mode
         .as_ref()
         .map(|s| sip::account::SrtpMode::from_str(s))
         .unwrap_or_default();
-    log::info!("Registering account {} with SRTP mode: {:?} (from config: {:?})", 
-               config.username, srtp_mode, config.srtp_mode);
+    log::info!(
+        "Registering account {} with SRTP mode: {:?} (from config: {:?})",
+        config.username,
+        srtp_mode,
+        config.srtp_mode
+    );
 
     let account = sip::AccountConfig {
-        id: config.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        id: config
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         display_name: config.display_name,
         username: config.username,
         domain: config.domain,
@@ -576,7 +600,7 @@ pub async fn open_recordings_folder(app: tauri::AppHandle) -> Result<(), String>
 
     // Create directory if it doesn't exist
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create dir: {}", e))?;
-    
+
     // Open in file explorer
     #[cfg(target_os = "macos")]
     {
@@ -599,7 +623,7 @@ pub async fn open_recordings_folder(app: tauri::AppHandle) -> Result<(), String>
             .spawn()
             .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
-    
+
     Ok(())
 }
 
@@ -607,7 +631,7 @@ pub async fn open_recordings_folder(app: tauri::AppHandle) -> Result<(), String>
 pub async fn play_recording(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let path = confine_to(&recordings_root(&app)?, &path)?;
     let path = path.as_path();
-    
+
     // Open with default audio player
     #[cfg(target_os = "macos")]
     {
@@ -634,7 +658,7 @@ pub async fn play_recording(app: tauri::AppHandle, path: String) -> Result<(), S
             .spawn()
             .map_err(|e| format!("Failed to play recording: {}", e))?;
     }
-    
+
     Ok(())
 }
 
@@ -662,9 +686,7 @@ pub async fn get_connection_report(
 /// Sends an immediate OPTIONS ping; triggers reconnection on failure.
 /// Called by frontend on wake from sleep, network online, or window re-focus.
 #[tauri::command]
-pub async fn probe_registration_health(
-    manager: State<'_, SipManager>,
-) -> Result<(), String> {
+pub async fn probe_registration_health(manager: State<'_, SipManager>) -> Result<(), String> {
     manager.probe_registration_health().await;
     Ok(())
 }
@@ -710,14 +732,22 @@ pub async fn get_audio_devices() -> Result<AudioDevicesResponse, String> {
         .map_err(|e| format!("Failed to list audio devices: {}", e))?;
 
     Ok(AudioDevicesResponse {
-        input_devices: devices.input_devices.into_iter().map(|d| AudioDeviceInfo {
-            name: d.name,
-            is_default: d.is_default,
-        }).collect(),
-        output_devices: devices.output_devices.into_iter().map(|d| AudioDeviceInfo {
-            name: d.name,
-            is_default: d.is_default,
-        }).collect(),
+        input_devices: devices
+            .input_devices
+            .into_iter()
+            .map(|d| AudioDeviceInfo {
+                name: d.name,
+                is_default: d.is_default,
+            })
+            .collect(),
+        output_devices: devices
+            .output_devices
+            .into_iter()
+            .map(|d| AudioDeviceInfo {
+                name: d.name,
+                is_default: d.is_default,
+            })
+            .collect(),
     })
 }
 
@@ -822,7 +852,9 @@ pub async fn open_debug_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn diagnostics_docked(state: State<'_, crate::diagnostics_window::DiagnosticsWindow>) -> Result<bool, String> {
+pub async fn diagnostics_docked(
+    state: State<'_, crate::diagnostics_window::DiagnosticsWindow>,
+) -> Result<bool, String> {
     Ok(state.docked())
 }
 
@@ -850,7 +882,11 @@ pub fn get_app_info() -> AppInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
-        profile: if cfg!(debug_assertions) { "debug" } else { "release" },
+        profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
         transcription: cfg!(feature = "ai"),
     }
 }
@@ -959,7 +995,9 @@ pub async fn sip_transfer_blind(
     target_uri: String,
     manager: State<'_, SipManager>,
 ) -> Result<(), String> {
-    manager.transfer_blind(&call_id, checked_target(&target_uri)?).await
+    manager
+        .transfer_blind(&call_id, checked_target(&target_uri)?)
+        .await
 }
 
 #[tauri::command]
@@ -1020,8 +1058,14 @@ pub async fn export_sip_log_text(
     title: Option<String>,
     filter_name: Option<String>,
 ) -> Result<Option<String>, String> {
-    let Some(file_path) =
-        ask_save_path(&app, title, export_file_name("aria-sip", "txt"), filter_name, "txt").await
+    let Some(file_path) = ask_save_path(
+        &app,
+        title,
+        export_file_name("aria-sip", "txt"),
+        filter_name,
+        "txt",
+    )
+    .await
     else {
         return Ok(None);
     };
@@ -1034,7 +1078,10 @@ pub async fn export_sip_log_text(
             sip::diagnostics::MessageDirection::App => "--- APP",
         };
         let ts = chrono_format(log.timestamp);
-        out.push_str(&format!("── {} {} {} ──\n{}\n\n", dir, ts, log.remote_addr, log.raw));
+        out.push_str(&format!(
+            "── {} {} {} ──\n{}\n\n",
+            dir, ts, log.remote_addr, log.raw
+        ));
     }
 
     std::fs::write(&file_path, &out).map_err(|e| format!("Failed to write file: {}", e))?;
@@ -1048,8 +1095,14 @@ pub async fn export_sip_log_pcap(
     title: Option<String>,
     filter_name: Option<String>,
 ) -> Result<Option<String>, String> {
-    let Some(file_path) =
-        ask_save_path(&app, title, export_file_name("aria-sip", "pcap"), filter_name, "pcap").await
+    let Some(file_path) = ask_save_path(
+        &app,
+        title,
+        export_file_name("aria-sip", "pcap"),
+        filter_name,
+        "pcap",
+    )
+    .await
     else {
         return Ok(None);
     };
@@ -1124,8 +1177,7 @@ fn save_insecure_creds(creds: &std::collections::HashMap<String, String>) -> Res
     }
     let json = serde_json::to_string_pretty(creds)
         .map_err(|e| format!("Failed to serialize credentials: {}", e))?;
-    std::fs::write(&path, json)
-        .map_err(|e| format!("Failed to write credentials file: {}", e))?;
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write credentials file: {}", e))?;
     Ok(())
 }
 
@@ -1142,18 +1194,25 @@ pub async fn store_credential(account_id: String, password: String) -> Result<()
 }
 
 pub(crate) fn store_credential_blocking(account_id: &str, password: &str) -> Result<(), String> {
-    log::info!("store_credential: account_id={}, has_password={}", account_id, !password.is_empty());
-    
+    log::info!(
+        "store_credential: account_id={}, has_password={}",
+        account_id,
+        !password.is_empty()
+    );
+
     #[cfg(feature = "dev-insecure")]
     {
         log::warn!("⚠️  Using INSECURE file-based credential storage (dev mode)");
         let mut creds = load_insecure_creds();
         creds.insert(account_id.to_string(), password.to_string());
         save_insecure_creds(&creds)?;
-        log::info!("store_credential: successfully stored for account_id={}", account_id);
+        log::info!(
+            "store_credential: successfully stored for account_id={}",
+            account_id
+        );
         return Ok(());
     }
-    
+
     #[cfg(not(feature = "dev-insecure"))]
     {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account_id)
@@ -1161,7 +1220,10 @@ pub(crate) fn store_credential_blocking(account_id: &str, password: &str) -> Res
         entry
             .set_password(password)
             .map_err(|e| format!("Failed to store credential: {}", e))?;
-        log::info!("store_credential: successfully stored for account_id={}", account_id);
+        log::info!(
+            "store_credential: successfully stored for account_id={}",
+            account_id
+        );
         Ok(())
     }
 }
@@ -1180,30 +1242,42 @@ pub async fn get_credential(account_id: String) -> Result<Option<String>, String
 
 fn get_credential_blocking(account_id: &str) -> Result<Option<String>, String> {
     log::info!("get_credential: account_id={}", account_id);
-    
+
     #[cfg(feature = "dev-insecure")]
     {
         let creds = load_insecure_creds();
         let result = creds.get(account_id).cloned();
         if result.is_some() {
-            log::info!("get_credential: found password for account_id={}", account_id);
+            log::info!(
+                "get_credential: found password for account_id={}",
+                account_id
+            );
         } else {
-            log::warn!("get_credential: no entry found for account_id={}", account_id);
+            log::warn!(
+                "get_credential: no entry found for account_id={}",
+                account_id
+            );
         }
         return Ok(result);
     }
-    
+
     #[cfg(not(feature = "dev-insecure"))]
     {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account_id)
             .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
         match entry.get_password() {
             Ok(password) => {
-                log::info!("get_credential: found password for account_id={}", account_id);
+                log::info!(
+                    "get_credential: found password for account_id={}",
+                    account_id
+                );
                 Ok(Some(password))
             }
             Err(keyring::Error::NoEntry) => {
-                log::warn!("get_credential: no entry found for account_id={}", account_id);
+                log::warn!(
+                    "get_credential: no entry found for account_id={}",
+                    account_id
+                );
                 Ok(None)
             }
             Err(e) => {
@@ -1233,7 +1307,7 @@ fn delete_credential_blocking(account_id: &str) -> Result<(), String> {
         creds.remove(account_id);
         return save_insecure_creds(&creds);
     }
-    
+
     #[cfg(not(feature = "dev-insecure"))]
     {
         let entry = keyring::Entry::new(KEYRING_SERVICE, account_id)
@@ -1256,7 +1330,12 @@ pub async fn fetch_system_contacts(
     use crate::system_contacts::{ContactsError, ContactsErrorKind};
     tokio::task::spawn_blocking(crate::system_contacts::fetch_contacts)
         .await
-        .map_err(|e| ContactsError::new(ContactsErrorKind::Failed, format!("contacts task failed: {e}")))?
+        .map_err(|e| {
+            ContactsError::new(
+                ContactsErrorKind::Failed,
+                format!("contacts task failed: {e}"),
+            )
+        })?
 }
 
 /// Open the System Settings pane where Contacts access is granted, for a
@@ -1330,8 +1409,7 @@ pub async fn export_diagnostic_report(
     let json_str = serde_json::to_string_pretty(&report)
         .map_err(|e| format!("Failed to serialize report: {}", e))?;
 
-    std::fs::write(&file_path, &json_str)
-        .map_err(|e| format!("Failed to write file: {}", e))?;
+    std::fs::write(&file_path, &json_str).map_err(|e| format!("Failed to write file: {}", e))?;
 
     Ok(Some(file_path.to_string_lossy().into_owned()))
 }
@@ -1358,7 +1436,10 @@ pub async fn export_call_pcap(
 
     // The suggested name is display-only: the dialog decides the real path.
     let default_name = default_name
-        .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')))
+        .filter(|n| {
+            n.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
         .unwrap_or_else(|| export_file_name("aria-call", "pcap"));
     let Some(file_path) = ask_save_path(&app, title, default_name, filter_name, "pcap").await
     else {
@@ -1409,7 +1490,9 @@ pub async fn export_call_history_csv(
 }
 
 fn call_history_csv(call_history: &[CallHistoryEntry]) -> String {
-    let mut csv = String::from("ID,Remote URI,Remote Name,Direction,Start Time,Duration (s),Missed,Recording Path\n");
+    let mut csv = String::from(
+        "ID,Remote URI,Remote Name,Direction,Start Time,Duration (s),Missed,Recording Path\n",
+    );
     for entry in call_history {
         csv.push_str(&format!(
             "{},{},{},{},{},{},{},{}\n",
@@ -1551,7 +1634,11 @@ mod tests {
 
     #[test]
     fn test_build_pcap_produces_valid_header() {
-        let logs = vec![make_log(Some("call-1"), MessageDirection::Sent, "10.0.0.1:5060")];
+        let logs = vec![make_log(
+            Some("call-1"),
+            MessageDirection::Sent,
+            "10.0.0.1:5060",
+        )];
         let pcap = build_pcap(&logs);
 
         // PCAP magic number (little-endian): 0xa1b2c3d4
@@ -1572,8 +1659,16 @@ mod tests {
 
     #[test]
     fn test_build_pcap_sent_vs_received_direction() {
-        let sent = vec![make_log(Some("c1"), MessageDirection::Sent, "10.0.0.2:5060")];
-        let recv = vec![make_log(Some("c1"), MessageDirection::Received, "10.0.0.2:5060")];
+        let sent = vec![make_log(
+            Some("c1"),
+            MessageDirection::Sent,
+            "10.0.0.2:5060",
+        )];
+        let recv = vec![make_log(
+            Some("c1"),
+            MessageDirection::Received,
+            "10.0.0.2:5060",
+        )];
 
         let pcap_sent = build_pcap(&sent);
         let pcap_recv = build_pcap(&recv);
@@ -1632,7 +1727,10 @@ mod tests {
 
     #[test]
     fn csv_fields_starting_like_a_formula_are_made_text() {
-        assert_eq!(csv_field("=HYPERLINK(\"http://evil\")"), "\"'=HYPERLINK(\"\"http://evil\"\")\"");
+        assert_eq!(
+            csv_field("=HYPERLINK(\"http://evil\")"),
+            "\"'=HYPERLINK(\"\"http://evil\"\")\""
+        );
         assert_eq!(csv_field("+15551234567"), "\"'+15551234567\"");
         assert_eq!(csv_field("-"), "\"'-\"");
         assert_eq!(csv_field("@x"), "\"'@x\"");
@@ -1660,13 +1758,15 @@ mod tests {
 
     #[test]
     fn dial_targets_with_line_breaks_or_spaces_are_rejected() {
-        assert_eq!(checked_target("  sip:bob@pbx.example  "), Ok("sip:bob@pbx.example"));
+        assert_eq!(
+            checked_target("  sip:bob@pbx.example  "),
+            Ok("sip:bob@pbx.example")
+        );
         assert!(checked_target("sip:bob@pbx.example\r\nX-Injected: x").is_err());
         assert!(checked_target("1001 ").is_ok());
         assert!(checked_target("10 01").is_err());
         assert!(checked_target("").is_err());
     }
-
 }
 
 // ── On-device transcription ─────────────────────────────────────────────────
@@ -1719,9 +1819,11 @@ pub async fn ai_transcribe_recording(
     let remote_label = remote_label.unwrap_or_default();
     // Inference is CPU-bound and blocking, so it must not sit on an async
     // worker that other commands are waiting to use.
-    tokio::task::spawn_blocking(move || crate::ai::transcribe_recording(&call_id, &path, &remote_label))
-        .await
-        .map_err(|e| format!("transcription task failed: {e}"))?
+    tokio::task::spawn_blocking(move || {
+        crate::ai::transcribe_recording(&call_id, &path, &remote_label)
+    })
+    .await
+    .map_err(|e| format!("transcription task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -1785,6 +1887,18 @@ pub async fn voicemail_list(
     let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = voicemail_password(&mailbox.account_id).await?;
     state.list(&mailbox, &password).await
+}
+
+/// The company's calling country, the default for formatting dialled numbers.
+#[tauri::command]
+pub async fn pbx_calling_country(
+    mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
+    state: State<'_, std::sync::Arc<VoicemailState>>,
+) -> Result<Option<String>, VoicemailError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
+    let password = voicemail_password(&mailbox.account_id).await?;
+    state.calling_country(&mailbox, &password).await
 }
 
 #[tauri::command]
@@ -1869,7 +1983,15 @@ pub async fn messaging_thread(
 ) -> Result<serde_json::Value, MessagingError> {
     let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
-    messaging::thread(&state, &mailbox, &password, &did_id, &number, before.as_deref()).await
+    messaging::thread(
+        &state,
+        &mailbox,
+        &password,
+        &did_id,
+        &number,
+        before.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1904,13 +2026,25 @@ pub async fn messaging_upload(
     bindings_state: State<'_, std::sync::Arc<PbxBindings>>,
     state: State<'_, std::sync::Arc<VoicemailState>>,
 ) -> Result<serde_json::Value, MessagingError> {
-    let bad = |m: &str| MessagingError { kind: "malformed", message: m.to_string(), status: None, field: None };
+    let bad = |m: &str| MessagingError {
+        kind: "malformed",
+        message: m.to_string(),
+        status: None,
+        field: None,
+    };
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err(bad("The picture was not sent as raw bytes."));
     };
-    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
-    let mailbox: Mailbox = serde_json::from_str(&header("x-mailbox").ok_or_else(|| bad("No mailbox."))?)
-        .map_err(|_| bad("Unreadable mailbox."))?;
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let mailbox: Mailbox =
+        serde_json::from_str(&header("x-mailbox").ok_or_else(|| bad("No mailbox."))?)
+            .map_err(|_| bad("Unreadable mailbox."))?;
     // The name travels percent-encoded: header values are ASCII.
     let file_name = header("x-file-name")
         .map(|n| percent_decode(&n))
@@ -1975,10 +2109,16 @@ pub async fn messaging_listen(
             let _ = on_app.emit("messaging-sms", event);
         },
         move |event| {
-            let _ = call_app.emit("pbx-call-event", serde_json::json!({ "accountId": call_id, "event": event }));
+            let _ = call_app.emit(
+                "pbx-call-event",
+                serde_json::json!({ "accountId": call_id, "event": event }),
+            );
         },
         move |up| {
-            let _ = live_app.emit("messaging-live", serde_json::json!({ "accountId": live_id, "live": up }));
+            let _ = live_app.emit(
+                "messaging-live",
+                serde_json::json!({ "accountId": live_id, "live": up }),
+            );
         },
     );
     live.start(&account_id, task);
@@ -2046,7 +2186,10 @@ pub fn sip_instance_urn() -> String {
 pub async fn desktop_context() -> crate::desktop_context::DesktopContext {
     tokio::task::spawn_blocking(crate::desktop_context::context)
         .await
-        .unwrap_or(crate::desktop_context::DesktopContext { locked: false, idle_secs: 0 })
+        .unwrap_or(crate::desktop_context::DesktopContext {
+            locked: false,
+            idle_secs: 0,
+        })
 }
 
 /// The contract's `network_hash` for this network, or null with no IPv4
@@ -2060,7 +2203,12 @@ pub async fn network_fingerprint(
     let mailbox = bindings.resolve(&mailbox.account_id)?;
     let password = messaging_password(&mailbox.account_id).await?;
     let extension_id = crate::pbx_me::extension_id(&state, &mailbox, &password).await?;
-    Ok(tokio::task::spawn_blocking(move || crate::desktop_context::network_fingerprint(&extension_id)).await.ok().flatten())
+    Ok(tokio::task::spawn_blocking(move || {
+        crate::desktop_context::network_fingerprint(&extension_id)
+    })
+    .await
+    .ok()
+    .flatten())
 }
 
 // ── Which PBX API an account's password may go to ───────────────────────────

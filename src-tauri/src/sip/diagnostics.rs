@@ -228,7 +228,10 @@ mod tests {
                    Call-ID: abc123@10.0.0.1\r\n\
                    From: <sip:alice@example.com>;tag=xyz\r\n\
                    \r\n";
-        assert_eq!(extract_sip_call_id(msg), Some("abc123@10.0.0.1".to_string()));
+        assert_eq!(
+            extract_sip_call_id(msg),
+            Some("abc123@10.0.0.1".to_string())
+        );
     }
 
     #[test]
@@ -236,7 +239,10 @@ mod tests {
         let msg = "SIP/2.0 200 OK\r\n\
                    i: compact-call-id@host\r\n\
                    \r\n";
-        assert_eq!(extract_sip_call_id(msg), Some("compact-call-id@host".to_string()));
+        assert_eq!(
+            extract_sip_call_id(msg),
+            Some("compact-call-id@host".to_string())
+        );
     }
 
     #[test]
@@ -252,7 +258,10 @@ mod tests {
         let msg = "REGISTER sip:example.com SIP/2.0\r\n\
                    call-id: lowercase-id@host\r\n\
                    \r\n";
-        assert_eq!(extract_sip_call_id(msg), Some("lowercase-id@host".to_string()));
+        assert_eq!(
+            extract_sip_call_id(msg),
+            Some("lowercase-id@host".to_string())
+        );
     }
 
     #[test]

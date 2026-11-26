@@ -140,7 +140,7 @@ export function Messages() {
 
   const row = (c: Conversation) => {
     const unread = isUnread(c, readAt[`${mailbox.accountId}|${inbox?.did_id}|${c.remote_number}`], entry?.baseline ?? "");
-    const label = personLabel(c.remote_number, contacts);
+    const label = personLabel(c.remote_number, contacts, defaultCountry);
     return (
       <ListItemButton key={c.remote_number} onClick={() => pickNumber(c.remote_number)} sx={{ borderRadius: "16px", mb: 0.5, py: 1 }}>
         <ListItemAvatar>
@@ -200,7 +200,7 @@ export function Messages() {
               <Chip
                 role="tab"
                 aria-selected={i.did_id === inbox?.did_id}
-                label={i.enabled ? formatNumber(i.number) : t("messages.numberOff", { number: formatNumber(i.number) })}
+                label={i.enabled ? formatNumber(i.number, defaultCountry) : t("messages.numberOff", { number: formatNumber(i.number, defaultCountry) })}
                 color={i.did_id === inbox?.did_id ? "primary" : "default"}
                 variant={i.did_id === inbox?.did_id ? "filled" : "outlined"}
                 onClick={() => pickInbox(i.did_id)}
@@ -211,7 +211,7 @@ export function Messages() {
       )}
       {inboxes.length === 1 && inbox && (
         <Typography variant="caption" sx={{ px: 2.5, pb: 1, color: "text.secondary" }}>
-          {t("messages.from")} {formatNumber(inbox.number)}
+          {t("messages.from")} {formatNumber(inbox.number, defaultCountry)}
         </Typography>
       )}
 

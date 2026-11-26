@@ -103,6 +103,9 @@ export function StatusBar() {
               px: 1,
               py: 0.5,
               mx: -1,
+              minWidth: 0,
+              overflow: "hidden",
+              whiteSpace: "nowrap",
               borderRadius: "8px",
               WebkitAppRegion: "no-drag",
               "&:hover": {
@@ -167,11 +170,11 @@ export function StatusBar() {
           </Menu>
         </>
       ) : (
-        <Box sx={{ fontSize: "0.8rem", color: "text.secondary" }}>
+        <Box sx={{ fontSize: "0.8rem", color: "text.secondary", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {activeAccount ? activeAccount.displayName : t("status.noAccount")}
         </Box>
       )}
-      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
+      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexShrink: 0, ml: 1 }}>
         {vmButton.visible && (
           <Tooltip
             title={
@@ -232,9 +235,16 @@ export function StatusBar() {
             role="button"
             aria-haspopup="dialog"
             onClick={(e) => setPanelAnchor(e.currentTarget)}
+            aria-label={t(stateLabelsKeys[registrationState])}
             sx={{
               height: 24,
               fontSize: "0.7rem",
+              // Narrow window: the status dot alone (the label stays in the tooltip and aria-label).
+              "@media (max-width: 480px)": {
+                "& .MuiChip-label": { display: "none" },
+                "& .MuiChip-icon": { mx: 0.5 },
+                width: 28,
+              },
               borderColor: alpha(color, 0.3),
               color: "text.secondary",
               WebkitAppRegion: "no-drag",

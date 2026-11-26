@@ -212,8 +212,12 @@ impl Harness {
     }
 
     async fn call_tool(&self, id: u64, name: &str, arguments: Value) -> Value {
-        self.rpc(id, "tools/call", json!({ "name": name, "arguments": arguments }))
-            .await
+        self.rpc(
+            id,
+            "tools/call",
+            json!({ "name": name, "arguments": arguments }),
+        )
+        .await
     }
 
     async fn stop(mut self) {
@@ -239,7 +243,11 @@ fn structured(reply: &Value) -> &Value {
         reply["error"]
     );
     let result = &reply["result"];
-    assert_ne!(result["isError"], json!(true), "tool reported an error: {result}");
+    assert_ne!(
+        result["isError"],
+        json!(true),
+        "tool reported an error: {result}"
+    );
     &result["structuredContent"]
 }
 
@@ -350,7 +358,9 @@ async fn sip_trace_is_redacted_filtered_and_limited() {
     entry.direction = MessageDirection::Sent;
     entry.call_id = Some("c1".into());
     // Push through the same store the tool reads.
-    h.manager.log_app_event("acct-2", "other account", "x").await;
+    h.manager
+        .log_app_event("acct-2", "other account", "x")
+        .await;
     push_raw(&h.manager, entry).await;
 
     let reply = h.call_tool(1, "get_sip_trace", json!({})).await;
@@ -426,7 +436,11 @@ async fn explain_last_failure_reads_the_trace() {
     assert!(failure["hints"].as_array().unwrap().len() >= 6);
 
     let none = h
-        .call_tool(2, "explain_last_failure", json!({ "account_id": "someone-else" }))
+        .call_tool(
+            2,
+            "explain_last_failure",
+            json!({ "account_id": "someone-else" }),
+        )
         .await;
     assert_eq!(structured(&none)["found"], json!(false));
 
@@ -486,7 +500,11 @@ async fn place_call_asks_the_user_and_returns_the_call_id() {
     });
 
     let reply = h
-        .call_tool(1, "place_call", json!({ "number": "100", "account_id": "acct-1" }))
+        .call_tool(
+            1,
+            "place_call",
+            json!({ "number": "100", "account_id": "acct-1" }),
+        )
         .await;
     answerer.await.unwrap();
     let placed = structured(&reply);
@@ -522,7 +540,9 @@ async fn denied_place_call_is_an_error_and_is_logged() {
         }
     });
 
-    let reply = h.call_tool(1, "place_call", json!({ "number": "100" })).await;
+    let reply = h
+        .call_tool(1, "place_call", json!({ "number": "100" }))
+        .await;
     assert!(reply["error"]["message"]
         .as_str()
         .unwrap()
@@ -786,7 +806,9 @@ async fn answer_call_refuses_a_call_that_is_not_ringing() {
     let h = Harness::start_with(Some(fake.clone())).await;
     h.settings.write().await.allow_call_control = true;
 
-    let reply = h.call_tool(1, "answer_call", json!({ "call_id": "c1" })).await;
+    let reply = h
+        .call_tool(1, "answer_call", json!({ "call_id": "c1" }))
+        .await;
     assert!(error_message(&reply).contains("not ringing"), "{reply}");
     assert!(requests(&h).is_empty());
     assert!(fake.done().is_empty());
@@ -809,7 +831,11 @@ async fn transfer_call_is_not_sent_when_the_user_denies() {
         )
         .await;
     assert!(error_message(&reply).contains("denied"), "{reply}");
-    assert!(fake.done().is_empty(), "transferred anyway: {:?}", fake.done());
+    assert!(
+        fake.done().is_empty(),
+        "transferred anyway: {:?}",
+        fake.done()
+    );
     let req = requests(&h)[0].clone();
     assert_eq!(req.kind, RequestKind::Transfer);
     assert_eq!(req.number, "sip:premium@toll.example");
@@ -827,12 +853,19 @@ async fn transfer_call_is_sent_once_the_user_allows() {
     let dialogs = answer_dialogs(&h, allow);
 
     let reply = h
-        .call_tool(1, "transfer_call", json!({ "call_id": "c1", "target": "300" }))
+        .call_tool(
+            1,
+            "transfer_call",
+            json!({ "call_id": "c1", "target": "300" }),
+        )
         .await;
     structured(&reply);
     // A bare number is completed with the account's domain, and the dialog
     // shows the full target that is sent.
-    assert_eq!(fake.done(), vec!["transfer c1 sip:300@pbx.example".to_string()]);
+    assert_eq!(
+        fake.done(),
+        vec!["transfer c1 sip:300@pbx.example".to_string()]
+    );
     assert_eq!(requests(&h)[0].number, "sip:300@pbx.example");
 
     dialogs.abort();
@@ -846,7 +879,9 @@ async fn send_dtmf_asks_once_per_call() {
     h.settings.write().await.allow_call_control = true;
     let dialogs = answer_dialogs(&h, allow);
 
-    let reply = h.call_tool(1, "send_dtmf", json!({ "digits": "1 2" })).await;
+    let reply = h
+        .call_tool(1, "send_dtmf", json!({ "digits": "1 2" }))
+        .await;
     structured(&reply);
     let reply = h.call_tool(2, "send_dtmf", json!({ "digits": "#" })).await;
     structured(&reply);
@@ -869,7 +904,9 @@ async fn send_dtmf_sends_nothing_when_the_user_denies_and_asks_again_next_time()
     let dialogs = answer_dialogs(&h, |_| Decision::denied("denied"));
 
     for id in 1..=2 {
-        let reply = h.call_tool(id, "send_dtmf", json!({ "digits": "1234" })).await;
+        let reply = h
+            .call_tool(id, "send_dtmf", json!({ "digits": "1234" }))
+            .await;
         assert!(error_message(&reply).contains("denied"), "{reply}");
     }
     assert!(fake.done().is_empty());
@@ -892,8 +929,13 @@ async fn send_dtmf_rejects_digits_the_media_layer_would_drop() {
         (4, "1,2", "not a DTMF digit"),
         (5, "   ", "must not be empty"),
     ] {
-        let reply = h.call_tool(id, "send_dtmf", json!({ "digits": digits })).await;
-        assert!(error_message(&reply).contains(expected), "{digits}: {reply}");
+        let reply = h
+            .call_tool(id, "send_dtmf", json!({ "digits": digits }))
+            .await;
+        assert!(
+            error_message(&reply).contains(expected),
+            "{digits}: {reply}"
+        );
     }
     // Refused before anyone was asked and before anything was sent.
     assert!(requests(&h).is_empty());
@@ -908,7 +950,10 @@ async fn hangup_and_hold_do_not_ask() {
     let h = Harness::start_with(Some(fake.clone())).await;
     h.settings.write().await.allow_call_control = true;
 
-    structured(&h.call_tool(1, "hold_call", json!({ "call_id": "c1", "held": true })).await);
+    structured(
+        &h.call_tool(1, "hold_call", json!({ "call_id": "c1", "held": true }))
+            .await,
+    );
     structured(&h.call_tool(2, "hangup_call", json!({})).await);
     assert_eq!(fake.done(), vec!["hold c1 true", "hangup c1"]);
     assert!(requests(&h).is_empty());

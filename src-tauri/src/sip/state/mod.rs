@@ -29,11 +29,11 @@ use super::presence::{BlfEntry, Subscription};
 use super::srv::{Failover, Target};
 use super::transport::{SipTransport, TransportType};
 
+pub use super::presence::EventType;
 pub use call::{CallFSM, CallFSMEvent, EndReason, InboundCallParams, Pending2xx};
-pub use registration::{RegistrationFSM, RegistrationState, RegistrationStatus};
 #[allow(unused_imports)]
 pub use registration::RegistrationTransitionResult;
-pub use super::presence::EventType;
+pub use registration::{RegistrationFSM, RegistrationState, RegistrationStatus};
 
 /// Per-account state for multi-account support
 ///

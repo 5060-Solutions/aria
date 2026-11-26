@@ -29,7 +29,8 @@ pub async fn handle_subscribe_response(
             let to_tag = extract_to_tag(text);
             // The server may shorten what we asked for; the refresh has to
             // follow its number, not ours.
-            let granted = extract_header(text, "Expires").and_then(|e| e.trim().parse::<u32>().ok());
+            let granted =
+                extract_header(text, "Expires").and_then(|e| e.trim().parse::<u32>().ok());
             let mut s = state.write().await;
             if let Some(account) = s.get_account_mut(account_id) {
                 if let Some(sub) = account
@@ -51,7 +52,8 @@ pub async fn handle_subscribe_response(
                         sub.expires = granted;
                     }
                     sub.expires_at = Some(
-                        std::time::Instant::now() + std::time::Duration::from_secs(u64::from(sub.expires)),
+                        std::time::Instant::now()
+                            + std::time::Duration::from_secs(u64::from(sub.expires)),
                     );
                 }
             }
@@ -94,8 +96,18 @@ pub async fn handle_subscribe_response(
                 // the server-IP fallback it needed. SUBSCRIBE used to ignore
                 // the fallback, so on the servers that need it every
                 // subscription looped on 401 until the address was banned.
-                let realm = account.config.auth_realm.clone().or_else(|| account.realm_fallback.clone());
-                (account.config.clone(), local_addr, server_addr, transport, realm)
+                let realm = account
+                    .config
+                    .auth_realm
+                    .clone()
+                    .or_else(|| account.realm_fallback.clone());
+                (
+                    account.config.clone(),
+                    local_addr,
+                    server_addr,
+                    transport,
+                    realm,
+                )
             };
 
             let sub_info = {
@@ -118,7 +130,9 @@ pub async fn handle_subscribe_response(
                         sub.target_uri,
                         sub.auth_attempts
                     );
-                    account.subscriptions.retain(|s| s.call_id != call_id_header);
+                    account
+                        .subscriptions
+                        .retain(|s| s.call_id != call_id_header);
                     return;
                 }
                 sub.auth_attempts += 1;
@@ -166,8 +180,15 @@ pub async fn handle_subscribe_response(
                 Some(&auth_header),
             );
 
-            if let Err(e) =
-                crate::sip::send_subscribe(state, account_id, &sub_call_id, &transport, server_addr, msg).await
+            if let Err(e) = crate::sip::send_subscribe(
+                state,
+                account_id,
+                &sub_call_id,
+                &transport,
+                server_addr,
+                msg,
+            )
+            .await
             {
                 log::error!("Failed to send authenticated SUBSCRIBE: {}", e);
             }
@@ -180,7 +201,11 @@ pub async fn handle_subscribe_response(
             log::info!("SUBSCRIBE answered 481; subscribing afresh");
             let mut s = state.write().await;
             if let Some(account) = s.get_account_mut(account_id) {
-                if let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == call_id_header) {
+                if let Some(sub) = account
+                    .subscriptions
+                    .iter_mut()
+                    .find(|s| s.call_id == call_id_header)
+                {
                     if sub.expires != 0 {
                         *sub = sub.renewed();
                     }
@@ -190,7 +215,8 @@ pub async fn handle_subscribe_response(
         423 => {
             // Interval Too Brief: ask again for at least Min-Expires
             // (RFC 6665 §4.1.2.1), in the same dialog if there is one.
-            let min = extract_header(text, "Min-Expires").and_then(|m| m.trim().parse::<u32>().ok());
+            let min =
+                extract_header(text, "Min-Expires").and_then(|m| m.trim().parse::<u32>().ok());
             retry_with_min_expires(state, account_id, &call_id_header, min).await;
         }
         489 => {
@@ -198,7 +224,9 @@ pub async fn handle_subscribe_response(
             let mut s = state.write().await;
             if let Some(account) = s.get_account_mut(account_id) {
                 crate::sip::mwi::note_subscribe_failure(account, &call_id_header);
-                account.subscriptions.retain(|s| s.call_id != call_id_header);
+                account
+                    .subscriptions
+                    .retain(|s| s.call_id != call_id_header);
             }
         }
         _ if status >= 400 => {
@@ -211,7 +239,9 @@ pub async fn handle_subscribe_response(
                 if refuses_subscription(status) {
                     crate::sip::mwi::note_subscribe_failure(account, &call_id_header);
                 }
-                account.subscriptions.retain(|s| s.call_id != call_id_header);
+                account
+                    .subscriptions
+                    .retain(|s| s.call_id != call_id_header);
             }
         }
         _ => {
@@ -238,17 +268,31 @@ async fn retry_with_min_expires(
 ) {
     let send = {
         let mut s = state.write().await;
-        let Some(account) = s.get_account_mut(account_id) else { return };
-        let (Some(local_addr), Some(server_addr), Some(transport)) =
-            (account.local_addr, account.server_addr, account.transport.clone())
-        else {
+        let Some(account) = s.get_account_mut(account_id) else {
+            return;
+        };
+        let (Some(local_addr), Some(server_addr), Some(transport)) = (
+            account.local_addr,
+            account.server_addr,
+            account.transport.clone(),
+        ) else {
             return;
         };
         let config = account.config.clone();
-        let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == sub_call_id) else { return };
+        let Some(sub) = account
+            .subscriptions
+            .iter_mut()
+            .find(|s| s.call_id == sub_call_id)
+        else {
+            return;
+        };
         match min {
             Some(min) if sub.expires != 0 && min > sub.expires => {
-                log::info!("SUBSCRIBE for {} too brief; asking for {} s", sub.target_uri, min);
+                log::info!(
+                    "SUBSCRIBE for {} too brief; asking for {} s",
+                    sub.target_uri,
+                    min
+                );
                 sub.expires = min;
                 sub.cseq += 1;
                 let msg = build_subscribe(
@@ -266,14 +310,20 @@ async fn retry_with_min_expires(
                 Some((msg, transport, server_addr))
             }
             _ => {
-                log::warn!("SUBSCRIBE for {} answered 423 with no usable Min-Expires; dropping it", sub.target_uri);
+                log::warn!(
+                    "SUBSCRIBE for {} answered 423 with no usable Min-Expires; dropping it",
+                    sub.target_uri
+                );
                 account.subscriptions.retain(|s| s.call_id != sub_call_id);
                 None
             }
         }
     };
     if let Some((msg, transport, server_addr)) = send {
-        if let Err(e) = crate::sip::send_subscribe(state, account_id, sub_call_id, &transport, server_addr, msg).await {
+        if let Err(e) =
+            crate::sip::send_subscribe(state, account_id, sub_call_id, &transport, server_addr, msg)
+                .await
+        {
             log::error!("Failed to resend SUBSCRIBE after 423: {}", e);
         }
     }
@@ -374,7 +424,10 @@ pub async fn handle_notify_presence(
         account.blf_states.values().cloned().collect::<Vec<_>>()
     };
 
-    let _ = event_tx.send(SipEvent::PresenceChanged(account_id.to_string(), blf_entries));
+    let _ = event_tx.send(SipEvent::PresenceChanged(
+        account_id.to_string(),
+        blf_entries,
+    ));
 
     if sub_state_val == "terminated" {
         // RFC 6665 §4.1.3: timeout, deactivated, probation and giveup mean
@@ -383,10 +436,11 @@ pub async fn handle_notify_presence(
         // refresh opened a new subscription instead of extending the old one
         // (see build_subscribe), the original timed out ten minutes in and
         // took the BLF with it.
-        let reason = sub_state_hdr
-            .split(';')
-            .skip(1)
-            .find_map(|p| p.trim().strip_prefix("reason=").map(|r| r.trim().to_lowercase()));
+        let reason = sub_state_hdr.split(';').skip(1).find_map(|p| {
+            p.trim()
+                .strip_prefix("reason=")
+                .map(|r| r.trim().to_lowercase())
+        });
         let resubscribe = matches!(
             reason.as_deref(),
             Some("timeout") | Some("deactivated") | Some("probation") | Some("giveup")
@@ -394,12 +448,22 @@ pub async fn handle_notify_presence(
         let mut s = state.write().await;
         if let Some(account) = s.get_account_mut(account_id) {
             if resubscribe {
-                if let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == call_id_header) {
-                    log::info!("Subscription to {} terminated ({:?}); renewing", sub.target_uri, reason);
+                if let Some(sub) = account
+                    .subscriptions
+                    .iter_mut()
+                    .find(|s| s.call_id == call_id_header)
+                {
+                    log::info!(
+                        "Subscription to {} terminated ({:?}); renewing",
+                        sub.target_uri,
+                        reason
+                    );
                     *sub = sub.renewed();
                 }
             } else {
-                account.subscriptions.retain(|s| s.call_id != call_id_header);
+                account
+                    .subscriptions
+                    .retain(|s| s.call_id != call_id_header);
             }
         }
     }

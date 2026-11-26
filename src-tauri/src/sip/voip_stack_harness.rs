@@ -166,11 +166,19 @@ impl Default for PbxOptions {
 /// A manager with its background loops running, as the app has one: the
 /// subscription refresh tests depend on the refresh timer. Construction alone
 /// starts nothing (see `SipManager::start_background_tasks`).
-fn manager() -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
+fn manager() -> (
+    SipManager,
+    tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+) {
     manager_with(super::Timing::default())
 }
 
-fn manager_with(timing: super::Timing) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
+fn manager_with(
+    timing: super::Timing,
+) -> (
+    SipManager,
+    tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+) {
     let (mgr, rx) = SipManager::new_with_timing(timing);
     use_local_stun(&mgr);
     mgr.start_background_tasks();
@@ -183,7 +191,10 @@ fn manager_with(timing: super::Timing) -> (SipManager, tokio::sync::mpsc::Unboun
 /// time dialling (the emergency-call and failover tests).
 fn use_local_stun(mgr: &SipManager) {
     let addr = local_stun_server().to_string();
-    mgr.state.try_write().expect("a new manager is not shared yet").stun_servers = vec![addr].into();
+    mgr.state
+        .try_write()
+        .expect("a new manager is not shared yet")
+        .stun_servers = vec![addr].into();
 }
 
 /// A STUN server on loopback that answers every Binding Request with the
@@ -214,9 +225,17 @@ fn stun_binding_success(request: &[u8], from: SocketAddr) -> Option<Vec<u8>> {
     if request.len() < 20 || request[0..2] != [0x00, 0x01] || request[4..8] != MAGIC {
         return None;
     }
-    let SocketAddr::V4(from) = from else { return None };
+    let SocketAddr::V4(from) = from else {
+        return None;
+    };
     let port = from.port() ^ 0x2112;
-    let ip: Vec<u8> = from.ip().octets().iter().zip(MAGIC).map(|(b, m)| b ^ m).collect();
+    let ip: Vec<u8> = from
+        .ip()
+        .octets()
+        .iter()
+        .zip(MAGIC)
+        .map(|(b, m)| b ^ m)
+        .collect();
     let mut reply = vec![0x01, 0x01, 0x00, 12];
     reply.extend_from_slice(&request[4..20]); // magic cookie and transaction ID
     reply.extend_from_slice(&[0x00, 0x20, 0x00, 8, 0x00, 0x01]); // XOR-MAPPED-ADDRESS, IPv4
@@ -234,8 +253,14 @@ async fn harness_managers_ask_only_the_local_stun_stub() {
     assert_eq!(&*servers, &[local_stun_server().to_string()]);
 
     let started = tokio::time::Instant::now();
-    let (_port, public_ip, public_port) = super::media::allocate_port_with_stun(&servers).await.unwrap();
-    assert!(started.elapsed() < Duration::from_millis(500), "took {:?}", started.elapsed());
+    let (_port, public_ip, public_port) = super::media::allocate_port_with_stun(&servers)
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "took {:?}",
+        started.elapsed()
+    );
     assert_eq!(public_ip, Some("127.0.0.1".parse().unwrap()));
     assert!(public_port.is_some_and(|p| p != 0), "{public_port:?}");
 }
@@ -277,7 +302,9 @@ fn param(value: &str, name: &str) -> Option<String> {
     let rest = &value[at..];
     Some(match rest.strip_prefix('"') {
         Some(q) => q[..q.find('"')?].to_owned(),
-        None => rest[..rest.find(',').unwrap_or(rest.len())].trim().to_owned(),
+        None => rest[..rest.find(',').unwrap_or(rest.len())]
+            .trim()
+            .to_owned(),
     })
 }
 
@@ -290,7 +317,11 @@ fn respond(req: &str, code: u16, reason: &str, extra: &[String]) -> String {
         }
     }
     let to = header(req, "To").unwrap_or_default();
-    let to = if to.contains("tag=") || code == 100 { to.to_owned() } else { format!("{to};tag=pbx1") };
+    let to = if to.contains("tag=") || code == 100 {
+        to.to_owned()
+    } else {
+        format!("{to};tag=pbx1")
+    };
     out.push_str(&format!("To: {to}\r\n"));
     for h in extra {
         out.push_str(h);
@@ -315,7 +346,11 @@ async fn start_pbx_with(invite_reply: InviteReply) -> (SocketAddr, Arc<Mutex<See
 async fn start_pbx_with_socket(
     invite_reply: InviteReply,
 ) -> (SocketAddr, Arc<Mutex<Seen>>, Arc<UdpSocket>) {
-    start_pbx_with_options(PbxOptions { invite_reply, ..PbxOptions::default() }).await
+    start_pbx_with_options(PbxOptions {
+        invite_reply,
+        ..PbxOptions::default()
+    })
+    .await
 }
 
 async fn start_pbx_with_options(
@@ -338,7 +373,9 @@ async fn start_pbx_with_options(
         // The branches `drop_first_copy_of` has already lost a copy of.
         let mut lost_branches = std::collections::HashSet::new();
         loop {
-            let Ok((n, from)) = sock.recv_from(&mut buf).await else { return };
+            let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                return;
+            };
             let msg = String::from_utf8_lossy(&buf[..n]).into_owned();
             let method = msg.split_whitespace().next().unwrap_or("");
             if method == "SIP/2.0" {
@@ -354,7 +391,11 @@ async fn start_pbx_with_options(
                     let _ = sock.send_to(ack.as_bytes(), from).await;
                 }
                 let invite_final = header(&msg, "CSeq").is_some_and(|c| c.ends_with("INVITE"))
-                    && msg.split_whitespace().nth(1).and_then(|c| c.parse::<u16>().ok()).is_some_and(|c| c >= 300);
+                    && msg
+                        .split_whitespace()
+                        .nth(1)
+                        .and_then(|c| c.parse::<u16>().ok())
+                        .is_some_and(|c| c >= 300);
                 if invite_final && opts.ack_invite_final {
                     let ack = ack_for_200(&msg, addr, from);
                     let _ = sock.send_to(ack.as_bytes(), from).await;
@@ -368,9 +409,15 @@ async fn start_pbx_with_options(
             };
             let lose_once = {
                 let mut once = opts.drop_once.lock().unwrap();
-                once.iter().position(|k| k == key).map(|i| once.remove(i)).is_some()
+                once.iter()
+                    .position(|k| k == key)
+                    .map(|i| once.remove(i))
+                    .is_some()
             };
-            if lose_once || (opts.drop_first_copy_of.contains(&method) && lost_branches.insert(via_branch(&msg))) {
+            if lose_once
+                || (opts.drop_first_copy_of.contains(&method)
+                    && lost_branches.insert(via_branch(&msg)))
+            {
                 rec.lock().unwrap().dropped.push(msg.clone());
                 continue;
             }
@@ -379,7 +426,10 @@ async fn start_pbx_with_options(
             }
             if method == "REGISTER" {
                 let cseq = header(&msg, "CSeq").map(str::to_owned);
-                rec.lock().unwrap().register_contacts.push(header(&msg, "Contact").unwrap_or_default().to_owned());
+                rec.lock()
+                    .unwrap()
+                    .register_contacts
+                    .push(header(&msg, "Contact").unwrap_or_default().to_owned());
                 if opts.drop_next_register.swap(false, Ordering::SeqCst) {
                     dropping_cseq = cseq.clone();
                 }
@@ -408,7 +458,12 @@ async fn start_pbx_with_options(
                         let _ = sock.send_to(reply.as_bytes(), from).await;
                         continue;
                     }
-                    let ok = respond(&msg, 200, "OK", &[format!("Expires: {}", opts.subscribe_expires)]);
+                    let ok = respond(
+                        &msg,
+                        200,
+                        "OK",
+                        &[format!("Expires: {}", opts.subscribe_expires)],
+                    );
                     let _ = sock.send_to(ok.as_bytes(), from).await;
                     // Off unless asked for: the client's 200 to the NOTIFY
                     // would land in `responses`, which other tests count.
@@ -417,7 +472,11 @@ async fn start_pbx_with_options(
                     }
                     let body = "Messages-Waiting: yes\r\nVoice-Message: 2/1 (0/0)\r\n";
                     let to = header(&msg, "To").unwrap_or_default();
-                    let to = if to.contains("tag=") { to.to_owned() } else { format!("{to};tag=pbx1") };
+                    let to = if to.contains("tag=") {
+                        to.to_owned()
+                    } else {
+                        format!("{to};tag=pbx1")
+                    };
                     let notify = format!(
                         "NOTIFY sip:{USER}@{from} SIP/2.0\r\n\
                          Via: SIP/2.0/UDP {addr};branch=z9hG4bK-mwi-{n}\r\n\
@@ -447,11 +506,21 @@ async fn start_pbx_with_options(
                 }
                 "SUBSCRIBE" => {
                     rec.lock().unwrap().subscribes.push(msg.clone());
-                    respond(&msg, 200, "OK", &[format!("Expires: {}", opts.subscribe_expires)])
+                    respond(
+                        &msg,
+                        200,
+                        "OK",
+                        &[format!("Expires: {}", opts.subscribe_expires)],
+                    )
                 }
                 "REGISTER" if opts.register_503.is_some() => {
                     rec.lock().unwrap().register_unauth += 1;
-                    respond(&msg, 503, "Service Unavailable", &[format!("Retry-After: {}", opts.register_503.unwrap())])
+                    respond(
+                        &msg,
+                        503,
+                        "Service Unavailable",
+                        &[format!("Retry-After: {}", opts.register_503.unwrap())],
+                    )
                 }
                 "REGISTER" => match header(&msg, "Authorization") {
                     None => {
@@ -464,7 +533,10 @@ async fn start_pbx_with_options(
                     Some(auth) => {
                         let realm = param(auth, "realm").unwrap_or_default();
                         let ha1 = md5_hex(&format!("{USER}:{REALM}:{PASSWORD}"));
-                        let ha2 = md5_hex(&format!("REGISTER:{}", param(auth, "uri").unwrap_or_default()));
+                        let ha2 = md5_hex(&format!(
+                            "REGISTER:{}",
+                            param(auth, "uri").unwrap_or_default()
+                        ));
                         let expected = match param(auth, "qop") {
                             Some(qop) => md5_hex(&format!(
                                 "{ha1}:{}:{}:{}:{qop}:{ha2}",
@@ -472,7 +544,10 @@ async fn start_pbx_with_options(
                                 param(auth, "nc").unwrap_or_default(),
                                 param(auth, "cnonce").unwrap_or_default()
                             )),
-                            None => md5_hex(&format!("{ha1}:{}:{ha2}", param(auth, "nonce").unwrap_or_default())),
+                            None => md5_hex(&format!(
+                                "{ha1}:{}:{ha2}",
+                                param(auth, "nonce").unwrap_or_default()
+                            )),
                         };
                         let ok = param(auth, "username").as_deref() == Some(USER)
                             && param(auth, "response").as_deref() == Some(expected.as_str());
@@ -480,13 +555,26 @@ async fn start_pbx_with_options(
                             let mut s = rec.lock().unwrap();
                             s.register_realms.push(realm);
                             s.register_ok.push(ok);
-                            s.register_expires.push(header(&msg, "Expires").map(str::to_owned));
+                            s.register_expires
+                                .push(header(&msg, "Expires").map(str::to_owned));
                         }
                         if ok {
                             rec.lock().unwrap().client = Some(from);
                             let contact = header(&msg, "Contact").unwrap_or_default().to_owned();
-                            let expires = if header(&msg, "Expires") == Some("0") { 0 } else { opts.register_expires };
-                            respond(&msg, 200, "OK", &[format!("Contact: {contact};expires={expires}"), format!("Expires: {expires}")])
+                            let expires = if header(&msg, "Expires") == Some("0") {
+                                0
+                            } else {
+                                opts.register_expires
+                            };
+                            respond(
+                                &msg,
+                                200,
+                                "OK",
+                                &[
+                                    format!("Contact: {contact};expires={expires}"),
+                                    format!("Expires: {expires}"),
+                                ],
+                            )
                         } else {
                             // voip_stack answers a bad digest with a fresh
                             // challenge, not a 403.
@@ -499,7 +587,9 @@ async fn start_pbx_with_options(
                 },
                 "INVITE" if invite_reply == InviteReply::AnswerTwiceThenHangUp => {
                     rec.lock().unwrap().invites.push(msg.clone());
-                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    let _ = sock
+                        .send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from)
+                        .await;
                     // No SDP in the answer, so no audio device is opened.
                     let ok = respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")]);
                     let bye = format!(
@@ -541,18 +631,24 @@ async fn start_pbx_with_options(
                         });
                         continue;
                     }
-                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    let _ = sock
+                        .send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from)
+                        .await;
                     respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")])
                 }
                 "INVITE" if invite_reply == InviteReply::AnswerOnCancel => {
                     rec.lock().unwrap().invites.push(msg.clone());
-                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    let _ = sock
+                        .send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from)
+                        .await;
                     respond(&msg, 180, "Ringing", &[])
                 }
                 "CANCEL" if invite_reply == InviteReply::AnswerOnCancel => {
                     let invite = rec.lock().unwrap().invites.last().cloned();
                     rec.lock().unwrap().cancels.push(msg.clone());
-                    let _ = sock.send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from).await;
+                    let _ = sock
+                        .send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from)
+                        .await;
                     // The callee answered at the same moment: the 200 for the
                     // INVITE goes out after the 200 for the CANCEL, and again
                     // as a retransmission before the ACK can have arrived.
@@ -568,9 +664,13 @@ async fn start_pbx_with_options(
                     continue;
                 }
                 "INVITE" if matches!(invite_reply, InviteReply::TryingThenLateAnswer(_)) => {
-                    let InviteReply::TryingThenLateAnswer(delay) = invite_reply else { unreachable!() };
+                    let InviteReply::TryingThenLateAnswer(delay) = invite_reply else {
+                        unreachable!()
+                    };
                     rec.lock().unwrap().invites.push(msg.clone());
-                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    let _ = sock
+                        .send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from)
+                        .await;
                     let ringing = respond(&msg, 180, "Ringing", &[]);
                     let ok = respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")]);
                     let sock = sock.clone();
@@ -584,7 +684,9 @@ async fn start_pbx_with_options(
                 }
                 "INVITE" if invite_reply == InviteReply::RingUntilCancelled => {
                     rec.lock().unwrap().invites.push(msg.clone());
-                    let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                    let _ = sock
+                        .send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from)
+                        .await;
                     respond(&msg, 180, "Ringing", &[])
                 }
                 "INVITE" if invite_reply == InviteReply::SilentUntilCancelled => {
@@ -592,21 +694,30 @@ async fn start_pbx_with_options(
                     continue;
                 }
                 "CANCEL"
-                    if matches!(invite_reply, InviteReply::RingUntilCancelled | InviteReply::SilentUntilCancelled) =>
+                    if matches!(
+                        invite_reply,
+                        InviteReply::RingUntilCancelled | InviteReply::SilentUntilCancelled
+                    ) =>
                 {
                     let invite = rec.lock().unwrap().invites.last().cloned();
                     rec.lock().unwrap().cancels.push(msg.clone());
-                    let _ = sock.send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from).await;
+                    let _ = sock
+                        .send_to(respond(&msg, 200, "OK", &[]).as_bytes(), from)
+                        .await;
                     match invite {
                         Some(invite) => respond(&invite, 487, "Request Terminated", &[]),
                         None => continue,
                     }
                 }
                 "INVITE" if matches!(invite_reply, InviteReply::DelayedChallenge(_)) => {
-                    let InviteReply::DelayedChallenge(delay) = invite_reply else { unreachable!() };
+                    let InviteReply::DelayedChallenge(delay) = invite_reply else {
+                        unreachable!()
+                    };
                     rec.lock().unwrap().invites.push(msg.clone());
                     if header(&msg, "Proxy-Authorization").is_some() {
-                        let _ = sock.send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from).await;
+                        let _ = sock
+                            .send_to(respond(&msg, 100, "Trying", &[]).as_bytes(), from)
+                            .await;
                         respond(&msg, 200, "OK", &[format!("Contact: <sip:11@{addr}>")])
                     } else {
                         let challenge = respond(&msg, 407, "Proxy Authentication Required", &[format!(
@@ -700,8 +811,16 @@ async fn a_wizard_saved_domain_realm_recovers_to_the_servers_realm() {
     let (mgr, _rx) = manager();
     let result = register(&mgr, account(pbx, Some("harness.lan"), PASSWORD)).await;
     let s = seen.lock().unwrap();
-    assert!(result.is_ok(), "did not register: {result:?}; realms tried {:?}", s.register_realms);
-    assert_eq!(s.register_realms, ["harness.lan", REALM], "override first, then the server's realm");
+    assert!(
+        result.is_ok(),
+        "did not register: {result:?}; realms tried {:?}",
+        s.register_realms
+    );
+    assert_eq!(
+        s.register_realms,
+        ["harness.lan", REALM],
+        "override first, then the server's realm"
+    );
     assert_eq!(s.register_ok, [false, true]);
 }
 
@@ -709,7 +828,9 @@ async fn a_wizard_saved_domain_realm_recovers_to_the_servers_realm() {
 async fn a_blank_realm_registers_on_the_first_attempt() {
     let (pbx, seen) = start_pbx().await;
     let (mgr, _rx) = manager();
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
     let s = seen.lock().unwrap();
     assert_eq!(s.register_realms, [REALM]);
     assert_eq!(s.register_ok, [true]);
@@ -725,7 +846,11 @@ async fn a_wrong_password_still_fails_and_does_not_loop() {
     assert!(result.is_err(), "a wrong password registered");
     let s = seen.lock().unwrap();
     assert!(s.register_ok.iter().all(|ok| !ok));
-    assert!(s.register_realms.len() <= 2, "retried {} times", s.register_realms.len());
+    assert!(
+        s.register_realms.len() <= 2,
+        "retried {} times",
+        s.register_realms.len()
+    );
 }
 
 /// The audio bug: the INVITE's SDP must name a real address. voip_stack reads
@@ -737,7 +862,9 @@ async fn a_wrong_password_still_fails_and_does_not_loop() {
 async fn an_invite_to_a_lan_pbx_advertises_the_local_address() {
     let (pbx, seen) = start_pbx().await;
     let (mgr, _rx) = manager();
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
     let _ = mgr.make_call("sip:11@harness.lan").await;
 
     let mut invite = None;
@@ -750,12 +877,24 @@ async fn an_invite_to_a_lan_pbx_advertises_the_local_address() {
     }
     let invite = invite.expect("the PBX received an INVITE");
     let body = invite.split("\r\n\r\n").nth(1).unwrap_or_default();
-    let c_line = body.lines().find(|l| l.starts_with("c=")).expect("an SDP c= line");
-    let o_line = body.lines().find(|l| l.starts_with("o=")).expect("an SDP o= line");
+    let c_line = body
+        .lines()
+        .find(|l| l.starts_with("c="))
+        .expect("an SDP c= line");
+    let o_line = body
+        .lines()
+        .find(|l| l.starts_with("o="))
+        .expect("an SDP o= line");
 
-    assert!(!c_line.contains("0.0.0.0"), "voip_stack would withhold audio: {c_line}");
+    assert!(
+        !c_line.contains("0.0.0.0"),
+        "voip_stack would withhold audio: {c_line}"
+    );
     assert!(!o_line.contains("0.0.0.0"), "{o_line}");
-    assert_eq!(c_line, "c=IN IP4 127.0.0.1", "a LAN PBX must get the local address");
+    assert_eq!(
+        c_line, "c=IN IP4 127.0.0.1",
+        "a LAN PBX must get the local address"
+    );
 }
 
 /// A retransmitted 200 OK must be acknowledged again and nothing more. Handling
@@ -768,8 +907,13 @@ async fn an_invite_to_a_lan_pbx_advertises_the_local_address() {
 async fn a_retransmitted_200_is_acked_but_not_answered_twice() {
     let (pbx, seen) = start_pbx_with(InviteReply::AnswerTwiceThenHangUp).await;
     let (mgr, mut rx) = manager();
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
+    let call_id = mgr
+        .make_call("sip:11@harness.lan")
+        .await
+        .unwrap_or_else(|e| panic!("call placed: {e}"));
 
     let mut states = Vec::new();
     let mut ended_direction = None;
@@ -790,15 +934,27 @@ async fn a_retransmitted_200_is_acked_but_not_answered_twice() {
     }
 
     let connected = states.iter().filter(|s| *s == "connected").count();
-    assert_eq!(connected, 1, "connected reported {connected} times: {states:?}");
+    assert_eq!(
+        connected, 1,
+        "connected reported {connected} times: {states:?}"
+    );
     assert_eq!(seen.lock().unwrap().acks, 2, "each 200 needs its own ACK");
     assert_eq!(ended_direction.as_deref(), Some("outbound"));
 }
 
 /// An INVITE from the PBX to the registered client, as an incoming call.
-fn incoming_invite(pbx: SocketAddr, client: SocketAddr, call_id: &str, cseq_method: &str) -> String {
+fn incoming_invite(
+    pbx: SocketAddr,
+    client: SocketAddr,
+    call_id: &str,
+    cseq_method: &str,
+) -> String {
     let sdp = "v=0\r\no=pbx 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0\r\n";
-    let (method, body) = if cseq_method == "CANCEL" { ("CANCEL", "") } else { ("INVITE", sdp) };
+    let (method, body) = if cseq_method == "CANCEL" {
+        ("CANCEL", "")
+    } else {
+        ("INVITE", sdp)
+    };
     format!(
         "{method} sip:{USER}@{client} SIP/2.0\r\n\
          Via: SIP/2.0/UDP {pbx};branch=z9hG4bKinv1\r\n\
@@ -816,7 +972,9 @@ fn incoming_invite(pbx: SocketAddr, client: SocketAddr, call_id: &str, cseq_meth
 /// The ACK a PBX sends for a client's 200 OK to its INVITE (RFC 3261
 /// §13.2.2.4): a transaction of its own, in the dialog the 200 set up.
 fn ack_for_200(ok: &str, pbx: SocketAddr, client: SocketAddr) -> String {
-    let cseq = header(ok, "CSeq").and_then(|c| c.split_whitespace().next()).unwrap_or("1");
+    let cseq = header(ok, "CSeq")
+        .and_then(|c| c.split_whitespace().next())
+        .unwrap_or("1");
     format!(
         "ACK sip:{USER}@{client} SIP/2.0\r\n\
          Via: SIP/2.0/UDP {pbx};branch=z9hG4bKack{cseq}\r\n\
@@ -835,7 +993,11 @@ fn ack_for_200(ok: &str, pbx: SocketAddr, client: SocketAddr) -> String {
 async fn registered_client(
     pbx: SocketAddr,
     seen: &Arc<Mutex<Seen>>,
-) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, SocketAddr) {
+) -> (
+    SipManager,
+    tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+    SocketAddr,
+) {
     registered_client_with(pbx, seen, super::Timing::default()).await
 }
 
@@ -843,9 +1005,15 @@ async fn registered_client_with(
     pbx: SocketAddr,
     seen: &Arc<Mutex<Seen>>,
     timing: super::Timing,
-) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, SocketAddr) {
+) -> (
+    SipManager,
+    tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+    SocketAddr,
+) {
     let (mgr, rx) = manager_with(timing);
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
     let client = seen.lock().unwrap().client.expect("client address");
     (mgr, rx, client)
 }
@@ -906,14 +1074,20 @@ async fn a_cancelled_incoming_call_stops_ringing_and_a_resent_invite_is_not_answ
         "a ringing call was answered: {invite_replies:?}"
     );
     assert!(
-        invite_replies.iter().filter(|l| l.contains(" 180 ")).count() >= 2,
+        invite_replies
+            .iter()
+            .filter(|l| l.contains(" 180 "))
+            .count()
+            >= 2,
         "the resent INVITE should get the 180 again: {invite_replies:?}"
     );
     assert!(
         invite_replies.iter().any(|l| l.contains(" 487 ")),
         "the cancelled INVITE needs a 487: {invite_replies:?}"
     );
-    assert!(status_lines(&seen, "CANCEL").iter().any(|l| l.contains(" 200 ")));
+    assert!(status_lines(&seen, "CANCEL")
+        .iter()
+        .any(|l| l.contains(" 200 ")));
 }
 
 /// Answer an incoming call from a PBX started with `opts`, on fast timers
@@ -937,7 +1111,10 @@ async fn answer_incoming(
 }
 
 fn count_200s(seen: &Arc<Mutex<Seen>>) -> usize {
-    status_lines(seen, "INVITE").iter().filter(|l| l.contains(" 200 ")).count()
+    status_lines(seen, "INVITE")
+        .iter()
+        .filter(|l| l.contains(" 200 "))
+        .count()
 }
 
 /// #69: the 200 OK to an incoming INVITE is lost on the wire. The caller has
@@ -947,28 +1124,53 @@ fn count_200s(seen: &Arc<Mutex<Seen>>) -> usize {
 /// 200 went out once and the caller rang until it gave up.
 #[tokio::test]
 async fn a_lost_200_ok_is_retransmitted_until_acked_and_the_call_stays_up() {
-    let opts = PbxOptions { ack_invite_200: true, drop_first_invite_200: true, ..Default::default() };
+    let opts = PbxOptions {
+        ack_invite_200: true,
+        drop_first_invite_200: true,
+        ..Default::default()
+    };
     let (mgr, mut rx, seen, call_id) = answer_incoming(opts, "harness-lost-200@pbx").await;
 
     // The first retransmission is due at T1 (50 ms); the PBX ACKs it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while seen.lock().unwrap().responses.iter().all(|r| !r.starts_with("SIP/2.0 200")) {
-        assert!(tokio::time::Instant::now() < deadline, "the lost 200 OK was never sent again");
+    while seen
+        .lock()
+        .unwrap()
+        .responses
+        .iter()
+        .all(|r| !r.starts_with("SIP/2.0 200"))
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the lost 200 OK was never sent again"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let after_ack = count_200s(&seen);
 
     // Well past Timer H (3.2 s): no more 200s, no BYE, still connected.
     tokio::time::sleep(Duration::from_millis(4000)).await;
-    assert_eq!(count_200s(&seen), after_ack, "the 200 OK was retransmitted after its ACK");
+    assert_eq!(
+        count_200s(&seen),
+        after_ack,
+        "the 200 OK was retransmitted after its ACK"
+    );
     let methods = seen.lock().unwrap().methods.clone();
-    assert!(!methods.iter().any(|m| m == "BYE"), "an ACKed call was hung up: {methods:?}");
+    assert!(
+        !methods.iter().any(|m| m == "BYE"),
+        "an ACKed call was hung up: {methods:?}"
+    );
     while let Ok(event) = rx.try_recv() {
         if let super::SipEvent::CallStateChanged(e) = event {
             assert_ne!(e.state, "ended", "an ACKed call ended");
         }
     }
-    let established = mgr.state.read().await.find_call(&call_id).is_some_and(|(_, c)| c.is_established());
+    let established = mgr
+        .state
+        .read()
+        .await
+        .find_call(&call_id)
+        .is_some_and(|(_, c)| c.is_established());
     assert!(established, "the call should still be up");
 }
 
@@ -977,7 +1179,8 @@ async fn a_lost_200_ok_is_retransmitted_until_acked_and_the_call_stays_up() {
 /// than showing connected to a caller who never was.
 #[tokio::test]
 async fn an_unacknowledged_200_ok_is_retransmitted_then_ended_with_a_bye() {
-    let (_mgr, mut rx, seen, call_id) = answer_incoming(PbxOptions::default(), "harness-no-ack@pbx").await;
+    let (_mgr, mut rx, seen, call_id) =
+        answer_incoming(PbxOptions::default(), "harness-no-ack@pbx").await;
 
     let ended = wait_for_call_state(&mut rx, "ended").await;
     assert_eq!(ended, call_id);
@@ -987,9 +1190,15 @@ async fn an_unacknowledged_200_ok_is_retransmitted_then_ended_with_a_bye() {
     // original and about six retransmissions. Loopback is not lossy; more
     // than that would mean the interval is not doubling.
     let sent = count_200s(&seen);
-    assert!((5..=8).contains(&sent), "expected the 200 OK and ~6 retransmissions, got {sent}");
+    assert!(
+        (5..=8).contains(&sent),
+        "expected the 200 OK and ~6 retransmissions, got {sent}"
+    );
     let methods = seen.lock().unwrap().methods.clone();
-    assert!(methods.iter().any(|m| m == "BYE"), "the unacknowledged call needs a BYE: {methods:?}");
+    assert!(
+        methods.iter().any(|m| m == "BYE"),
+        "the unacknowledged call needs a BYE: {methods:?}"
+    );
 }
 
 /// Declining a ringing call is a final response to its INVITE, not a BYE: no
@@ -1012,7 +1221,10 @@ async fn declining_an_incoming_call_answers_486_and_sends_no_bye() {
         "declining should answer 486: {invite_replies:?}"
     );
     let methods = seen.lock().unwrap().methods.clone();
-    assert!(!methods.iter().any(|m| m == "BYE"), "sent a BYE for an unanswered call: {methods:?}");
+    assert!(
+        !methods.iter().any(|m| m == "BYE"),
+        "sent a BYE for an unanswered call: {methods:?}"
+    );
 }
 
 /// Collect call events for `call_id` until `until` or the deadline.
@@ -1040,7 +1252,9 @@ async fn call_states_until(
 }
 
 fn via_branch(msg: &str) -> String {
-    header(msg, "Via").and_then(|v| param(v, "branch")).unwrap_or_default()
+    header(msg, "Via")
+        .and_then(|v| param(v, "branch"))
+        .unwrap_or_default()
 }
 
 /// A PBX that challenges INVITEs retransmits its 407 until the ACK matches the
@@ -1052,15 +1266,26 @@ fn via_branch(msg: &str) -> String {
 async fn a_challenged_invite_is_acked_on_its_own_branch_and_resent_challenges_are_ignored() {
     let (pbx, seen) = start_pbx_with(InviteReply::ChallengeThenAnswer).await;
     let (mgr, mut rx) = manager();
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
+    let call_id = mgr
+        .make_call("sip:11@harness.lan")
+        .await
+        .unwrap_or_else(|e| panic!("call placed: {e}"));
 
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
-    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    assert!(
+        states.contains(&"connected".to_owned()),
+        "never connected: {states:?}"
+    );
 
     // Outlive the PBX's 407 retransmissions (3 × 300 ms); none may end the call.
     let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_millis(1500)).await;
-    assert!(!later.contains(&"ended".to_owned()), "a retransmitted 407 ended the call: {later:?}");
+    assert!(
+        !later.contains(&"ended".to_owned()),
+        "a retransmitted 407 ended the call: {later:?}"
+    );
 
     {
         let s = seen.lock().unwrap();
@@ -1081,13 +1306,20 @@ async fn a_challenged_invite_is_acked_on_its_own_branch_and_resent_challenges_ar
     tokio::time::sleep(Duration::from_millis(300)).await;
     let s = seen.lock().unwrap();
     let bye = s.byes.first().expect("an answered call ends with BYE");
-    assert_eq!(header(bye, "CSeq"), Some("3 BYE"), "CSeq continues after the auth retry");
+    assert_eq!(
+        header(bye, "CSeq"),
+        Some("3 BYE"),
+        "CSeq continues after the auth retry"
+    );
     assert!(s.cancels.is_empty(), "no CANCEL for an answered call");
 }
 
 /// The SDP line starting with `prefix` in a message's body.
 fn sdp_line<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
-    msg.split("\r\n\r\n").nth(1)?.lines().find(|l| l.starts_with(prefix))
+    msg.split("\r\n\r\n")
+        .nth(1)?
+        .lines()
+        .find(|l| l.starts_with(prefix))
 }
 
 /// The authenticated INVITE after a 407 must offer the same media address and
@@ -1103,24 +1335,45 @@ fn sdp_line<'a>(msg: &'a str, prefix: &str) -> Option<&'a str> {
 async fn an_authenticated_invite_offers_the_same_media_address_as_the_first() {
     let (pbx, seen) = start_pbx_with(InviteReply::ChallengeThenAnswer).await;
     let (mgr, mut rx) = manager();
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
+    let call_id = mgr
+        .make_call("sip:11@harness.lan")
+        .await
+        .unwrap_or_else(|e| panic!("call placed: {e}"));
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
-    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    assert!(
+        states.contains(&"connected".to_owned()),
+        "never connected: {states:?}"
+    );
 
     {
         let s = seen.lock().unwrap();
         assert_eq!(s.invites.len(), 2, "one INVITE, one authenticated retry");
         let (first, retry) = (&s.invites[0], &s.invites[1]);
-        assert!(header(retry, "Proxy-Authorization").is_some(), "the second INVITE carries credentials");
+        assert!(
+            header(retry, "Proxy-Authorization").is_some(),
+            "the second INVITE carries credentials"
+        );
         for prefix in ["c=", "m="] {
-            let a = sdp_line(first, prefix).unwrap_or_else(|| panic!("first INVITE has no {prefix} line"));
-            let b = sdp_line(retry, prefix).unwrap_or_else(|| panic!("retried INVITE has no {prefix} line"));
+            let a = sdp_line(first, prefix)
+                .unwrap_or_else(|| panic!("first INVITE has no {prefix} line"));
+            let b = sdp_line(retry, prefix)
+                .unwrap_or_else(|| panic!("retried INVITE has no {prefix} line"));
             assert_eq!(a, b, "the authenticated INVITE changed its {prefix} line");
         }
         // The origin's session id is fresh per offer; its address is not.
-        let origin_addr = |msg: &str| sdp_line(msg, "o=").and_then(|o| o.split_whitespace().last()).map(str::to_owned);
-        assert_eq!(origin_addr(first), origin_addr(retry), "the authenticated INVITE changed its o= address");
+        let origin_addr = |msg: &str| {
+            sdp_line(msg, "o=")
+                .and_then(|o| o.split_whitespace().last())
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            origin_addr(first),
+            origin_addr(retry),
+            "the authenticated INVITE changed its o= address"
+        );
         assert_eq!(sdp_line(first, "c="), Some("c=IN IP4 127.0.0.1"));
     }
 
@@ -1139,30 +1392,68 @@ async fn an_authenticated_invite_offers_the_same_media_address_as_the_first() {
 async fn a_200_that_crosses_our_cancel_is_acked_and_then_byed() {
     let (pbx, seen) = start_pbx_with(InviteReply::AnswerOnCancel).await;
     let (mgr, mut rx) = manager();
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
+    let call_id = mgr
+        .make_call("sip:11@harness.lan")
+        .await
+        .unwrap_or_else(|e| panic!("call placed: {e}"));
     call_states_until(&mut rx, &call_id, "ringing", Duration::from_secs(5)).await;
 
     mgr.hangup(&call_id).await.expect("cancelled");
     let states = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(5)).await;
     assert!(states.contains(&"ended".to_owned()), "{states:?}");
-    assert!(!states.contains(&"connected".to_owned()), "a cancelled call must not show connected: {states:?}");
+    assert!(
+        !states.contains(&"connected".to_owned()),
+        "a cancelled call must not show connected: {states:?}"
+    );
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let s = seen.lock().unwrap();
     let cancel = s.cancels.first().expect("a ringing call is cancelled");
-    assert_eq!(header(cancel, "CSeq"), Some("1 CANCEL"), "CANCEL carries the INVITE's CSeq");
-    assert_eq!(via_branch(cancel), via_branch(&s.invites[0]), "CANCEL carries the INVITE's branch");
+    assert_eq!(
+        header(cancel, "CSeq"),
+        Some("1 CANCEL"),
+        "CANCEL carries the INVITE's CSeq"
+    );
+    assert_eq!(
+        via_branch(cancel),
+        via_branch(&s.invites[0]),
+        "CANCEL carries the INVITE's branch"
+    );
     assert_eq!(s.acks, 2, "each copy of the crossed 200 is ACKed");
     for ack in &s.ack_msgs {
-        assert_eq!(header(ack, "CSeq"), Some("1 ACK"), "the ACK carries the INVITE's CSeq: {ack}");
+        assert_eq!(
+            header(ack, "CSeq"),
+            Some("1 ACK"),
+            "the ACK carries the INVITE's CSeq: {ack}"
+        );
     }
-    assert_eq!(s.byes.len(), 1, "one BYE per dialog, however often the 200 comes");
-    let bye = s.byes.first().expect("the confirmed dialog is ended with BYE");
-    assert!(bye.starts_with(&format!("BYE sip:11@{pbx} ")), "BYE goes to the 200's Contact: {bye}");
-    let invite_from_tag = header(&s.invites[0], "From").and_then(|f| param(f, "tag")).unwrap();
-    assert_eq!(header(bye, "From").and_then(|f| param(f, "tag")), Some(invite_from_tag));
-    assert_eq!(header(bye, "To").and_then(|t| param(t, "tag")), Some("pbx1".to_owned()));
+    assert_eq!(
+        s.byes.len(),
+        1,
+        "one BYE per dialog, however often the 200 comes"
+    );
+    let bye = s
+        .byes
+        .first()
+        .expect("the confirmed dialog is ended with BYE");
+    assert!(
+        bye.starts_with(&format!("BYE sip:11@{pbx} ")),
+        "BYE goes to the 200's Contact: {bye}"
+    );
+    let invite_from_tag = header(&s.invites[0], "From")
+        .and_then(|f| param(f, "tag"))
+        .unwrap();
+    assert_eq!(
+        header(bye, "From").and_then(|f| param(f, "tag")),
+        Some(invite_from_tag)
+    );
+    assert_eq!(
+        header(bye, "To").and_then(|t| param(t, "tag")),
+        Some("pbx1".to_owned())
+    );
 }
 
 /// Wait for a registration event in `state` for `account_id`.
@@ -1192,14 +1483,24 @@ async fn wait_for_registration(
 /// the client would count against the credentials).
 #[tokio::test]
 async fn a_registration_refreshes_at_half_the_granted_expires_without_duplicate_requests() {
-    let (pbx, seen, _) = start_pbx_with_options(PbxOptions { register_expires: 2, ..PbxOptions::default() }).await;
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions {
+        register_expires: 2,
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, _rx) = manager_with(fast_timing());
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
 
     // Granted 2 s → refresh every 1 s (the floor). Three should land in 3.5 s.
     tokio::time::sleep(Duration::from_millis(3500)).await;
     let s = seen.lock().unwrap();
-    assert!(s.register_ok.len() >= 3, "only {} registrations in 3.5 s", s.register_ok.len());
+    assert!(
+        s.register_ok.len() >= 3,
+        "only {} registrations in 3.5 s",
+        s.register_ok.len()
+    );
     assert!(s.register_ok.iter().all(|ok| *ok), "{:?}", s.register_ok);
     assert_eq!(
         s.register_unauth,
@@ -1217,7 +1518,10 @@ async fn a_registration_refreshes_at_half_the_granted_expires_without_duplicate_
 /// worked — the refresh timer runs on the new transport.
 #[tokio::test]
 async fn a_lost_refresh_reconnects_and_keeps_refreshing_afterwards() {
-    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let opts = PbxOptions {
+        register_expires: 2,
+        ..PbxOptions::default()
+    };
     let drop_next = opts.drop_next_register.clone();
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
     let (mgr, mut rx) = manager_with(fast_timing());
@@ -1231,11 +1535,23 @@ async fn a_lost_refresh_reconnects_and_keeps_refreshing_afterwards() {
     drop_next.store(true, Ordering::SeqCst);
 
     assert!(
-        wait_for_registration(&mut rx, &id, super::RegistrationState::Reconnecting, Duration::from_secs(4)).await,
+        wait_for_registration(
+            &mut rx,
+            &id,
+            super::RegistrationState::Reconnecting,
+            Duration::from_secs(4)
+        )
+        .await,
         "an unanswered refresh must lead to reconnecting"
     );
     assert!(
-        wait_for_registration(&mut rx, &id, super::RegistrationState::Registered, Duration::from_secs(4)).await,
+        wait_for_registration(
+            &mut rx,
+            &id,
+            super::RegistrationState::Registered,
+            Duration::from_secs(4)
+        )
+        .await,
         "the reconnect must register again"
     );
     let registrations_after_reconnect = seen.lock().unwrap().register_ok.len();
@@ -1266,19 +1582,35 @@ async fn unregistering_answers_the_challenge_and_clears_the_binding() {
     register(&mgr, cfg).await.expect("registered");
     while rx.try_recv().is_ok() {}
 
-    mgr.unregister_account(Some(&id)).await.expect("unregistered");
+    mgr.unregister_account(Some(&id))
+        .await
+        .expect("unregistered");
 
     {
         let s = seen.lock().unwrap();
-        assert_eq!(s.register_ok.len(), 2, "one registration, one authenticated unregistration");
-        assert_eq!(s.register_expires[1].as_deref(), Some("0"), "the unregister carries Expires: 0");
+        assert_eq!(
+            s.register_ok.len(),
+            2,
+            "one registration, one authenticated unregistration"
+        );
+        assert_eq!(
+            s.register_expires[1].as_deref(),
+            Some("0"),
+            "the unregister carries Expires: 0"
+        );
         assert!(s.register_ok[1], "the unregister was authenticated");
     }
 
     let (state, _) = mgr.registration_state_for_account(Some(&id)).await;
     assert_eq!(state, super::RegistrationState::Unregistered);
     assert!(
-        wait_for_registration(&mut rx, &id, super::RegistrationState::Unregistered, Duration::from_secs(1)).await,
+        wait_for_registration(
+            &mut rx,
+            &id,
+            super::RegistrationState::Unregistered,
+            Duration::from_secs(1)
+        )
+        .await,
         "the UI is told the account is unregistered"
     );
 }
@@ -1287,9 +1619,15 @@ async fn unregistering_answers_the_challenge_and_clears_the_binding() {
 /// accepted — with its tag — and when the server says so, not every 60 s.
 #[tokio::test]
 async fn a_subscription_refresh_stays_in_the_dialog_and_follows_the_granted_expires() {
-    let (pbx, seen, _) = start_pbx_with_options(PbxOptions { subscribe_expires: 2, ..PbxOptions::default() }).await;
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions {
+        subscribe_expires: 2,
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, _rx) = manager_with(fast_timing());
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
 
     mgr.subscribe_presence("sip:1002@harness.lan", super::state::EventType::Dialog)
         .await
@@ -1298,10 +1636,17 @@ async fn a_subscription_refresh_stays_in_the_dialog_and_follows_the_granted_expi
     // Granted 2 s → the refresh is due at 1 s; the timer looks every 200 ms.
     tokio::time::sleep(Duration::from_millis(1800)).await;
     let s = seen.lock().unwrap();
-    assert!(s.subscribes.len() >= 2, "no refresh within the granted lifetime: {}", s.subscribes.len());
+    assert!(
+        s.subscribes.len() >= 2,
+        "no refresh within the granted lifetime: {}",
+        s.subscribes.len()
+    );
     let first = &s.subscribes[0];
     let refresh = &s.subscribes[1];
-    assert!(header(first, "To").is_some_and(|t| !t.contains("tag=")), "the first SUBSCRIBE starts the dialog");
+    assert!(
+        header(first, "To").is_some_and(|t| !t.contains("tag=")),
+        "the first SUBSCRIBE starts the dialog"
+    );
     assert_eq!(
         header(refresh, "To").and_then(|t| param(t, "tag")),
         Some("pbx1".to_owned()),
@@ -1315,9 +1660,15 @@ async fn a_subscription_refresh_stays_in_the_dialog_and_follows_the_granted_expi
 /// server with fail2ban got the whole phone banned.
 #[tokio::test]
 async fn a_subscribe_that_is_always_challenged_is_abandoned() {
-    let (pbx, seen, _) = start_pbx_with_options(PbxOptions { reject_subscribe_auth: true, ..PbxOptions::default() }).await;
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions {
+        reject_subscribe_auth: true,
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, _rx) = manager_with(fast_timing());
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
 
     mgr.subscribe_presence("sip:1003@harness.lan", super::state::EventType::Dialog)
         .await
@@ -1338,8 +1689,12 @@ async fn a_subscribe_that_is_always_challenged_is_abandoned() {
 /// subscriptions, and the counts reach the frontend.
 #[tokio::test]
 async fn registering_subscribes_to_the_accounts_message_summary_once() {
-    let (pbx, seen, _) =
-        start_pbx_with_options(PbxOptions { register_expires: 2, mwi_notify: true, ..PbxOptions::default() }).await;
+    let (pbx, seen, _) = start_pbx_with_options(PbxOptions {
+        register_expires: 2,
+        mwi_notify: true,
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, mut rx) = manager_with(fast_timing());
     let cfg = account(pbx, None, PASSWORD);
     let id = cfg.id.clone();
@@ -1363,17 +1718,31 @@ async fn registering_subscribes_to_the_accounts_message_summary_once() {
     let s = seen.lock().unwrap();
     assert!(s.register_ok.len() >= 2, "no registration refresh happened");
     let first = s.mwi_subscribes.first().expect("an MWI SUBSCRIBE");
-    assert!(first.starts_with(&format!("SUBSCRIBE sip:{USER}@harness.lan ")), "{first}");
+    assert!(
+        first.starts_with(&format!("SUBSCRIBE sip:{USER}@harness.lan ")),
+        "{first}"
+    );
     assert!(header(first, "Accept") == Some("application/simple-message-summary"));
-    let dialogs: std::collections::HashSet<_> =
-        s.mwi_subscribes.iter().filter_map(|m| header(m, "Call-ID")).collect();
-    assert_eq!(dialogs.len(), 1, "refreshes must reuse the one subscription: {}", s.mwi_subscribes.len());
+    let dialogs: std::collections::HashSet<_> = s
+        .mwi_subscribes
+        .iter()
+        .filter_map(|m| header(m, "Call-ID"))
+        .collect();
+    assert_eq!(
+        dialogs.len(),
+        1,
+        "refreshes must reuse the one subscription: {}",
+        s.mwi_subscribes.len()
+    );
     assert!(s.subscribes.is_empty(), "no BLF subscription was asked for");
 }
 
 /// The account's message-summary subscriptions as (state, Call-ID), and
 /// whether MWI has been marked refused.
-async fn mwi_state(mgr: &SipManager, account_id: &str) -> (Vec<(super::presence::SubscriptionState, String)>, bool) {
+async fn mwi_state(
+    mgr: &SipManager,
+    account_id: &str,
+) -> (Vec<(super::presence::SubscriptionState, String)>, bool) {
     let s = mgr.state.read().await;
     let a = s.accounts.get(account_id).expect("the account");
     let subs = a
@@ -1385,10 +1754,19 @@ async fn mwi_state(mgr: &SipManager, account_id: &str) -> (Vec<(super::presence:
     (subs, a.mwi_refused)
 }
 
-async fn wait_for_mwi(mgr: &SipManager, account_id: &str, what: &str, cond: impl Fn(&[(super::presence::SubscriptionState, String)]) -> bool) {
+async fn wait_for_mwi(
+    mgr: &SipManager,
+    account_id: &str,
+    what: &str,
+    cond: impl Fn(&[(super::presence::SubscriptionState, String)]) -> bool,
+) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
     while !cond(&mwi_state(mgr, account_id).await.0) {
-        assert!(tokio::time::Instant::now() < deadline, "{what}: {:?}", mwi_state(mgr, account_id).await);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{what}: {:?}",
+            mwi_state(mgr, account_id).await
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -1403,7 +1781,10 @@ fn is_active(subs: &[(super::presence::SubscriptionState, String)]) -> bool {
 /// dialog, replaces it.
 #[tokio::test]
 async fn an_mwi_refresh_answered_481_subscribes_afresh() {
-    let opts = PbxOptions { subscribe_expires: 2, ..PbxOptions::default() };
+    let opts = PbxOptions {
+        subscribe_expires: 2,
+        ..PbxOptions::default()
+    };
     let replies = opts.mwi_replies.clone();
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
     let (mgr, _rx) = manager_with(fast_timing());
@@ -1414,13 +1795,23 @@ async fn an_mwi_refresh_answered_481_subscribes_afresh() {
 
     // The refresh (due at 1 s) gets a 481.
     replies.lock().unwrap().push((481, vec![]));
-    wait_for_mwi(&mgr, &cfg.id, "never subscribed again", |subs| is_active(subs) && subs[0].1 != first_dialog).await;
+    wait_for_mwi(&mgr, &cfg.id, "never subscribed again", |subs| {
+        is_active(subs) && subs[0].1 != first_dialog
+    })
+    .await;
 
     let (_, refused) = mwi_state(&mgr, &cfg.id).await;
     assert!(!refused, "a 481 is not a refusal");
     let s = seen.lock().unwrap();
-    let fresh = s.mwi_subscribes.iter().find(|m| header(m, "Call-ID") != Some(first_dialog.as_str())).expect("a new SUBSCRIBE");
-    assert!(header(fresh, "To").is_some_and(|t| !t.contains("tag=")), "a new dialog: {fresh}");
+    let fresh = s
+        .mwi_subscribes
+        .iter()
+        .find(|m| header(m, "Call-ID") != Some(first_dialog.as_str()))
+        .expect("a new SUBSCRIBE");
+    assert!(
+        header(fresh, "To").is_some_and(|t| !t.contains("tag=")),
+        "a new dialog: {fresh}"
+    );
 }
 
 /// A 423 says the Expires asked for is too short. The SUBSCRIBE is sent
@@ -1428,7 +1819,10 @@ async fn an_mwi_refresh_answered_481_subscribes_afresh() {
 #[tokio::test]
 async fn an_mwi_subscribe_answered_423_is_retried_with_min_expires() {
     let opts = PbxOptions::default();
-    opts.mwi_replies.lock().unwrap().push((423, vec!["Min-Expires: 7200".into()]));
+    opts.mwi_replies
+        .lock()
+        .unwrap()
+        .push((423, vec!["Min-Expires: 7200".into()]));
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
     let (mgr, _rx) = manager_with(fast_timing());
     let cfg = account(pbx, None, PASSWORD);
@@ -1441,13 +1835,19 @@ async fn an_mwi_subscribe_answered_423_is_retried_with_min_expires() {
     let retry = &s.mwi_subscribes[1];
     assert_eq!(header(retry, "Expires"), Some("7200"), "{retry}");
     assert_eq!(header(retry, "CSeq"), Some("2 SUBSCRIBE"));
-    assert_eq!(header(retry, "Call-ID"), header(&s.mwi_subscribes[0], "Call-ID"));
+    assert_eq!(
+        header(retry, "Call-ID"),
+        header(&s.mwi_subscribes[0], "Call-ID")
+    );
 }
 
 /// A refusal that stands (403) still turns MWI off for the session.
 #[tokio::test]
 async fn an_mwi_subscribe_answered_403_is_not_asked_again() {
-    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let opts = PbxOptions {
+        register_expires: 2,
+        ..PbxOptions::default()
+    };
     opts.mwi_replies.lock().unwrap().push((403, vec![]));
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
     let (mgr, _rx) = manager_with(fast_timing());
@@ -1457,7 +1857,10 @@ async fn an_mwi_subscribe_answered_403_is_not_asked_again() {
     tokio::time::sleep(Duration::from_millis(1800)).await;
     let (subs, refused) = mwi_state(&mgr, &cfg.id).await;
     assert!(refused && subs.is_empty(), "{subs:?}");
-    assert!(seen.lock().unwrap().register_ok.len() >= 2, "no registration refresh happened");
+    assert!(
+        seen.lock().unwrap().register_ok.len() >= 2,
+        "no registration refresh happened"
+    );
     assert_eq!(seen.lock().unwrap().mwi_subscribes.len(), 1);
 }
 
@@ -1466,10 +1869,16 @@ async fn an_mwi_subscribe_answered_403_is_not_asked_again() {
 /// datagram meant no voicemail count until the app reconnected.
 #[tokio::test]
 async fn a_lost_mwi_subscribe_is_retransmitted() {
-    let opts = PbxOptions { mwi_notify: true, drop_first_copy_of: vec!["SUBSCRIBE"], ..PbxOptions::default() };
+    let opts = PbxOptions {
+        mwi_notify: true,
+        drop_first_copy_of: vec!["SUBSCRIBE"],
+        ..PbxOptions::default()
+    };
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
     let (mgr, mut rx) = manager_with(fast_timing());
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     loop {
         let Ok(Some(event)) = tokio::time::timeout_at(deadline, rx.recv()).await else {
@@ -1481,7 +1890,11 @@ async fn a_lost_mwi_subscribe_is_retransmitted() {
     }
     let s = seen.lock().unwrap();
     assert_eq!(s.dropped.len(), 1);
-    assert_eq!(via_branch(&s.mwi_subscribes[0]), via_branch(&s.dropped[0]), "the copy is the same transaction");
+    assert_eq!(
+        via_branch(&s.mwi_subscribes[0]),
+        via_branch(&s.dropped[0]),
+        "the copy is the same transaction"
+    );
 }
 
 /// An MWI SUBSCRIBE that is never answered times out (Timer F) and is
@@ -1489,7 +1902,10 @@ async fn a_lost_mwi_subscribe_is_retransmitted() {
 /// pending, it counted as live and blocked every later attempt.
 #[tokio::test]
 async fn an_unanswered_mwi_subscribe_is_retried_at_the_next_registration() {
-    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let opts = PbxOptions {
+        register_expires: 2,
+        ..PbxOptions::default()
+    };
     let ignore = opts.ignore_mwi.clone();
     ignore.store(true, Ordering::SeqCst);
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
@@ -1500,15 +1916,25 @@ async fn an_unanswered_mwi_subscribe_is_retried_at_the_next_registration() {
     // Timer F is 400 ms here; the registration refreshes at 1 s.
     tokio::time::sleep(Duration::from_millis(650)).await;
     let (subs, refused) = mwi_state(&mgr, &cfg.id).await;
-    assert!(subs.is_empty() && !refused, "the unanswered subscription is still there: {subs:?}");
+    assert!(
+        subs.is_empty() && !refused,
+        "the unanswered subscription is still there: {subs:?}"
+    );
     let first_dialog = {
         let s = seen.lock().unwrap();
-        assert!(s.mwi_subscribes.len() >= 2, "never resent: {}", s.mwi_subscribes.len());
+        assert!(
+            s.mwi_subscribes.len() >= 2,
+            "never resent: {}",
+            s.mwi_subscribes.len()
+        );
         header(&s.mwi_subscribes[0], "Call-ID").unwrap().to_owned()
     };
 
     ignore.store(false, Ordering::SeqCst);
-    wait_for_mwi(&mgr, &cfg.id, "never subscribed again", |subs| is_active(subs) && subs[0].1 != first_dialog).await;
+    wait_for_mwi(&mgr, &cfg.id, "never subscribed again", |subs| {
+        is_active(subs) && subs[0].1 != first_dialog
+    })
+    .await;
 }
 
 /// When an outbound proxy is configured, requests must be routed to that proxy
@@ -1526,7 +1952,9 @@ async fn an_outbound_proxy_receives_register_and_invite_while_preserving_domain(
     cfg.registrar = None;
     cfg.outbound_proxy = Some(format!("127.0.0.1:{}", proxy.port()));
 
-    register(&mgr, cfg).await.expect("registered via outbound proxy");
+    register(&mgr, cfg)
+        .await
+        .expect("registered via outbound proxy");
 
     let s = seen.lock().unwrap();
     assert!(!s.register_ok.is_empty(), "proxy received the REGISTER");
@@ -1561,11 +1989,17 @@ async fn an_unresolvable_server_fails_the_resolve_step() {
     let (mgr, mut rx) = manager_with(fast_timing());
     let mut cfg = account("127.0.0.1:5060".parse().unwrap(), None, PASSWORD);
     cfg.registrar = Some("no-such-host.invalid".into());
-    let err = mgr.register(cfg.clone()).await.expect_err("cannot register");
+    let err = mgr
+        .register(cfg.clone())
+        .await
+        .expect_err("cannot register");
     assert!(err.starts_with("DNS"), "{err}");
     let report = mgr.connection_report(&cfg.id).await.expect("report exists");
     assert_eq!(report.step(StepKind::Resolve).status, StepStatus::Failed);
-    assert_eq!(report.step(StepKind::Resolve).failure, Some(FailureKind::Dns));
+    assert_eq!(
+        report.step(StepKind::Resolve).failure,
+        Some(FailureKind::Dns)
+    );
     assert_eq!(report.step(StepKind::Connect).status, StepStatus::Pending);
     assert_eq!(report.outcome, Outcome::Error);
     assert_eq!(report.error.as_deref(), Some(err.as_str()));
@@ -1589,23 +2023,42 @@ async fn a_literal_address_skips_resolution() {
     register(&mgr, cfg.clone()).await.expect("registered");
     let report = mgr.connection_report(&cfg.id).await.unwrap();
     assert_eq!(report.step(StepKind::Resolve).status, StepStatus::Skipped);
-    assert_eq!(report.step(StepKind::Resolve).detail.as_deref(), Some("literal address"));
+    assert_eq!(
+        report.step(StepKind::Resolve).detail.as_deref(),
+        Some("literal address")
+    );
 }
 
 #[tokio::test]
 async fn a_successful_registration_reports_every_step_ok() {
     use super::connection::{Outcome, StepKind, StepStatus};
-    let (proxy, _seen, _) =
-        start_pbx_with_options(PbxOptions { register_expires: 300, ..PbxOptions::default() }).await;
+    let (proxy, _seen, _) = start_pbx_with_options(PbxOptions {
+        register_expires: 300,
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, _rx) = manager_with(fast_timing());
     let cfg = account(proxy, None, PASSWORD);
     register(&mgr, cfg.clone()).await.expect("registered");
     let r = mgr.connection_report(&cfg.id).await.unwrap();
-    for k in [StepKind::Connect, StepKind::Register, StepKind::Authenticate, StepKind::Registered] {
+    for k in [
+        StepKind::Connect,
+        StepKind::Register,
+        StepKind::Authenticate,
+        StepKind::Registered,
+    ] {
         assert_eq!(r.step(k.clone()).status, StepStatus::Ok, "{k:?}");
     }
-    assert!(r.step(StepKind::Register).detail.as_deref().unwrap().starts_with("401 challenge in"));
-    assert_eq!(r.step(StepKind::Registered).detail.as_deref(), Some("expires 300 s"));
+    assert!(r
+        .step(StepKind::Register)
+        .detail
+        .as_deref()
+        .unwrap()
+        .starts_with("401 challenge in"));
+    assert_eq!(
+        r.step(StepKind::Registered).detail.as_deref(),
+        Some("expires 300 s")
+    );
     assert_eq!(r.outcome, Outcome::Registered);
     assert_eq!(r.registered.as_ref().unwrap().expires_in_s, 300);
 }
@@ -1620,8 +2073,16 @@ async fn a_wrong_password_fails_the_authenticate_step_as_auth() {
     let r = mgr.connection_report(&cfg.id).await.unwrap();
     assert_eq!(r.step(StepKind::Register).status, StepStatus::Ok);
     assert_eq!(r.step(StepKind::Authenticate).status, StepStatus::Failed);
-    assert_eq!(r.step(StepKind::Authenticate).failure, Some(FailureKind::Auth));
-    assert!(r.step(StepKind::Authenticate).detail.as_deref().unwrap().starts_with("401: Authentication failed"));
+    assert_eq!(
+        r.step(StepKind::Authenticate).failure,
+        Some(FailureKind::Auth)
+    );
+    assert!(r
+        .step(StepKind::Authenticate)
+        .detail
+        .as_deref()
+        .unwrap()
+        .starts_with("401: Authentication failed"));
     assert_eq!(r.error.as_deref(), Some(err.as_str()));
 }
 
@@ -1639,7 +2100,10 @@ async fn an_unanswered_register_reports_the_timeout_with_the_send_count() {
     assert_eq!(s.status, StepStatus::Failed);
     assert_eq!(s.failure, Some(FailureKind::Timeout));
     let d = s.detail.as_deref().unwrap();
-    assert!(d.starts_with("no reply in ") && d.contains("(sent ") && d.ends_with(" times)"), "{d}");
+    assert!(
+        d.starts_with("no reply in ") && d.contains("(sent ") && d.ends_with(" times)"),
+        "{d}"
+    );
 }
 
 /// Register, then make the PBX swallow the refresh; the backend goes to
@@ -1647,7 +2111,10 @@ async fn an_unanswered_register_reports_the_timeout_with_the_send_count() {
 #[tokio::test]
 async fn a_lost_refresh_restarts_the_report_as_reconnecting() {
     use super::connection::{Outcome, StepKind, StepStatus};
-    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let opts = PbxOptions {
+        register_expires: 2,
+        ..PbxOptions::default()
+    };
     let drop = opts.drop_next_register.clone();
     let (proxy, _seen, _) = start_pbx_with_options(opts).await;
     let (mgr, _rx) = manager_with(fast_timing());
@@ -1662,7 +2129,10 @@ async fn a_lost_refresh_restarts_the_report_as_reconnecting() {
             assert!(r.reconnect_attempt >= 1, "attempt {}", r.reconnect_attempt);
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "never went reconnecting");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never went reconnecting"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -1692,21 +2162,28 @@ async fn register_now_on_a_registered_account_refreshes_without_signing_out() {
     let before = seen.lock().unwrap().register_ok.len();
     {
         let mut s = mgr.state.write().await;
-        s.accounts.get_mut(&cfg.id).unwrap().calls.push(super::state::CallFSM::new_outbound(
-            &cfg.id,
-            "sip:200@harness.lan",
-            "call-1".into(),
-            "tag-1".into(),
-            40000,
-            "z9hG4bK-1".into(),
-            "sip:ghostbook@harness.lan".into(),
-        ));
+        s.accounts
+            .get_mut(&cfg.id)
+            .unwrap()
+            .calls
+            .push(super::state::CallFSM::new_outbound(
+                &cfg.id,
+                "sip:200@harness.lan",
+                "call-1".into(),
+                "tag-1".into(),
+                40000,
+                "z9hG4bK-1".into(),
+                "sip:ghostbook@harness.lan".into(),
+            ));
     }
     while rx.try_recv().is_ok() {}
     assert_eq!(mgr.register_now(cfg.clone()).await.unwrap(), "refreshing");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while seen.lock().unwrap().register_ok.len() == before {
-        assert!(tokio::time::Instant::now() < deadline, "no refresh REGISTER arrived");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no refresh REGISTER arrived"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     wait_registered(&mgr, &cfg.id).await;
@@ -1725,7 +2202,12 @@ async fn register_now_on_a_registered_account_refreshes_without_signing_out() {
         "no sign-out event"
     );
     assert!(
-        !seen.lock().unwrap().register_expires.iter().any(|e| e.as_deref() == Some("0")),
+        !seen
+            .lock()
+            .unwrap()
+            .register_expires
+            .iter()
+            .any(|e| e.as_deref() == Some("0")),
         "no Expires: 0 REGISTER"
     );
     let r = mgr.connection_report(&cfg.id).await.unwrap();
@@ -1744,7 +2226,10 @@ async fn register_now_on_a_failed_account_runs_the_full_path_again() {
     wait_registered(&mgr, &cfg.id).await;
     let report = mgr.connection_report(&cfg.id).await.unwrap();
     assert_eq!(report.outcome, super::connection::Outcome::Registered);
-    assert_eq!(report.step(super::connection::StepKind::Resolve).status, super::connection::StepStatus::Skipped);
+    assert_eq!(
+        report.step(super::connection::StepKind::Resolve).status,
+        super::connection::StepStatus::Skipped
+    );
 }
 
 /// A retry for an account that never got as far as an `AccountState` (DNS
@@ -1768,7 +2253,10 @@ async fn register_now_after_a_dns_failure_registers_with_the_corrected_host() {
 #[tokio::test]
 async fn a_reconnect_attempt_that_fails_keeps_the_report_reconnecting() {
     use super::connection::{Outcome, StepKind, StepStatus};
-    let opts = PbxOptions { register_expires: 2, ..PbxOptions::default() };
+    let opts = PbxOptions {
+        register_expires: 2,
+        ..PbxOptions::default()
+    };
     let drop = opts.drop_next_register.clone();
     let (proxy, _seen, _) = start_pbx_with_options(opts).await;
     let (mgr, _rx) = manager_with(fast_timing());
@@ -1784,12 +2272,19 @@ async fn a_reconnect_attempt_that_fails_keeps_the_report_reconnecting() {
         let r = mgr.connection_report(&cfg.id).await.unwrap();
         if r.step(StepKind::Resolve).status == StepStatus::Failed {
             assert_eq!(r.outcome, Outcome::Reconnecting, "{r:?}");
-            assert!(r.error.as_deref().unwrap_or_default().starts_with("DNS"), "{:?}", r.error);
+            assert!(
+                r.error.as_deref().unwrap_or_default().starts_with("DNS"),
+                "{:?}",
+                r.error
+            );
             let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
             assert_eq!(state, super::RegistrationState::Reconnecting);
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "reconnect never failed at DNS: {r:?}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "reconnect never failed at DNS: {r:?}"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -1818,7 +2313,12 @@ async fn register_now_that_fails_at_dns_marks_the_account_error() {
 
 /// A manager whose DNS says `harness.lan` is served by `targets`, each
 /// `(srv priority, port)` on loopback, in that priority order.
-fn manager_with_srv(targets: &[(u16, u16)]) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>) {
+fn manager_with_srv(
+    targets: &[(u16, u16)],
+) -> (
+    SipManager,
+    tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+) {
     use super::srv::fake_dns::FakeDns;
     use super::srv::SrvRecord;
     let mut dns = FakeDns::default();
@@ -1827,8 +2327,14 @@ fn manager_with_srv(targets: &[(u16, u16)]) -> (SipManager, tokio::sync::mpsc::U
         .enumerate()
         .map(|(i, (priority, port))| {
             let host = format!("s{i}.harness.lan");
-            dns.ips.insert(host.clone(), vec!["127.0.0.1".parse().unwrap()]);
-            SrvRecord { priority: *priority, weight: 1, port: *port, target: host }
+            dns.ips
+                .insert(host.clone(), vec!["127.0.0.1".parse().unwrap()]);
+            SrvRecord {
+                priority: *priority,
+                weight: 1,
+                port: *port,
+                target: host,
+            }
         })
         .collect();
     dns.srv.insert("_sip._udp.harness.lan".into(), records);
@@ -1852,9 +2358,12 @@ fn srv_account() -> AccountConfig {
 async fn a_silent_srv_target_fails_over_to_the_next_one() {
     let (pbx, seen) = start_pbx().await;
     let silent = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let (mgr, _rx) = manager_with_srv(&[(10, silent.local_addr().unwrap().port()), (20, pbx.port())]);
+    let (mgr, _rx) =
+        manager_with_srv(&[(10, silent.local_addr().unwrap().port()), (20, pbx.port())]);
     let cfg = srv_account();
-    register(&mgr, cfg.clone()).await.expect("registered on the second target");
+    register(&mgr, cfg.clone())
+        .await
+        .expect("registered on the second target");
     let mut buf = [0u8; 2048];
     let (n, _) = tokio::time::timeout(Duration::from_secs(1), silent.recv_from(&mut buf))
         .await
@@ -1865,27 +2374,43 @@ async fn a_silent_srv_target_fails_over_to_the_next_one() {
     assert_eq!(s.register_ok, [true]);
     // The Contact carries the RFC 5626 outbound parameters.
     let contact = s.register_contacts.first().cloned().unwrap_or_default();
-    assert!(contact.contains(";ob>") && contact.contains("+sip.instance=") && contact.contains("reg-id=1"), "{contact}");
+    assert!(
+        contact.contains(";ob>")
+            && contact.contains("+sip.instance=")
+            && contact.contains("reg-id=1"),
+        "{contact}"
+    );
 }
 
 /// A 503 is never final: the next target is tried at once, and the account
 /// ends up registered.
 #[tokio::test]
 async fn a_503_fails_over_to_the_next_srv_target() {
-    let (busy, busy_seen, _) =
-        start_pbx_with_options(PbxOptions { register_503: Some(30), ..PbxOptions::default() }).await;
+    let (busy, busy_seen, _) = start_pbx_with_options(PbxOptions {
+        register_503: Some(30),
+        ..PbxOptions::default()
+    })
+    .await;
     let (pbx, _seen) = start_pbx().await;
     let (mgr, _rx) = manager_with_srv(&[(10, busy.port()), (20, pbx.port())]);
-    register(&mgr, srv_account()).await.expect("registered on the second target");
-    assert!(busy_seen.lock().unwrap().register_unauth >= 1, "the first target was asked");
+    register(&mgr, srv_account())
+        .await
+        .expect("registered on the second target");
+    assert!(
+        busy_seen.lock().unwrap().register_unauth >= 1,
+        "the first target was asked"
+    );
 }
 
 /// With nothing else to try, a 503 is retried (not reported as a failure): the
 /// account is not left in `Error`.
 #[tokio::test]
 async fn a_lone_503_is_retried_not_reported_as_an_error() {
-    let (busy, _seen, _) =
-        start_pbx_with_options(PbxOptions { register_503: Some(1), ..PbxOptions::default() }).await;
+    let (busy, _seen, _) = start_pbx_with_options(PbxOptions {
+        register_503: Some(1),
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, _rx) = manager_with_srv(&[(10, busy.port())]);
     let cfg = srv_account();
     mgr.register(cfg.clone()).await.unwrap();
@@ -1910,14 +2435,20 @@ async fn a_call_survives_a_keepalive_failure_and_the_account_fails_over_without_
     let (mgr, mut rx) = manager_with(timing);
     let cfg = account(pbx, None, PASSWORD);
     register(&mgr, cfg.clone()).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    let call_id = mgr
+        .make_call("sip:11@harness.lan")
+        .await
+        .expect("call placed");
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
     assert!(states.contains(&"connected".to_owned()), "{states:?}");
 
     // Many missed keepalives later the call is still there, and the account
     // has not been taken down.
     let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_millis(1500)).await;
-    assert!(!later.contains(&"ended".to_owned()), "a keepalive failure ended the call: {later:?}");
+    assert!(
+        !later.contains(&"ended".to_owned()),
+        "a keepalive failure ended the call: {later:?}"
+    );
     let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
     assert_eq!(state, super::RegistrationState::Registered);
     mgr.hangup(&call_id).await.expect("hung up");
@@ -1929,7 +2460,10 @@ async fn a_call_survives_a_keepalive_failure_and_the_account_fails_over_without_
         if state != super::RegistrationState::Registered {
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "silence never triggered a failover");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "silence never triggered a failover"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -1938,21 +2472,42 @@ async fn a_call_survives_a_keepalive_failure_and_the_account_fails_over_without_
 /// emergency call is placed at once all the same; an ordinary call is refused.
 #[tokio::test]
 async fn an_emergency_call_dials_through_a_503_retry_after() {
-    let (busy, seen, _) =
-        start_pbx_with_options(PbxOptions { register_503: Some(600), ..PbxOptions::default() }).await;
+    let (busy, seen, _) = start_pbx_with_options(PbxOptions {
+        register_503: Some(600),
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, _rx) = manager_with_srv(&[(10, busy.port())]);
     mgr.register(srv_account()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    assert!(mgr.make_call("sip:1001@harness.lan").await.is_err(), "an ordinary call needs a registration");
+    assert!(
+        mgr.make_call("sip:1001@harness.lan").await.is_err(),
+        "an ordinary call needs a registration"
+    );
     let started = tokio::time::Instant::now();
-    let id = mgr.make_call("sip:911@harness.lan").await.expect("the emergency call is placed");
-    assert!(started.elapsed() < Duration::from_secs(2), "took {:?}", started.elapsed());
+    let id = mgr
+        .make_call("sip:911@harness.lan")
+        .await
+        .expect("the emergency call is placed");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "took {:?}",
+        started.elapsed()
+    );
     assert!(!id.is_empty());
     tokio::time::sleep(Duration::from_millis(300)).await;
     let s = seen.lock().unwrap();
-    assert!(s.invites[0].starts_with("INVITE sip:911@harness.lan"), "{:?}", s.invites);
-    assert!(s.methods.iter().any(|m| m == "INVITE"), "the INVITE reached the server: {:?}", s.methods);
+    assert!(
+        s.invites[0].starts_with("INVITE sip:911@harness.lan"),
+        "{:?}",
+        s.invites
+    );
+    assert!(
+        s.methods.iter().any(|m| m == "INVITE"),
+        "the INVITE reached the server: {:?}",
+        s.methods
+    );
 }
 
 /// A 911 call placed while the account is reconnecting stays up, on the same
@@ -1969,44 +2524,75 @@ async fn an_emergency_call_stays_up_while_the_reconnect_loop_fires() {
     let cfg = srv_account();
     mgr.register(cfg.clone()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let call_id = mgr.make_call("sip:911@harness.lan").await.expect("emergency call placed");
+    let call_id = mgr
+        .make_call("sip:911@harness.lan")
+        .await
+        .expect("emergency call placed");
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
     assert!(states.contains(&"connected".to_owned()), "{states:?}");
 
     let local_before = mgr.state.read().await.accounts[&cfg.id].local_addr;
     // Several reconnect rounds (backoff capped at 2 s here).
     let later = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(5)).await;
-    assert!(!later.contains(&"ended".to_owned()), "the call was ended: {later:?}");
+    assert!(
+        !later.contains(&"ended".to_owned()),
+        "the call was ended: {later:?}"
+    );
     {
         let s = mgr.state.read().await;
         let a = &s.accounts[&cfg.id];
-        assert_eq!(a.local_addr, local_before, "the transport was replaced under the call");
+        assert_eq!(
+            a.local_addr, local_before,
+            "the transport was replaced under the call"
+        );
         assert!(a.transport.is_some());
         assert!(a.calls.iter().any(|c| !c.is_ended()));
     }
     // Every INVITE came from the one socket.
-    assert_eq!(seen.lock().unwrap().invites.len(), 2, "INVITE and its authenticated retry only");
+    assert_eq!(
+        seen.lock().unwrap().invites.len(),
+        2,
+        "INVITE and its authenticated retry only"
+    );
 
     // Once the call ends the reconnect loop is free again.
     mgr.hangup(&call_id).await.expect("hung up");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(seen.lock().unwrap().byes.len() == 1, "BYE went to the same server");
+    assert!(
+        seen.lock().unwrap().byes.len() == 1,
+        "BYE went to the same server"
+    );
 }
 
 /// Place a call on fast timers (T1 = 50 ms, Timer B 3.2 s) against a PBX
 /// started with `opts`.
 async fn dial(
     opts: PbxOptions,
-) -> (SipManager, tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>, Arc<Mutex<Seen>>, String) {
+) -> (
+    SipManager,
+    tokio::sync::mpsc::UnboundedReceiver<super::SipEvent>,
+    Arc<Mutex<Seen>>,
+    String,
+) {
     let (pbx, seen, _) = start_pbx_with_options(opts).await;
     let (mgr, rx) = manager_with(fast_timing());
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.unwrap_or_else(|e| panic!("call placed: {e}"));
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
+    let call_id = mgr
+        .make_call("sip:11@harness.lan")
+        .await
+        .unwrap_or_else(|e| panic!("call placed: {e}"));
     (mgr, rx, seen, call_id)
 }
 
 /// Wait until `cond` holds for what the PBX saw, or fail with `what`.
-async fn wait_for_seen(seen: &Arc<Mutex<Seen>>, within: Duration, what: &str, cond: impl Fn(&Seen) -> bool) {
+async fn wait_for_seen(
+    seen: &Arc<Mutex<Seen>>,
+    within: Duration,
+    what: &str,
+    cond: impl Fn(&Seen) -> bool,
+) {
     let deadline = tokio::time::Instant::now() + within;
     while !cond(&seen.lock().unwrap()) {
         assert!(tokio::time::Instant::now() < deadline, "{what}");
@@ -2030,11 +2616,18 @@ async fn a_lost_invite_is_retransmitted_and_the_call_connects() {
     };
     let (mgr, mut rx, seen, call_id) = dial(opts).await;
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
-    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    assert!(
+        states.contains(&"connected".to_owned()),
+        "never connected: {states:?}"
+    );
     {
         let s = seen.lock().unwrap();
         assert_eq!(s.dropped.len(), 1);
-        assert_eq!(via_branch(&s.dropped[0]), via_branch(&s.invites[0]), "the copy is the same transaction");
+        assert_eq!(
+            via_branch(&s.dropped[0]),
+            via_branch(&s.invites[0]),
+            "the copy is the same transaction"
+        );
         assert_eq!(header(&s.invites[0], "CSeq"), Some("1 INVITE"));
     }
     mgr.hangup(&call_id).await.expect("hung up");
@@ -2050,12 +2643,19 @@ async fn a_lost_authenticated_invite_is_retransmitted_and_the_call_connects() {
     };
     let (mgr, mut rx, seen, call_id) = dial(opts).await;
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
-    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    assert!(
+        states.contains(&"connected".to_owned()),
+        "never connected: {states:?}"
+    );
     {
         let s = seen.lock().unwrap();
         assert_eq!(s.dropped.len(), 1);
         assert!(header(&s.dropped[0], "Proxy-Authorization").is_some());
-        let retry = s.invites.iter().find(|i| header(i, "Proxy-Authorization").is_some()).expect("retry arrived");
+        let retry = s
+            .invites
+            .iter()
+            .find(|i| header(i, "Proxy-Authorization").is_some())
+            .expect("retry arrived");
         assert_eq!(header(retry, "CSeq"), Some("2 INVITE"));
         assert_eq!(via_branch(retry), via_branch(&s.dropped[0]));
     }
@@ -2075,9 +2675,16 @@ async fn a_call_that_has_had_100_trying_survives_a_long_silence() {
     };
     let (mgr, mut rx, seen, call_id) = dial(opts).await;
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(8)).await;
-    assert!(states.contains(&"connected".to_owned()), "never connected: {states:?}");
+    assert!(
+        states.contains(&"connected".to_owned()),
+        "never connected: {states:?}"
+    );
     assert!(!states.contains(&"ended".to_owned()), "{states:?}");
-    assert_eq!(seen.lock().unwrap().invites.len(), 1, "no retransmission after the 100");
+    assert_eq!(
+        seen.lock().unwrap().invites.len(),
+        1,
+        "no retransmission after the 100"
+    );
     mgr.hangup(&call_id).await.expect("hung up");
 }
 
@@ -2085,12 +2692,22 @@ async fn a_call_that_has_had_100_trying_survives_a_long_silence() {
 /// and the call fails at 64*T1.
 #[tokio::test]
 async fn an_invite_with_no_response_fails_at_timer_b() {
-    let opts = PbxOptions { invite_reply: InviteReply::Silent, ..PbxOptions::default() };
+    let opts = PbxOptions {
+        invite_reply: InviteReply::Silent,
+        ..PbxOptions::default()
+    };
     let started = tokio::time::Instant::now();
     let (_mgr, mut rx, seen, call_id) = dial(opts).await;
     let states = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(8)).await;
-    assert!(states.contains(&"ended".to_owned()), "never gave up: {states:?}");
-    assert!(started.elapsed() >= Duration::from_millis(3200), "gave up early: {:?}", started.elapsed());
+    assert!(
+        states.contains(&"ended".to_owned()),
+        "never gave up: {states:?}"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(3200),
+        "gave up early: {:?}",
+        started.elapsed()
+    );
     // Sent at 0, 50, 150, 350, 750, 1550 and 3150 ms.
     // The last lands 50 ms before Timer B; a loaded machine may miss it.
     let sent = seen.lock().unwrap().invites.len();
@@ -2101,19 +2718,33 @@ async fn an_invite_with_no_response_fails_at_timer_b() {
 /// nothing more: answering it rang the callee for an abandoned call.
 #[tokio::test]
 async fn hanging_up_before_the_challenge_sends_no_authenticated_invite() {
-    let (pbx, seen) = start_pbx_with(InviteReply::DelayedChallenge(Duration::from_millis(300))).await;
+    let (pbx, seen) =
+        start_pbx_with(InviteReply::DelayedChallenge(Duration::from_millis(300))).await;
     let (mgr, mut rx) = manager();
-    register(&mgr, account(pbx, None, PASSWORD)).await.expect("registered");
-    let call_id = mgr.make_call("sip:11@harness.lan").await.expect("call placed");
+    register(&mgr, account(pbx, None, PASSWORD))
+        .await
+        .expect("registered");
+    let call_id = mgr
+        .make_call("sip:11@harness.lan")
+        .await
+        .expect("call placed");
     mgr.hangup(&call_id).await.expect("hung up");
     let states = call_states_until(&mut rx, &call_id, "ended", Duration::from_secs(2)).await;
     assert!(states.contains(&"ended".to_owned()), "{states:?}");
 
-    wait_for_seen(&seen, Duration::from_secs(2), "the late 407 was never ACKed", |s| s.acks >= 1).await;
+    wait_for_seen(
+        &seen,
+        Duration::from_secs(2),
+        "the late 407 was never ACKed",
+        |s| s.acks >= 1,
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let s = seen.lock().unwrap();
     assert!(
-        s.invites.iter().all(|i| header(i, "Proxy-Authorization").is_none()),
+        s.invites
+            .iter()
+            .all(|i| header(i, "Proxy-Authorization").is_none()),
         "an authenticated INVITE went out for a call already hung up"
     );
     assert_eq!(header(&s.ack_msgs[0], "CSeq"), Some("1 ACK"));
@@ -2135,7 +2766,13 @@ async fn a_lost_bye_is_retransmitted() {
 
     drop.lock().unwrap().push("BYE".into());
     mgr.hangup(&call_id).await.expect("hung up");
-    wait_for_seen(&seen, Duration::from_secs(2), "the lost BYE was never resent", |s| !s.byes.is_empty()).await;
+    wait_for_seen(
+        &seen,
+        Duration::from_secs(2),
+        "the lost BYE was never resent",
+        |s| !s.byes.is_empty(),
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let s = seen.lock().unwrap();
     assert_eq!(s.dropped.len(), 1);
@@ -2156,12 +2793,22 @@ async fn a_lost_cancel_is_retransmitted() {
     call_states_until(&mut rx, &call_id, "ringing", Duration::from_secs(5)).await;
     _mgr.hangup(&call_id).await.expect("cancelled");
 
-    wait_for_seen(&seen, Duration::from_secs(2), "the 487 was never ACKed", |s| s.acks >= 1).await;
+    wait_for_seen(
+        &seen,
+        Duration::from_secs(2),
+        "the 487 was never ACKed",
+        |s| s.acks >= 1,
+    )
+    .await;
     let s = seen.lock().unwrap();
     assert_eq!(s.dropped.len(), 1);
     assert_eq!(s.cancels.len(), 1);
     assert_eq!(header(&s.cancels[0], "CSeq"), Some("1 CANCEL"));
-    assert_eq!(header(&s.ack_msgs[0], "CSeq"), Some("1 ACK"), "the CANCEL must not move the ACK's CSeq");
+    assert_eq!(
+        header(&s.ack_msgs[0], "CSeq"),
+        Some("1 ACK"),
+        "the CANCEL must not move the ACK's CSeq"
+    );
     assert_eq!(via_branch(&s.ack_msgs[0]), via_branch(&s.invites[0]));
 }
 
@@ -2181,13 +2828,29 @@ async fn a_cancel_before_any_provisional_is_retransmitted_and_ends_the_call_once
     let (mgr, mut rx, seen, call_id) = dial(opts).await;
     mgr.hangup(&call_id).await.expect("cancelled");
 
-    wait_for_seen(&seen, Duration::from_secs(2), "the lost CANCEL was never resent", |s| !s.cancels.is_empty()).await;
-    wait_for_seen(&seen, Duration::from_secs(2), "the 487 was never ACKed", |s| s.acks >= 1).await;
+    wait_for_seen(
+        &seen,
+        Duration::from_secs(2),
+        "the lost CANCEL was never resent",
+        |s| !s.cancels.is_empty(),
+    )
+    .await;
+    wait_for_seen(
+        &seen,
+        Duration::from_secs(2),
+        "the 487 was never ACKed",
+        |s| s.acks >= 1,
+    )
+    .await;
     let invites_at_487 = seen.lock().unwrap().invites.len();
 
     // Past Timer B (64*T1 = 3.2 s): a second "ended" from it would show here.
     let states = call_states_until(&mut rx, &call_id, "never", Duration::from_secs(4)).await;
-    assert_eq!(states.iter().filter(|s| *s == "ended").count(), 1, "{states:?}");
+    assert_eq!(
+        states.iter().filter(|s| *s == "ended").count(),
+        1,
+        "{states:?}"
+    );
 
     let s = seen.lock().unwrap();
     assert_eq!(s.dropped.len(), 1);
@@ -2195,7 +2858,11 @@ async fn a_cancel_before_any_provisional_is_retransmitted_and_ends_the_call_once
     assert_eq!(via_branch(&s.cancels[0]), via_branch(&s.dropped[0]));
     assert_eq!(via_branch(&s.cancels[0]), via_branch(&s.invites[0]));
     assert_eq!(header(&s.ack_msgs[0], "CSeq"), Some("1 ACK"));
-    assert_eq!(s.invites.len(), invites_at_487, "the INVITE was resent after its 487");
+    assert_eq!(
+        s.invites.len(),
+        invites_at_487,
+        "the INVITE was resent after its 487"
+    );
 }
 
 /// S2: the REFER is lost. It is resent until answered, and the transfer is
@@ -2213,16 +2880,33 @@ async fn a_lost_refer_is_retransmitted() {
     assert!(states.contains(&"connected".to_owned()), "{states:?}");
 
     drop.lock().unwrap().push("REFER".into());
-    mgr.transfer_blind(&call_id, "sip:12@harness.lan").await.expect("transfer sent");
-    wait_for_seen(&seen, Duration::from_secs(2), "the lost REFER was never resent", |s| {
-        s.methods.iter().any(|m| m == "REFER")
-    })
+    mgr.transfer_blind(&call_id, "sip:12@harness.lan")
+        .await
+        .expect("transfer sent");
+    wait_for_seen(
+        &seen,
+        Duration::from_secs(2),
+        "the lost REFER was never resent",
+        |s| s.methods.iter().any(|m| m == "REFER"),
+    )
     .await;
     tokio::time::sleep(Duration::from_millis(600)).await;
-    assert_eq!(seen.lock().unwrap().methods.iter().filter(|m| *m == "REFER").count(), 1);
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .methods
+            .iter()
+            .filter(|m| *m == "REFER")
+            .count(),
+        1
+    );
     while let Ok(event) = rx.try_recv() {
         if let super::SipEvent::TransferProgress(t) = event {
-            assert!(t.status < 400, "an answered REFER was reported failed: {}", t.message);
+            assert!(
+                t.status < 400,
+                "an answered REFER was reported failed: {}",
+                t.message
+            );
         }
     }
     mgr.hangup(&call_id).await.expect("hung up");
@@ -2242,8 +2926,12 @@ async fn an_unanswered_refer_is_reported_as_a_failed_transfer() {
     let states = call_states_until(&mut rx, &call_id, "connected", Duration::from_secs(5)).await;
     assert!(states.contains(&"connected".to_owned()), "{states:?}");
 
-    drop.lock().unwrap().extend(std::iter::repeat_n("REFER".to_string(), 50));
-    mgr.transfer_blind(&call_id, "sip:12@harness.lan").await.expect("transfer sent");
+    drop.lock()
+        .unwrap()
+        .extend(std::iter::repeat_n("REFER".to_string(), 50));
+    mgr.transfer_blind(&call_id, "sip:12@harness.lan")
+        .await
+        .expect("transfer sent");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
         let event = tokio::time::timeout_at(deadline, rx.recv())
@@ -2281,18 +2969,29 @@ async fn a_lost_options_keepalive_does_not_fail_over() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     while tokio::time::Instant::now() < deadline {
         let (state, _) = mgr.registration_state_for_account(Some(&cfg.id)).await;
-        assert_eq!(state, super::RegistrationState::Registered, "a lost OPTIONS failed the server over");
+        assert_eq!(
+            state,
+            super::RegistrationState::Registered,
+            "a lost OPTIONS failed the server over"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let s = seen.lock().unwrap();
-    let lost = s.dropped.iter().filter(|m| m.starts_with("OPTIONS")).count();
+    let lost = s
+        .dropped
+        .iter()
+        .filter(|m| m.starts_with("OPTIONS"))
+        .count();
     let delivered = s.methods.iter().filter(|m| *m == "OPTIONS").count();
     assert!(lost >= 3, "only {lost} keepalives went out");
     assert!(delivered >= lost - 1, "{delivered} resent of {lost} lost");
 }
 
 fn count_finals(seen: &Arc<Mutex<Seen>>, code: &str) -> usize {
-    status_lines(seen, "INVITE").iter().filter(|l| l.contains(code)).count()
+    status_lines(seen, "INVITE")
+        .iter()
+        .filter(|l| l.contains(code))
+        .count()
 }
 
 /// S6: a decline is a final response, and over UDP it is ours to deliver:
@@ -2313,15 +3012,22 @@ async fn a_decline_is_retransmitted_until_acked() {
     assert!(sent >= 4, "the unacknowledged 486 was sent {sent} times");
 
     // ACKed: sent once.
-    let (pbx, seen, sock) =
-        start_pbx_with_options(PbxOptions { ack_invite_final: true, ..PbxOptions::default() }).await;
+    let (pbx, seen, sock) = start_pbx_with_options(PbxOptions {
+        ack_invite_final: true,
+        ..PbxOptions::default()
+    })
+    .await;
     let (mgr, mut rx, client) = registered_client_with(pbx, &seen, fast_timing()).await;
     let invite = incoming_invite(pbx, client, "harness-decline-acked@pbx", "INVITE");
     sock.send_to(invite.as_bytes(), client).await.unwrap();
     let call_id = wait_for_call_state(&mut rx, "incoming").await;
     mgr.hangup(&call_id).await.expect("declined");
     tokio::time::sleep(Duration::from_millis(600)).await;
-    assert_eq!(count_finals(&seen, " 486 "), 1, "the 486 was resent after its ACK");
+    assert_eq!(
+        count_finals(&seen, " 486 "),
+        1,
+        "the 486 was resent after its ACK"
+    );
 }
 
 /// S6: the caller resends its INVITE because our 486 was lost. The copy is
@@ -2340,7 +3046,11 @@ async fn a_retransmitted_invite_for_a_declined_call_gets_the_decline_again() {
 
     sock.send_to(invite.as_bytes(), client).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(count_finals(&seen, " 486 "), 2, "the resent INVITE should get the 486 again");
+    assert_eq!(
+        count_finals(&seen, " 486 "),
+        2,
+        "the resent INVITE should get the 486 again"
+    );
     let to_tags: Vec<_> = seen
         .lock()
         .unwrap()
@@ -2372,7 +3082,11 @@ async fn reregister_on_an_idle_account_signs_out_and_back_in() {
         expires.iter().any(|e| e.as_deref() == Some("0")),
         "an Expires: 0 REGISTER signs the old binding out: {expires:?}"
     );
-    assert_ne!(expires.last().and_then(|e| e.as_deref()), Some("0"), "and a fresh REGISTER follows: {expires:?}");
+    assert_ne!(
+        expires.last().and_then(|e| e.as_deref()),
+        Some("0"),
+        "and a fresh REGISTER follows: {expires:?}"
+    );
     let mut saw_unregistered = false;
     let mut registered_after = false;
     while let Ok(e) = rx.try_recv() {
@@ -2384,7 +3098,10 @@ async fn reregister_on_an_idle_account_signs_out_and_back_in() {
             }
         }
     }
-    assert!(saw_unregistered && registered_after, "the UI sees the sign-out and the new registration");
+    assert!(
+        saw_unregistered && registered_after,
+        "the UI sees the sign-out and the new registration"
+    );
 }
 
 /// With a call up, "Re-register" only refreshes: signing out would drop the
@@ -2397,27 +3114,42 @@ async fn reregister_during_a_call_only_refreshes() {
     register(&mgr, cfg.clone()).await.expect("registered");
     {
         let mut s = mgr.state.write().await;
-        s.accounts.get_mut(&cfg.id).unwrap().calls.push(super::state::CallFSM::new_outbound(
-            &cfg.id,
-            "sip:200@harness.lan",
-            "call-2".into(),
-            "tag-2".into(),
-            40000,
-            "z9hG4bK-2".into(),
-            "sip:ghostbook@harness.lan".into(),
-        ));
+        s.accounts
+            .get_mut(&cfg.id)
+            .unwrap()
+            .calls
+            .push(super::state::CallFSM::new_outbound(
+                &cfg.id,
+                "sip:200@harness.lan",
+                "call-2".into(),
+                "tag-2".into(),
+                40000,
+                "z9hG4bK-2".into(),
+                "sip:ghostbook@harness.lan".into(),
+            ));
     }
     while rx.try_recv().is_ok() {}
     let before = seen.lock().unwrap().register_ok.len();
     assert_eq!(mgr.reregister(cfg.clone()).await.unwrap(), "refreshing");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while seen.lock().unwrap().register_ok.len() == before {
-        assert!(tokio::time::Instant::now() < deadline, "no refresh REGISTER arrived");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no refresh REGISTER arrived"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     wait_registered(&mgr, &cfg.id).await;
     let s = mgr.state.read().await;
     let a = s.accounts.get(&cfg.id).unwrap();
     assert_eq!(a.calls.len(), 1, "the call survived");
-    assert!(!seen.lock().unwrap().register_expires.iter().any(|e| e.as_deref() == Some("0")), "no sign-out");
+    assert!(
+        !seen
+            .lock()
+            .unwrap()
+            .register_expires
+            .iter()
+            .any(|e| e.as_deref() == Some("0")),
+        "no sign-out"
+    );
 }

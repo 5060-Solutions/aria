@@ -45,14 +45,9 @@ pub enum RegistrationEvent {
     /// Start registration process
     Register { account: AccountConfig },
     /// Received 401/407 challenge
-    AuthChallenge {
-        status: u16,
-        challenge: String,
-    },
+    AuthChallenge { status: u16, challenge: String },
     /// Registration succeeded (200 OK)
-    Success {
-        public_addr: Option<SocketAddr>,
-    },
+    Success { public_addr: Option<SocketAddr> },
     /// Registration failed with error
     Failure { status: u16, reason: String },
     /// Registration timed out
@@ -72,9 +67,7 @@ pub enum RegistrationTransitionResult {
     /// Transition was successful
     Ok,
     /// Transition requires sending a message
-    SendRegister {
-        auth_header: Option<String>,
-    },
+    SendRegister { auth_header: Option<String> },
     /// Transition requires sending unregister
     SendUnregister,
     /// Transition was invalid from the current state
@@ -310,7 +303,10 @@ impl RegistrationFSM {
             *auth_attempts += 1;
             log::info!("Incremented auth_attempts to {}", *auth_attempts);
         } else {
-            log::warn!("Cannot increment auth_attempts - not in Registering state: {:?}", self.state.name());
+            log::warn!(
+                "Cannot increment auth_attempts - not in Registering state: {:?}",
+                self.state.name()
+            );
         }
     }
 
@@ -327,8 +323,7 @@ impl RegistrationFSM {
     /// Transition to reconnecting state (transport lost)
     pub fn transport_lost(&mut self) {
         match &self.state {
-            RegistrationState::Registered { .. }
-            | RegistrationState::Registering { .. } => {
+            RegistrationState::Registered { .. } | RegistrationState::Registering { .. } => {
                 self.state = RegistrationState::Reconnecting {
                     since: Instant::now(),
                     attempt: 0,
@@ -464,7 +459,11 @@ impl RegistrationFSM {
     }
 
     /// Registration failed
-    pub fn registration_failed(&mut self, _status: u16, reason: &str) -> RegistrationTransitionResult {
+    pub fn registration_failed(
+        &mut self,
+        _status: u16,
+        reason: &str,
+    ) -> RegistrationTransitionResult {
         match &self.state {
             RegistrationState::Registering { .. } => {
                 self.state = RegistrationState::Error {
@@ -555,7 +554,6 @@ impl RegistrationFSM {
             reason: reason.to_string(),
         };
     }
-
 }
 
 impl Default for RegistrationFSM {
@@ -674,7 +672,10 @@ mod tests {
         assert!(fsm.is_registered());
 
         let result = fsm.start_unregistration();
-        assert!(matches!(result, RegistrationTransitionResult::SendUnregister));
+        assert!(matches!(
+            result,
+            RegistrationTransitionResult::SendUnregister
+        ));
 
         fsm.unregistration_complete();
         assert_eq!(fsm.state_name(), "unregistered");

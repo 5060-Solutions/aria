@@ -65,7 +65,7 @@ describe("messagingStore", () => {
     state.conversations = [conversation({ last_body: "are you there?", last_at: "2026-11-25T12:05:00Z" })];
     await store().refresh(mailbox);
     expect(notifyText).toHaveBeenCalledTimes(1);
-    expect(notifyText).toHaveBeenCalledWith("messages.notificationTitle:+1 303 555 0199", "are you there?");
+    expect(notifyText).toHaveBeenCalledWith("messages.notificationTitle:(303) 555-0199", "are you there?");
 
     // The same text found again (the poll after the event) is not announced twice.
     await store().refresh(mailbox);

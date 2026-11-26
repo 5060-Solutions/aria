@@ -4,20 +4,26 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 
-use crate::sip::connection::{self, Outcome, StepKind};
 use crate::sip::auth::DigestAuth;
 use crate::sip::builder::{extract_all_headers, extract_header, extract_via_received};
+use crate::sip::connection::{self, Outcome, StepKind};
 use crate::sip::diagnostics::{self, DiagnosticLog};
 use crate::sip::srv;
 use crate::sip::state::RegistrationTransitionResult;
-use crate::sip::{finish_unregister, send_register, ManagerState, RegistrationEvent, RegistrationState, SipEvent};
+use crate::sip::{
+    finish_unregister, send_register, ManagerState, RegistrationEvent, RegistrationState, SipEvent,
+};
 
 /// The lifetime the registrar granted our binding, from the 200 OK.
 ///
 /// Per-binding `;expires=` on the Contact that is ours wins (other devices'
 /// bindings are listed too); the `Expires` header is the fallback. None means
 /// the response said nothing usable and the requested value stands.
-fn granted_expires(text: &str, local_addr: Option<SocketAddr>, public_addr: Option<SocketAddr>) -> Option<u32> {
+fn granted_expires(
+    text: &str,
+    local_addr: Option<SocketAddr>,
+    public_addr: Option<SocketAddr>,
+) -> Option<u32> {
     let contacts = extract_all_headers(text, "Contact");
     let is_ours = |c: &String| {
         [local_addr, public_addr]
@@ -26,9 +32,13 @@ fn granted_expires(text: &str, local_addr: Option<SocketAddr>, public_addr: Opti
             .any(|a| c.contains(&a.to_string()))
     };
     let contact_expires = |c: &String| {
-        c.split(';')
-            .skip(1)
-            .find_map(|p| p.trim().strip_prefix("expires=")?.trim().parse::<u32>().ok())
+        c.split(';').skip(1).find_map(|p| {
+            p.trim()
+                .strip_prefix("expires=")?
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
     };
     contacts
         .iter()
@@ -49,7 +59,9 @@ async fn fail_registration(
 ) {
     let (unregistering, transitioned) = {
         let mut s = state.write().await;
-        let Some(account) = s.get_account_mut(account_id) else { return };
+        let Some(account) = s.get_account_mut(account_id) else {
+            return;
+        };
         if account.unregistering {
             (true, false)
         } else {
@@ -66,7 +78,11 @@ async fn fail_registration(
     // Only when the FSM actually moved: a late error for a registration that
     // already failed or was torn down must not flip the UI again.
     if transitioned {
-        let step = if matches!(status, 401 | 403 | 407) { StepKind::Authenticate } else { StepKind::Register };
+        let step = if matches!(status, 401 | 403 | 407) {
+            StepKind::Authenticate
+        } else {
+            StepKind::Register
+        };
         let failure = connection::classify_sip(status, reason);
         let detail = format!("{status}: {reason}");
         let chip_text = reason.to_string();
@@ -104,11 +120,15 @@ pub async fn handle_register_response(
 
             let (unregistering, transitioned) = {
                 let mut s = state.write().await;
-                let Some(account) = s.get_account_mut(account_id) else { return };
+                let Some(account) = s.get_account_mut(account_id) else {
+                    return;
+                };
                 if account.unregistering {
                     (true, false)
                 } else {
-                    if let Some(granted) = granted_expires(text, account.local_addr, account.public_addr) {
+                    if let Some(granted) =
+                        granted_expires(text, account.local_addr, account.public_addr)
+                    {
                         if granted != account.granted_expires {
                             log::info!("Registrar granted Expires {} for {}", granted, account_id);
                         }
@@ -129,7 +149,9 @@ pub async fn handle_register_response(
                         if let Some(target) = account.target.clone() {
                             account.failover.report_success(&target);
                         }
-                        if let Some(timer) = extract_header(text, "Flow-Timer").and_then(|v| v.trim().parse::<u32>().ok()) {
+                        if let Some(timer) = extract_header(text, "Flow-Timer")
+                            .and_then(|v| v.trim().parse::<u32>().ok())
+                        {
                             account.flow_timer = Some(timer).filter(|t| *t > 0);
                         }
                         let now = connection::now_ms();
@@ -140,7 +162,11 @@ pub async fn handle_register_response(
                                     info.expires_in_s = granted;
                                 }
                             } else {
-                                let step = if challenged { StepKind::Authenticate } else { StepKind::Register };
+                                let step = if challenged {
+                                    StepKind::Authenticate
+                                } else {
+                                    StepKind::Register
+                                };
                                 let took = r.running_for(step.clone());
                                 let ms = took.map_or(0, |d| d.as_millis());
                                 r.ok(step, format!("200 OK in {ms} ms"), took);
@@ -175,7 +201,10 @@ pub async fn handle_register_response(
                 // A 200 for a registration that has since timed out or been
                 // torn down. Announcing it would show a registered account
                 // the backend is not actually running.
-                log::debug!("Ignoring 200 OK to REGISTER for {} — not registering", account_id);
+                log::debug!(
+                    "Ignoring 200 OK to REGISTER for {} — not registering",
+                    account_id
+                );
                 return;
             }
             log::info!("Registration successful for account {}", account_id);
@@ -228,34 +257,58 @@ pub async fn handle_register_response(
             let (attempts, is_registering) = {
                 let s = state.read().await;
                 if let Some(account) = s.get_account(account_id) {
-                    (account.registration.auth_attempts(), account.registration.is_registering())
+                    (
+                        account.registration.auth_attempts(),
+                        account.registration.is_registering(),
+                    )
                 } else {
                     (0, false)
                 }
             };
-            
+
             // Ignore 401/407 if we're not actively registering (already succeeded, failed, or not started)
             if !is_registering {
-                log::debug!("Ignoring {} for account {} - not in registering state", status, account_id);
+                log::debug!(
+                    "Ignoring {} for account {} - not in registering state",
+                    status,
+                    account_id
+                );
                 return;
             }
-            
-            log::info!("Registration challenged ({}) for account {}, auth attempt #{}", status, account_id, attempts);
+
+            log::info!(
+                "Registration challenged ({}) for account {}, auth attempt #{}",
+                status,
+                account_id,
+                attempts
+            );
             if attempts == 0 {
-                let refreshing = state.read().await.get_account(account_id).is_some_and(|a| a.refreshing);
+                let refreshing = state
+                    .read()
+                    .await
+                    .get_account(account_id)
+                    .is_some_and(|a| a.refreshing);
                 if !refreshing {
                     crate::sip::with_report(state, event_tx, account_id, |r| {
                         let took = r.running_for(StepKind::Register);
                         let ms = took.map_or(0, |d| d.as_millis());
-                        r.ok(StepKind::Register, format!("{status} challenge in {ms} ms"), took);
+                        r.ok(
+                            StepKind::Register,
+                            format!("{status} challenge in {ms} ms"),
+                            took,
+                        );
                         r.running(StepKind::Authenticate);
                     })
                     .await;
                 }
             }
-            
+
             if attempts >= 2 {
-                log::error!("Too many auth attempts ({}) for account {} - credentials likely wrong", attempts, account_id);
+                log::error!(
+                    "Too many auth attempts ({}) for account {} - credentials likely wrong",
+                    attempts,
+                    account_id
+                );
                 fail_registration(
                     state,
                     event_tx,
@@ -266,7 +319,7 @@ pub async fn handle_register_response(
                 .await;
                 return;
             }
-            
+
             let www_auth = extract_header(
                 text,
                 if status == 401 {
@@ -279,7 +332,10 @@ pub async fn handle_register_response(
             let www_auth = match www_auth {
                 Some(h) => h,
                 None => {
-                    log::error!("No auth challenge header in {} — cannot authenticate", status);
+                    log::error!(
+                        "No auth challenge header in {} — cannot authenticate",
+                        status
+                    );
                     fail_registration(
                         state,
                         event_tx,
@@ -305,7 +361,10 @@ pub async fn handle_register_response(
                 (account.config.clone(), server_addr)
             };
 
-            let registrar = account_config.registrar.as_deref().unwrap_or(&account_config.domain);
+            let registrar = account_config
+                .registrar
+                .as_deref()
+                .unwrap_or(&account_config.domain);
             let uri = format!("sip:{}", registrar);
             log::debug!(
                 "Digest params: auth_user='{}', uri='{}', auth_realm_override={:?}",
@@ -358,7 +417,8 @@ pub async fn handle_register_response(
 
             // Emit auth debug info as a diagnostic message visible in the UI
             {
-                let effective_realm = realm_override.as_deref()
+                let effective_realm = realm_override
+                    .as_deref()
                     .unwrap_or(challenge_realm.as_deref().unwrap_or("(unknown)"));
                 let debug_summary = format!(
                     "[AUTH DEBUG] user='{}', challenge_realm='{}', effective_realm='{}', uri='{}', override={:?}",
@@ -383,7 +443,9 @@ pub async fn handle_register_response(
                         "{}\n\nChallenge header:\n{}\n\nAuth response header:\nAuthorization: {}",
                         debug_summary,
                         www_auth,
-                        auth.as_ref().map(|a| a.to_header()).unwrap_or_else(|| "(parse failed)".to_string()),
+                        auth.as_ref()
+                            .map(|a| a.to_header())
+                            .unwrap_or_else(|| "(parse failed)".to_string()),
                     )),
                 };
                 let s = state.read().await;
@@ -395,7 +457,14 @@ pub async fn handle_register_response(
                 Some(a) => a.to_header(),
                 None => {
                     log::error!("Failed to parse auth challenge header: {}", www_auth);
-                    fail_registration(state, event_tx, account_id, status, "Could not parse server auth challenge").await;
+                    fail_registration(
+                        state,
+                        event_tx,
+                        account_id,
+                        status,
+                        "Could not parse server auth challenge",
+                    )
+                    .await;
                     return;
                 }
             };
@@ -421,19 +490,32 @@ pub async fn handle_register_response(
             // Interval Too Brief: ask for at least what the registrar wants.
             // This used to be a terminal error, and the frontend's retry sent
             // the identical request.
-            let min_expires = extract_header(text, "Min-Expires")
-                .and_then(|v| v.trim().parse::<u32>().ok());
+            let min_expires =
+                extract_header(text, "Min-Expires").and_then(|v| v.trim().parse::<u32>().ok());
             let Some(min_expires) = min_expires else {
-                fail_registration(state, event_tx, account_id, status, "Registrar rejected the registration interval").await;
+                fail_registration(
+                    state,
+                    event_tx,
+                    account_id,
+                    status,
+                    "Registrar rejected the registration interval",
+                )
+                .await;
                 return;
             };
             {
                 let mut s = state.write().await;
-                let Some(account) = s.get_account_mut(account_id) else { return };
+                let Some(account) = s.get_account_mut(account_id) else {
+                    return;
+                };
                 if !account.registration.is_registering() {
                     return;
                 }
-                log::info!("Registrar wants Expires >= {} for {}; retrying", min_expires, account_id);
+                log::info!(
+                    "Registrar wants Expires >= {} for {}; retrying",
+                    min_expires,
+                    account_id
+                );
                 account.requested_expires = account.requested_expires.max(min_expires);
             }
             if let Err(e) = send_register(state, event_tx, account_id, None).await {
@@ -447,9 +529,7 @@ pub async fn handle_register_response(
             let retry_info = {
                 let mut s = state.write().await;
                 if let Some(account) = s.get_account_mut(account_id) {
-                    if account.config.auth_realm.is_none()
-                        && !account.realm_fallback_exhausted
-                    {
+                    if account.config.auth_realm.is_none() && !account.realm_fallback_exhausted {
                         if let Some(sa) = account.server_addr {
                             let server_ip = sa.ip().to_string();
                             log::info!(
@@ -459,8 +539,12 @@ pub async fn handle_register_response(
                             account.realm_fallback = Some(server_ip);
                             account.realm_fallback_exhausted = true;
                             // Reset FSM so we can re-register
-                            account.registration.registration_failed(403, "retrying with realm fallback");
-                            account.registration.start_registration(account.config.clone());
+                            account
+                                .registration
+                                .registration_failed(403, "retrying with realm fallback");
+                            account
+                                .registration
+                                .start_registration(account.config.clone());
                             true
                         } else {
                             false
@@ -479,11 +563,16 @@ pub async fn handle_register_response(
                 }
             } else {
                 log::error!("Registration forbidden (403) for account {}", account_id);
-                fail_registration(state, event_tx, account_id, status, "Authentication failed").await;
+                fail_registration(state, event_tx, account_id, status, "Authentication failed")
+                    .await;
             }
         }
         _ if status >= 400 => {
-            log::warn!("Registration response: {} for account {}", status, account_id);
+            log::warn!(
+                "Registration response: {} for account {}",
+                status,
+                account_id
+            );
             // A refresh that fails because the server is struggling (timeout,
             // unavailable, internal error) is a connection problem: reconnect
             // with backoff, as a lost response would. It used to become a
@@ -496,16 +585,22 @@ pub async fn handle_register_response(
             // reported, as before.
             let (refreshing, unregistering, alternative) = {
                 let s = state.read().await;
-                s.get_account(account_id).map_or((false, false, false), |a| {
-                    (a.refreshing, a.unregistering, a.failover.has_alternative(std::time::Instant::now()))
-                })
+                s.get_account(account_id)
+                    .map_or((false, false, false), |a| {
+                        (
+                            a.refreshing,
+                            a.unregistering,
+                            a.failover.has_alternative(std::time::Instant::now()),
+                        )
+                    })
             };
             let moves_on = !unregistering
                 && (status == 503
                     || (refreshing && matches!(status, 408 | 480 | 500..=599))
                     || (srv::Failure::is_failover_status(status) && alternative));
             if moves_on {
-                let retry_after = extract_header(text, "Retry-After").and_then(|v| srv::parse_retry_after(&v));
+                let retry_after =
+                    extract_header(text, "Retry-After").and_then(|v| srv::parse_retry_after(&v));
                 log::warn!(
                     "Registration for {} failed with {} (Retry-After {:?}); trying another server",
                     account_id,
@@ -516,16 +611,30 @@ pub async fn handle_register_response(
                     state,
                     event_tx,
                     account_id,
-                    srv::Failure::Status { code: status, retry_after },
+                    srv::Failure::Status {
+                        code: status,
+                        retry_after,
+                    },
                     true,
                 )
                 .await;
                 return;
             }
-            fail_registration(state, event_tx, account_id, status, &format!("Registration failed: {}", status)).await;
+            fail_registration(
+                state,
+                event_tx,
+                account_id,
+                status,
+                &format!("Registration failed: {}", status),
+            )
+            .await;
         }
         _ => {
-            log::debug!("Registration response: {} for account {}", status, account_id);
+            log::debug!(
+                "Registration response: {} for account {}",
+                status,
+                account_id
+            );
         }
     }
 }

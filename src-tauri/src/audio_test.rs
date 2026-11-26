@@ -89,7 +89,9 @@ impl AudioTestManager {
         // Read samples that have accumulated since last poll.
         // Use the device's native rate to avoid resampling overhead.
         let device_rate = test.capture.device_rate();
-        let samples = test.capture.read_samples(device_rate, device_rate as usize / 10);
+        let samples = test
+            .capture
+            .read_samples(device_rate, device_rate as usize / 10);
 
         if samples.is_empty() {
             // Return last known level
@@ -97,10 +99,13 @@ impl AudioTestManager {
         }
 
         // Compute RMS
-        let sum_sq: f64 = samples.iter().map(|&s| {
-            let f = s as f64 / 32768.0;
-            f * f
-        }).sum();
+        let sum_sq: f64 = samples
+            .iter()
+            .map(|&s| {
+                let f = s as f64 / 32768.0;
+                f * f
+            })
+            .sum();
         let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
 
         if let Ok(mut level) = test.level.lock() {
@@ -155,7 +160,8 @@ impl AudioTestManager {
                             } else {
                                 1.0
                             };
-                            let sample = amplitude * env * (2.0 * std::f64::consts::PI * freq * t).sin();
+                            let sample =
+                                amplitude * env * (2.0 * std::f64::consts::PI * freq * t).sin();
                             (sample * 32767.0) as i16
                         })
                         .collect();

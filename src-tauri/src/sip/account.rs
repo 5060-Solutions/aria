@@ -25,7 +25,6 @@ impl SrtpMode {
             _ => SrtpMode::Disabled,
         }
     }
-
 }
 
 /// Codec preference with enable/disable and priority
@@ -53,10 +52,26 @@ impl Default for CodecPreference {
 /// better (see `SUPPORTED_CODECS` in `sip::builder`).
 pub fn default_codec_preferences() -> Vec<CodecPreference> {
     vec![
-        CodecPreference { codec: CodecType::Opus, enabled: true, priority: 1 },
-        CodecPreference { codec: CodecType::Pcmu, enabled: true, priority: 2 },
-        CodecPreference { codec: CodecType::Pcma, enabled: true, priority: 3 },
-        CodecPreference { codec: CodecType::G729, enabled: true, priority: 4 },
+        CodecPreference {
+            codec: CodecType::Opus,
+            enabled: true,
+            priority: 1,
+        },
+        CodecPreference {
+            codec: CodecType::Pcmu,
+            enabled: true,
+            priority: 2,
+        },
+        CodecPreference {
+            codec: CodecType::Pcma,
+            enabled: true,
+            priority: 3,
+        },
+        CodecPreference {
+            codec: CodecType::G729,
+            enabled: true,
+            priority: 4,
+        },
     ]
 }
 
@@ -126,7 +141,12 @@ impl AccountConfig {
     /// while the connection goes to the target's IP. Otherwise the usual:
     /// registrar, then domain.
     pub fn tls_name_for<'a>(&'a self, via_srv: bool, lookup_host: &'a str) -> &'a str {
-        if let Some(explicit) = self.tls_server_name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(explicit) = self
+            .tls_server_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             return explicit;
         }
         if via_srv && !lookup_host.is_empty() {
@@ -192,13 +212,25 @@ mod tests {
         assert_eq!(c.tls_name_for(false, "pbx.example.com"), "pbx.example.com");
         // With SRV the certificate is checked against the SIP domain that was
         // looked up, never the SRV target's own host name.
-        assert_eq!(c.tls_name_for(true, "tenant.example.com"), "tenant.example.com");
+        assert_eq!(
+            c.tls_name_for(true, "tenant.example.com"),
+            "tenant.example.com"
+        );
         // An explicit name still wins, with or without SRV.
         c.tls_server_name = Some("sip.example.com".into());
-        assert_eq!(c.tls_name_for(true, "tenant.example.com"), "sip.example.com");
-        assert_eq!(c.tls_name_for(false, "tenant.example.com"), "sip.example.com");
+        assert_eq!(
+            c.tls_name_for(true, "tenant.example.com"),
+            "sip.example.com"
+        );
+        assert_eq!(
+            c.tls_name_for(false, "tenant.example.com"),
+            "sip.example.com"
+        );
         // A blank explicit name is no name.
         c.tls_server_name = Some(" ".into());
-        assert_eq!(c.tls_name_for(true, "tenant.example.com"), "tenant.example.com");
+        assert_eq!(
+            c.tls_name_for(true, "tenant.example.com"),
+            "tenant.example.com"
+        );
     }
 }

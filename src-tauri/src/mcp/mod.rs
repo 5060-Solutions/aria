@@ -155,7 +155,9 @@ impl TokenStore {
             match entry.get_password() {
                 Ok(t) => Ok(Some(t)),
                 Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(format!("Could not read the MCP token from the keychain: {e}")),
+                Err(e) => Err(format!(
+                    "Could not read the MCP token from the keychain: {e}"
+                )),
             }
         }
     }

@@ -1,6 +1,7 @@
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 import type { SipAccount } from "../types/sip";
 import type { Contact } from "../types/sip";
+import { formatDisplayNumber, storedDefaultCountry } from "./phoneFormat";
 import { callerLabel, mailboxFor, type Mailbox } from "./voicemail";
 
 /** Business texting reaches the PBX the way visual voicemail does. */
@@ -155,9 +156,12 @@ export function toE164(input: string, defaultCountry: string): string | null {
   return parsed?.isValid() ? parsed.number : null;
 }
 
-/** `+13035550100` as `+1 303 555 0100`; anything unparseable as it is. */
-export function formatNumber(number: string): string {
-  return parsePhoneNumberFromString(number)?.formatInternational() ?? number;
+/**
+ * `+13035550100` as `(303) 555-0100` for a US default country and as
+ * `+1 303 555 0100` for anyone else's; anything unparseable as it is.
+ */
+export function formatNumber(number: string, defaultCountry: string = storedDefaultCountry()): string {
+  return formatDisplayNumber(number, defaultCountry as CountryCode);
 }
 
 // ── Unread ──────────────────────────────────────────────────────────────────
@@ -245,9 +249,9 @@ export function newInbound(prev: ReadonlyArray<Conversation> | undefined, next: 
 }
 
 /** What to call someone: a contact's name, else their formatted number. */
-export function personLabel(number: string, contacts: ReadonlyArray<Contact>): string {
+export function personLabel(number: string, contacts: ReadonlyArray<Contact>, defaultCountry?: string): string {
   const label = callerLabel(number, contacts);
-  return !label || label === number ? formatNumber(number) : label;
+  return !label || label === number ? formatNumber(number, defaultCountry) : label;
 }
 
 /**

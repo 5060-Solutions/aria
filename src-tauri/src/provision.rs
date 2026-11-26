@@ -86,9 +86,14 @@ impl ProvisionError {
 /// `https` only, except plain `http` to `localhost`/`127.0.0.1` when
 /// `allow_local_http` (debug builds, for testing against a local stub). No
 /// userinfo, and the path must be `/provision/softphone/<token>`.
-pub fn validate_redeem_url(raw: &str, allow_local_http: bool) -> Result<reqwest::Url, ProvisionError> {
+pub fn validate_redeem_url(
+    raw: &str,
+    allow_local_http: bool,
+) -> Result<reqwest::Url, ProvisionError> {
     let url = reqwest::Url::parse(raw).map_err(|_| ProvisionError::InvalidUrl("unparseable"))?;
-    let host = url.host_str().ok_or(ProvisionError::InvalidUrl("no host"))?;
+    let host = url
+        .host_str()
+        .ok_or(ProvisionError::InvalidUrl("no host"))?;
     match url.scheme() {
         "https" => {}
         "http" if allow_local_http && matches!(host, "localhost" | "127.0.0.1") => {}
@@ -150,9 +155,16 @@ async fn fetch_json(
     let status = response.status().as_u16();
     if status != 200 {
         log::warn!("[provision] {host} answered HTTP {status}");
-        return Err(if status == 404 { ProvisionError::Expired } else { ProvisionError::Status(status) });
+        return Err(if status == 404 {
+            ProvisionError::Expired
+        } else {
+            ProvisionError::Status(status)
+        });
     }
-    if response.content_length().is_some_and(|n| n > MAX_BODY_BYTES as u64) {
+    if response
+        .content_length()
+        .is_some_and(|n| n > MAX_BODY_BYTES as u64)
+    {
         return Err(ProvisionError::TooLarge);
     }
     let mut body = Vec::new();
@@ -180,7 +192,10 @@ async fn fetch_json(
 // in SIP headers and on screen, so anything that could break either is refused.
 
 fn get_str<'a>(map: &'a serde_json::Map<String, serde_json::Value>, key: &str) -> Option<&'a str> {
-    map.get(key).and_then(serde_json::Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+    map.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
 }
 
 /// Display text: control characters, quotes, backslashes and angle brackets
@@ -198,7 +213,8 @@ pub(crate) fn clean_text(s: &str, max_chars: usize) -> String {
 fn is_host(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 253
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
         && !s.starts_with(['.', '-'])
 }
 
@@ -206,7 +222,8 @@ fn is_host(s: &str) -> bool {
 fn is_sip_user(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.!~*'()&=+$,;".contains(c))
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.!~*'()&=+$,;".contains(c))
 }
 
 fn host_field(
@@ -250,13 +267,20 @@ pub struct ProvisionPreview {
     pub server_host: String,
 }
 
-pub async fn fetch_preview(url: &reqwest::Url, timeout: Duration) -> Result<ProvisionPreview, ProvisionError> {
+pub async fn fetch_preview(
+    url: &reqwest::Url,
+    timeout: Duration,
+) -> Result<ProvisionPreview, ProvisionError> {
     let host = server_host(url);
     let map = fetch_json(client(timeout)?.get(url.clone()), &host).await?;
     let preview = ProvisionPreview {
-        tenant_name: get_str(&map, "tenant_name").map(|s| clean_text(s, 100)).unwrap_or_default(),
+        tenant_name: get_str(&map, "tenant_name")
+            .map(|s| clean_text(s, 100))
+            .unwrap_or_default(),
         extension: user_field(&map, "extension", "extension")?,
-        display_name: get_str(&map, "display_name").map(|s| clean_text(s, 100)).unwrap_or_default(),
+        display_name: get_str(&map, "display_name")
+            .map(|s| clean_text(s, 100))
+            .unwrap_or_default(),
         domain: host_field(&map, "domain", "domain")?,
         expires_at: get_str(&map, "expires_at").map(|s| clean_text(s, 40)),
         server_host: host.clone(),
@@ -322,7 +346,9 @@ fn parse_proxy(raw: &str) -> Option<(String, Option<u16>)> {
     is_host(host).then(|| (host.to_string(), port))
 }
 
-pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<RedeemedLine, ProvisionError> {
+pub fn parse_redeem(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> Result<RedeemedLine, ProvisionError> {
     let username = user_field(map, "username", "username")?;
     let auth_username = match get_str(map, "auth_username") {
         Some(_) => Some(user_field(map, "auth_username", "auth_username")?),
@@ -353,7 +379,8 @@ pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<
     let (outbound_proxy, tls_server_name) = match get_str(map, "outbound_proxy") {
         None => (None, None),
         Some(raw) => {
-            let (host, own_port) = parse_proxy(raw).ok_or(ProvisionError::BadReply("outbound_proxy"))?;
+            let (host, own_port) =
+                parse_proxy(raw).ok_or(ProvisionError::BadReply("outbound_proxy"))?;
             // `host` alone when there is no port to give it: a port in the
             // proxy string would switch SRV off.
             let proxy = match own_port.or(Some(port).filter(|p| *p != 0)) {
@@ -372,7 +399,9 @@ pub fn parse_redeem(map: &serde_json::Map<String, serde_json::Value>) -> Result<
         .filter(|v| v.len() <= 32 && v.chars().all(|c| c.is_ascii_digit() || "*#+".contains(c)))
         .map(str::to_string);
     Ok(RedeemedLine {
-        tenant_name: get_str(map, "tenant_name").map(|s| clean_text(s, 100)).unwrap_or_default(),
+        tenant_name: get_str(map, "tenant_name")
+            .map(|s| clean_text(s, 100))
+            .unwrap_or_default(),
         display_name: get_str(map, "display_name")
             .map(|s| clean_text(s, 100))
             .filter(|s| !s.is_empty())
@@ -397,7 +426,10 @@ pub async fn redeem(url: &reqwest::Url, timeout: Duration) -> Result<RedeemedLin
     log::info!("[provision] redeemed at {host}: {:?}", line);
     if line.srtp.as_deref() == Some("sdes") && line.transport != "tls" {
         // SDES puts the media keys in the SDP, which would travel in clear.
-        log::warn!("[provision] setup server asked for SDES-SRTP over {}; not enabling it without TLS", line.transport);
+        log::warn!(
+            "[provision] setup server asked for SDES-SRTP over {}; not enabling it without TLS",
+            line.transport
+        );
     }
     Ok(line)
 }
@@ -468,23 +500,38 @@ pub struct ProvisionedLine {
 /// The account a redeemed line goes to. Only an account the same host set up
 /// may be overwritten; one with the same identity from anywhere else gets a
 /// separate new account beside it.
-pub fn pick_account(line: &RedeemedLine, known: &[KnownAccount], host: &str, new_id: &str) -> (String, LineMode) {
+pub fn pick_account(
+    line: &RedeemedLine,
+    known: &[KnownAccount],
+    host: &str,
+    new_id: &str,
+) -> (String, LineMode) {
     let same_identity: Vec<&KnownAccount> = known
         .iter()
-        .filter(|a| a.username == line.username && a.domain.trim().eq_ignore_ascii_case(&line.domain))
+        .filter(|a| {
+            a.username == line.username && a.domain.trim().eq_ignore_ascii_case(&line.domain)
+        })
         .collect();
-    if let Some(own) = same_identity
-        .iter()
-        .find(|a| a.provisioned_from.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(host)))
-    {
+    if let Some(own) = same_identity.iter().find(|a| {
+        a.provisioned_from
+            .as_deref()
+            .is_some_and(|f| f.eq_ignore_ascii_case(host))
+    }) {
         return (own.id.clone(), LineMode::Updated);
     }
-    let mode = if same_identity.is_empty() { LineMode::Added } else { LineMode::Separate };
+    let mode = if same_identity.is_empty() {
+        LineMode::Added
+    } else {
+        LineMode::Separate
+    };
     (new_id.to_string(), mode)
 }
 
 fn is_account_id(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// A password on its way to the credential store. Never printed.
@@ -512,7 +559,9 @@ pub async fn redeem_checked(
         return Err(ProvisionError::AccountIdInUse);
     }
     let line = redeem(url, timeout).await?;
-    if line.username != expected.extension || !line.domain.eq_ignore_ascii_case(expected.domain.trim()) {
+    if line.username != expected.extension
+        || !line.domain.eq_ignore_ascii_case(expected.domain.trim())
+    {
         // The line's identity stays out of the log, like everything else the
         // server sent.
         log::warn!("[provision] redeem returned a different line than the preview; refused");
@@ -563,10 +612,15 @@ fn checked_url(url: &str) -> Result<reqwest::Url, String> {
 
 /// Fetch a setup link's preview. Uses nothing up.
 #[tauri::command]
-pub async fn provision_link_preview(app: tauri::AppHandle, url: String) -> Result<ProvisionPreview, String> {
+pub async fn provision_link_preview(
+    app: tauri::AppHandle,
+    url: String,
+) -> Result<ProvisionPreview, String> {
     let url = checked_url(&url)?;
     focus_main_window(&app);
-    fetch_preview(&url, TIMEOUT).await.map_err(|e| e.user_message())
+    fetch_preview(&url, TIMEOUT)
+        .await
+        .map_err(|e| e.user_message())
 }
 
 /// Redeem a setup link — only ever called from the confirm dialog's Add
@@ -588,10 +642,12 @@ pub async fn provision_link_redeem(
         .map_err(|e| e.user_message())?;
     // The keychain can block on an unlock prompt; keep it off the runtime.
     let id = line.account_id.clone();
-    tokio::task::spawn_blocking(move || crate::commands::store_credential_blocking(&id, &password.0))
-        .await
-        .map_err(|e| ProvisionError::Storage(e.to_string()).user_message())?
-        .map_err(|e| ProvisionError::Storage(e).user_message())?;
+    tokio::task::spawn_blocking(move || {
+        crate::commands::store_credential_blocking(&id, &password.0)
+    })
+    .await
+    .map_err(|e| ProvisionError::Storage(e.to_string()).user_message())?
+    .map_err(|e| ProvisionError::Storage(e).user_message())?;
     // The setup link's server is the one this account's password may be sent
     // to for voicemail and texting; recorded here, by the backend, once the
     // user has confirmed the link.

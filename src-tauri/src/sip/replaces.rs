@@ -52,7 +52,12 @@ pub fn parse(value: &str) -> Option<Replaces> {
             _ => {}
         }
     }
-    Some(Replaces { call_id, to_tag: to_tag?, from_tag: from_tag?, early_only })
+    Some(Replaces {
+        call_id,
+        to_tag: to_tag?,
+        from_tag: from_tag?,
+        early_only,
+    })
 }
 
 /// What this app knows of one of its dialogs.
@@ -88,14 +93,21 @@ pub enum Outcome {
 /// dialog this app did not start (an unanswered inbound call); `early-only`
 /// against a confirmed dialog is 486.
 pub fn decide(header: &str, new_call_id: &str, dialogs: &[Dialog]) -> Outcome {
-    let Some(r) = parse(header) else { return Outcome::BadRequest };
+    let Some(r) = parse(header) else {
+        return Outcome::BadRequest;
+    };
     if r.call_id == new_call_id {
         return Outcome::Loop;
     }
     let found = dialogs.iter().position(|d| {
-        !d.ended && d.call_id_header == r.call_id && d.local_tag == r.to_tag && d.remote_tag == r.from_tag
+        !d.ended
+            && d.call_id_header == r.call_id
+            && d.local_tag == r.to_tag
+            && d.remote_tag == r.from_tag
     });
-    let Some(i) = found else { return Outcome::NoSuchDialog };
+    let Some(i) = found else {
+        return Outcome::NoSuchDialog;
+    };
     let d = &dialogs[i];
     if !d.confirmed && !d.initiated_here {
         return Outcome::NoSuchDialog;
@@ -125,13 +137,20 @@ mod tests {
     #[test]
     fn parses_an_escaped_call_id_and_both_tags() {
         let r = parse(H).unwrap();
-        assert_eq!((r.call_id.as_str(), r.to_tag.as_str(), r.from_tag.as_str()), ("abc@host", "mine", "theirs"));
+        assert_eq!(
+            (r.call_id.as_str(), r.to_tag.as_str(), r.from_tag.as_str()),
+            ("abc@host", "mine", "theirs")
+        );
         assert!(!r.early_only);
     }
 
     #[test]
     fn parses_early_only_and_ignores_case() {
-        assert!(parse("x;TO-TAG=a;From-Tag=b;early-only").unwrap().early_only);
+        assert!(
+            parse("x;TO-TAG=a;From-Tag=b;early-only")
+                .unwrap()
+                .early_only
+        );
     }
 
     #[test]
@@ -145,14 +164,31 @@ mod tests {
 
     #[test]
     fn a_confirmed_dialog_is_replaced() {
-        assert_eq!(decide(H, "new", &[dialog(true, false)]), Outcome::Replace(0));
+        assert_eq!(
+            decide(H, "new", &[dialog(true, false)]),
+            Outcome::Replace(0)
+        );
     }
 
     #[test]
     fn an_unknown_dialog_or_wrong_tags_is_481() {
         assert_eq!(decide(H, "new", &[]), Outcome::NoSuchDialog);
-        assert_eq!(decide("abc%40host;to-tag=theirs;from-tag=mine", "new", &[dialog(true, false)]), Outcome::NoSuchDialog);
-        assert_eq!(decide("zzz;to-tag=mine;from-tag=theirs", "new", &[dialog(true, false)]), Outcome::NoSuchDialog);
+        assert_eq!(
+            decide(
+                "abc%40host;to-tag=theirs;from-tag=mine",
+                "new",
+                &[dialog(true, false)]
+            ),
+            Outcome::NoSuchDialog
+        );
+        assert_eq!(
+            decide(
+                "zzz;to-tag=mine;from-tag=theirs",
+                "new",
+                &[dialog(true, false)]
+            ),
+            Outcome::NoSuchDialog
+        );
     }
 
     #[test]
@@ -164,15 +200,24 @@ mod tests {
 
     #[test]
     fn an_early_dialog_we_did_not_start_is_481_but_one_we_did_is_replaced() {
-        assert_eq!(decide(H, "new", &[dialog(false, false)]), Outcome::NoSuchDialog);
-        assert_eq!(decide(H, "new", &[dialog(false, true)]), Outcome::Replace(0));
+        assert_eq!(
+            decide(H, "new", &[dialog(false, false)]),
+            Outcome::NoSuchDialog
+        );
+        assert_eq!(
+            decide(H, "new", &[dialog(false, true)]),
+            Outcome::Replace(0)
+        );
     }
 
     #[test]
     fn early_only_against_a_confirmed_dialog_is_486() {
         let h = format!("{H};early-only");
         assert_eq!(decide(&h, "new", &[dialog(true, true)]), Outcome::Busy);
-        assert_eq!(decide(&h, "new", &[dialog(false, true)]), Outcome::Replace(0));
+        assert_eq!(
+            decide(&h, "new", &[dialog(false, true)]),
+            Outcome::Replace(0)
+        );
     }
 
     #[test]

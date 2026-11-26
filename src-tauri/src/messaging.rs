@@ -16,7 +16,9 @@
 //! the JWT never leaves this process. The frontend polls too, so a dropped
 //! socket costs delay and not messages.
 
-use crate::voicemail::{net_error, route, status_error, Mailbox, Session, VoicemailError, VoicemailState};
+use crate::voicemail::{
+    net_error, route, status_error, Mailbox, Session, VoicemailError, VoicemailState,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -45,8 +47,17 @@ impl fmt::Display for MessagingError {
 
 impl From<VoicemailError> for MessagingError {
     fn from(e: VoicemailError) -> Self {
-        let status = if let VoicemailError::Status(s) = &e { Some(*s) } else { None };
-        Self { kind: e.kind(), message: e.to_string(), status, field: None }
+        let status = if let VoicemailError::Status(s) = &e {
+            Some(*s)
+        } else {
+            None
+        };
+        Self {
+            kind: e.kind(),
+            message: e.to_string(),
+            status,
+            field: None,
+        }
     }
 }
 
@@ -56,20 +67,38 @@ impl From<VoicemailError> for MessagingError {
 /// failed), so the caller keeps its idempotency key for the retry.
 pub(crate) fn rejected(status: u16, body: &[u8]) -> MessagingError {
     let parsed: Option<Value> = serde_json::from_slice(body).ok();
-    let text = |key: &str| parsed.as_ref().and_then(|v| v.get(key)).and_then(Value::as_str).map(str::to_string);
+    let text = |key: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
     // `error` carries the sentence a person reads.
     let message = text("error")
         .or_else(|| text("message"))
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| format!("The PBX answered with HTTP {status}."));
     let kind = if status >= 500 { "server" } else { "rejected" };
-    MessagingError { kind, message, status: Some(status), field: text("field") }
+    MessagingError {
+        kind,
+        message,
+        status: Some(status),
+        field: text("field"),
+    }
 }
 
-type Build<'a> = &'a (dyn Fn(&reqwest::Client, &reqwest::Url, &Session) -> reqwest::RequestBuilder + Send + Sync);
+type Build<'a> = &'a (dyn Fn(&reqwest::Client, &reqwest::Url, &Session) -> reqwest::RequestBuilder
+         + Send
+         + Sync);
 
 /// Send a signed request; a success is its body, anything else an error.
-pub(crate) async fn call(state: &VoicemailState, mailbox: &Mailbox, password: &str, build: Build<'_>) -> Result<Vec<u8>, MessagingError> {
+pub(crate) async fn call(
+    state: &VoicemailState,
+    mailbox: &Mailbox,
+    password: &str,
+    build: Build<'_>,
+) -> Result<Vec<u8>, MessagingError> {
     let reply = state.send(mailbox, password, build).await?;
     let status = reply.status();
     let body = reply.bytes().await.map_err(net_error)?.to_vec();
@@ -82,7 +111,12 @@ pub(crate) async fn call(state: &VoicemailState, mailbox: &Mailbox, password: &s
     Ok(body)
 }
 
-async fn call_json(state: &VoicemailState, mailbox: &Mailbox, password: &str, build: Build<'_>) -> Result<Value, MessagingError> {
+async fn call_json(
+    state: &VoicemailState,
+    mailbox: &Mailbox,
+    password: &str,
+    build: Build<'_>,
+) -> Result<Value, MessagingError> {
     let body = call(state, mailbox, password, build).await?;
     serde_json::from_slice(&body).map_err(|_| VoicemailError::Malformed.into())
 }
@@ -95,9 +129,14 @@ fn messaging_route(api: &reqwest::Url, tenant_id: &str, rest: &[&str]) -> reqwes
 }
 
 /// The numbers this extension may text from.
-pub async fn inboxes(state: &VoicemailState, mailbox: &Mailbox, password: &str) -> Result<Value, MessagingError> {
+pub async fn inboxes(
+    state: &VoicemailState,
+    mailbox: &Mailbox,
+    password: &str,
+) -> Result<Value, MessagingError> {
     call_json(state, mailbox, password, &|http, api, s| {
-        http.get(messaging_route(api, &s.tenant_id, &["inboxes"])).bearer_auth(&s.jwt)
+        http.get(messaging_route(api, &s.tenant_id, &["inboxes"]))
+            .bearer_auth(&s.jwt)
     })
     .await
 }
@@ -126,7 +165,11 @@ pub async fn thread(
     before: Option<&str>,
 ) -> Result<Value, MessagingError> {
     call_json(state, mailbox, password, &|http, api, s| {
-        let mut url = messaging_route(api, &s.tenant_id, &["inboxes", did_id, "conversations", number]);
+        let mut url = messaging_route(
+            api,
+            &s.tenant_id,
+            &["inboxes", did_id, "conversations", number],
+        );
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("limit", "100");
@@ -149,13 +192,23 @@ pub struct Outgoing<'a> {
     pub idempotency_key: &'a str,
 }
 
-pub async fn send(state: &VoicemailState, mailbox: &Mailbox, password: &str, out: &Outgoing<'_>) -> Result<Value, MessagingError> {
-    let payload = serde_json::json!({ "to": out.to, "body": out.body, "attachment_ids": out.attachment_ids });
+pub async fn send(
+    state: &VoicemailState,
+    mailbox: &Mailbox,
+    password: &str,
+    out: &Outgoing<'_>,
+) -> Result<Value, MessagingError> {
+    let payload =
+        serde_json::json!({ "to": out.to, "body": out.body, "attachment_ids": out.attachment_ids });
     call_json(state, mailbox, password, &|http, api, s| {
-        http.post(messaging_route(api, &s.tenant_id, &["inboxes", out.did_id, "messages"]))
-            .bearer_auth(&s.jwt)
-            .header("Idempotency-Key", out.idempotency_key)
-            .json(&payload)
+        http.post(messaging_route(
+            api,
+            &s.tenant_id,
+            &["inboxes", out.did_id, "messages"],
+        ))
+        .bearer_auth(&s.jwt)
+        .header("Idempotency-Key", out.idempotency_key)
+        .json(&payload)
     })
     .await
 }
@@ -178,9 +231,15 @@ pub async fn upload(
 }
 
 /// An attachment's bytes.
-pub async fn attachment(state: &VoicemailState, mailbox: &Mailbox, password: &str, id: &str) -> Result<Vec<u8>, MessagingError> {
+pub async fn attachment(
+    state: &VoicemailState,
+    mailbox: &Mailbox,
+    password: &str,
+    id: &str,
+) -> Result<Vec<u8>, MessagingError> {
     call(state, mailbox, password, &|http, api, s| {
-        http.get(messaging_route(api, &s.tenant_id, &["attachments", id])).bearer_auth(&s.jwt)
+        http.get(messaging_route(api, &s.tenant_id, &["attachments", id]))
+            .bearer_auth(&s.jwt)
     })
     .await
 }
@@ -230,7 +289,8 @@ pub fn parse_call_event(frame: &str) -> Option<Value> {
 /// proxies and servers.
 pub fn ws_url(api: &reqwest::Url) -> Option<reqwest::Url> {
     let mut url = route(api, &["api", "v1", "ws"]);
-    url.set_scheme(if api.scheme() == "https" { "wss" } else { "ws" }).ok()?;
+    url.set_scheme(if api.scheme() == "https" { "wss" } else { "ws" })
+        .ok()?;
     Some(url)
 }
 
@@ -247,15 +307,29 @@ pub struct MessagingLive {
 
 impl MessagingLive {
     /// Replace the account's listener with a new one running `task`.
-    pub fn start(&self, account_id: &str, task: impl std::future::Future<Output = ()> + Send + 'static) {
+    pub fn start(
+        &self,
+        account_id: &str,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
         let handle = tauri::async_runtime::spawn(task);
-        if let Some(old) = self.tasks.lock().unwrap_or_else(|p| p.into_inner()).insert(account_id.to_string(), handle) {
+        if let Some(old) = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(account_id.to_string(), handle)
+        {
             old.abort();
         }
     }
 
     pub fn stop(&self, account_id: &str) {
-        if let Some(old) = self.tasks.lock().unwrap_or_else(|p| p.into_inner()).remove(account_id) {
+        if let Some(old) = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(account_id)
+        {
             old.abort();
         }
     }
@@ -263,7 +337,8 @@ impl MessagingLive {
 
 fn tls_connector() -> Result<tokio_tungstenite::Connector, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let verifier = rustls_platform_verifier::Verifier::new(provider.clone()).map_err(|e| format!("platform verifier: {e}"))?;
+    let verifier = rustls_platform_verifier::Verifier::new(provider.clone())
+        .map_err(|e| format!("platform verifier: {e}"))?;
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?
@@ -286,14 +361,30 @@ async fn run_once(
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::Message as Frame;
 
-    let api = crate::voicemail::validate_api_url(&mailbox.api_url, cfg!(debug_assertions)).map_err(|e| e.to_string())?;
-    let session = state.session(&api, mailbox, password).await.map_err(|e| e.to_string())?;
+    let api = crate::voicemail::validate_api_url(&mailbox.api_url, cfg!(debug_assertions))
+        .map_err(|e| e.to_string())?;
+    let session = state
+        .session(&api, mailbox, password)
+        .await
+        .map_err(|e| e.to_string())?;
     let url = ws_url(&api).ok_or("bad event stream address")?;
-    let mut request = url.as_str().into_client_request().map_err(|e| e.to_string())?;
-    let bearer = format!("Bearer {}", session.jwt).parse().map_err(|_| "unusable session token".to_string())?;
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .map_err(|e| e.to_string())?;
+    let bearer = format!("Bearer {}", session.jwt)
+        .parse()
+        .map_err(|_| "unusable session token".to_string())?;
     request.headers_mut().insert("Authorization", bearer);
     let connector = tls_connector()?;
-    let mut socket = match tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(connector)).await {
+    let mut socket = match tokio_tungstenite::connect_async_tls_with_config(
+        request,
+        None,
+        false,
+        Some(connector),
+    )
+    .await
+    {
         Ok((socket, _)) => socket,
         Err(e) => {
             // A refused upgrade is most often a token that has expired.
@@ -334,7 +425,15 @@ pub async fn listen(
     let mut attempt = 0u32;
     loop {
         let began = std::time::Instant::now();
-        let outcome = run_once(&state, &mailbox, &password, &on_event, &on_call_event, &on_live).await;
+        let outcome = run_once(
+            &state,
+            &mailbox,
+            &password,
+            &on_event,
+            &on_call_event,
+            &on_live,
+        )
+        .await;
         on_live(false);
         if let Err(e) = &outcome {
             log::warn!("[messaging] event stream: {e}");
@@ -357,7 +456,10 @@ mod tests {
 
     #[test]
     fn a_refusal_carries_the_servers_sentence_and_field() {
-        let e = rejected(422, br#"{"error":"That person opted out (STOP).","field":"to","status":422}"#);
+        let e = rejected(
+            422,
+            br#"{"error":"That person opted out (STOP).","field":"to","status":422}"#,
+        );
         assert_eq!(e.kind, "rejected");
         assert_eq!(e.message, "That person opted out (STOP).");
         assert_eq!(e.field.as_deref(), Some("to"));
@@ -397,7 +499,12 @@ mod tests {
 
     #[test]
     fn passes_on_call_move_events_and_nothing_else() {
-        for t in ["call_active_elsewhere", "call_moved", "call_ended", "handoff_suggested"] {
+        for t in [
+            "call_active_elsewhere",
+            "call_moved",
+            "call_ended",
+            "handoff_suggested",
+        ] {
             let frame = format!(r#"{{"type":"{t}","call_id":"c"}}"#);
             assert_eq!(parse_call_event(&frame).unwrap()["type"], t);
         }
@@ -408,9 +515,15 @@ mod tests {
     #[test]
     fn the_event_stream_address_follows_the_api_scheme() {
         let https = reqwest::Url::parse("https://api.ariaroute.com/").unwrap();
-        assert_eq!(ws_url(&https).unwrap().as_str(), "wss://api.ariaroute.com/api/v1/ws");
+        assert_eq!(
+            ws_url(&https).unwrap().as_str(),
+            "wss://api.ariaroute.com/api/v1/ws"
+        );
         let http = reqwest::Url::parse("http://127.0.0.1:4000/").unwrap();
-        assert_eq!(ws_url(&http).unwrap().as_str(), "ws://127.0.0.1:4000/api/v1/ws");
+        assert_eq!(
+            ws_url(&http).unwrap().as_str(),
+            "ws://127.0.0.1:4000/api/v1/ws"
+        );
     }
 
     #[test]
@@ -422,8 +535,15 @@ mod tests {
     #[test]
     fn a_number_is_one_path_segment() {
         let api = reqwest::Url::parse("https://api.ariaroute.com/").unwrap();
-        let url = messaging_route(&api, "t-1", &["inboxes", "d1", "conversations", "+1303/../x"]);
-        assert_eq!(url.path(), "/api/v1/tenants/t-1/messaging/inboxes/d1/conversations/+1303%2F..%2Fx");
+        let url = messaging_route(
+            &api,
+            "t-1",
+            &["inboxes", "d1", "conversations", "+1303/../x"],
+        );
+        assert_eq!(
+            url.path(),
+            "/api/v1/tenants/t-1/messaging/inboxes/d1/conversations/+1303%2F..%2Fx"
+        );
     }
 
     /// A one-shot stub PBX: records each request line and headers, answers
@@ -435,7 +555,9 @@ mod tests {
         let record = seen.clone();
         tokio::spawn(async move {
             loop {
-                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
                 let record = record.clone();
                 tokio::spawn(async move {
                     let mut buf = Vec::new();
@@ -445,7 +567,10 @@ mod tests {
                             let head = String::from_utf8_lossy(&buf[..i]).to_ascii_lowercase();
                             let length = head
                                 .lines()
-                                .find_map(|l| l.strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok()))
+                                .find_map(|l| {
+                                    l.strip_prefix("content-length:")
+                                        .and_then(|v| v.trim().parse::<usize>().ok())
+                                })
                                 .unwrap_or(0);
                             break (i + 4, length);
                         }
@@ -461,10 +586,14 @@ mod tests {
                         }
                     }
                     let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
-                    let body = String::from_utf8_lossy(&buf[head_end..head_end + length]).to_string();
+                    let body =
+                        String::from_utf8_lossy(&buf[head_end..head_end + length]).to_string();
                     let request_line = head.lines().next().unwrap_or_default().to_string();
                     let (status, reply_body) = reply(&request_line, &body);
-                    record.lock().unwrap().push(format!("{request_line}\n{}\n{body}", head.to_ascii_lowercase()));
+                    record.lock().unwrap().push(format!(
+                        "{request_line}\n{}\n{body}",
+                        head.to_ascii_lowercase()
+                    ));
                     let out = format!(
                         "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply_body}",
                         reply_body.len()
@@ -479,19 +608,30 @@ mod tests {
 
     fn pbx(request_line: &str, _body: &str) -> (u16, String) {
         if request_line.starts_with("POST /api/v1/auth/extension-login") {
-            return (200, r#"{"token":"jwt-1","extension_id":"e1","tenant_id":"t1"}"#.into());
+            return (
+                200,
+                r#"{"token":"jwt-1","extension_id":"e1","tenant_id":"t1"}"#.into(),
+            );
         }
         if request_line.starts_with("GET /api/v1/tenants/t1/messaging/inboxes ") {
             return (200, r#"[{"did_id":"d1","number":"+13035550100","last_inbound_at":null,"enabled":true}]"#.into());
         }
         if request_line.starts_with("POST /api/v1/tenants/t1/messaging/inboxes/d1/messages ") {
-            return (422, r#"{"error":"That person opted out (STOP).","field":"to","status":422}"#.into());
+            return (
+                422,
+                r#"{"error":"That person opted out (STOP).","field":"to","status":422}"#.into(),
+            );
         }
         (404, r#"{"error":"nope"}"#.into())
     }
 
     fn mailbox(base: &str) -> Mailbox {
-        Mailbox { account_id: "a".into(), api_url: base.into(), extension: "1001".into(), domain: "t.example".into() }
+        Mailbox {
+            account_id: "a".into(),
+            api_url: base.into(),
+            extension: "1001".into(),
+            domain: "t.example".into(),
+        }
     }
 
     #[tokio::test]
@@ -509,7 +649,13 @@ mod tests {
         let (base, seen) = stub(pbx).await;
         let state = VoicemailState::new();
         let ids: Vec<String> = vec![];
-        let out = Outgoing { did_id: "d1", to: "+13035550101", body: "hi", attachment_ids: &ids, idempotency_key: "key-1" };
+        let out = Outgoing {
+            did_id: "d1",
+            to: "+13035550101",
+            body: "hi",
+            attachment_ids: &ids,
+            idempotency_key: "key-1",
+        };
         let e = send(&state, &mailbox(&base), "pw", &out).await.unwrap_err();
         assert_eq!(e.kind, "rejected");
         assert_eq!(e.message, "That person opted out (STOP).");

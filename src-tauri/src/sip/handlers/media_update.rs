@@ -37,14 +37,22 @@ pub(crate) async fn restart_media_on_offer_port(
 ) {
     let deadline = tokio::time::Instant::now() + SAME_PORT_RESTART_WINDOW;
     let started = loop {
-        let alive = state.read().await.find_call(&call_id).is_some_and(|(_, c)| c.is_established());
+        let alive = state
+            .read()
+            .await
+            .find_call(&call_id)
+            .is_some_and(|(_, c)| c.is_established());
         if !alive {
             return;
         }
         match media::start_call_media(&plan, &sdp).await {
             Ok(started) => break started,
             Err(e) if tokio::time::Instant::now() < deadline => {
-                log::debug!("Media restart for call {} waiting for its port: {}", call_id, e);
+                log::debug!(
+                    "Media restart for call {} waiting for its port: {}",
+                    call_id,
+                    e
+                );
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(e) => {
@@ -137,12 +145,21 @@ pub(crate) async fn answer_reinvite(
             output_device: s.preferred_output_device.clone(),
         }
     };
-    let ReinviteContext { local_addr, ref username, our_tag: ref tag, .. } = ctx;
+    let ReinviteContext {
+        local_addr,
+        ref username,
+        our_tag: ref tag,
+        ..
+    } = ctx;
 
     if !offer.contains("m=audio") {
         // No offer: ours goes in the 200 and the answer comes in the ACK,
         // which nothing here reads yet. As before.
-        let key = if ctx.srtp_active { ctx.local_srtp_key.as_deref() } else { None };
+        let key = if ctx.srtp_active {
+            ctx.local_srtp_key.as_deref()
+        } else {
+            None
+        };
         return builder::build_200_ok_invite_srtp(
             text,
             local_addr,
@@ -155,7 +172,10 @@ pub(crate) async fn answer_reinvite(
     }
 
     let Some(mut next) = media::remote_media(offer, Some(&ctx.codecs)) else {
-        log::warn!("re-INVITE for call {} offers nothing this phone can carry; 488", call_id);
+        log::warn!(
+            "re-INVITE for call {} offers nothing this phone can carry; 488",
+            call_id
+        );
         return builder::build_final_response(text, 488, "Not Acceptable Here", tag);
     };
     let use_srtp = ctx.srtp_mode == SrtpMode::Sdes
@@ -174,14 +194,22 @@ pub(crate) async fn answer_reinvite(
     let restart = !unspecified
         && (!ctx.has_media
             || use_srtp != ctx.srtp_active
-            || ctx.current.as_ref().is_none_or(|c| c.needs_restart_for(&next)));
+            || ctx
+                .current
+                .as_ref()
+                .is_none_or(|c| c.needs_restart_for(&next)));
     let our_key = match (use_srtp, &ctx.local_srtp_key) {
         (false, _) => None,
         (true, Some(key)) => Some(key.clone()),
-        (true, None) => rtp_engine::srtp::SrtpContext::generate().ok().map(|(_, key)| key),
+        (true, None) => rtp_engine::srtp::SrtpContext::generate()
+            .ok()
+            .map(|(_, key)| key),
     };
     if use_srtp && our_key.is_none() {
-        log::error!("Could not generate an SRTP key for call {}'s re-INVITE; 488", call_id);
+        log::error!(
+            "Could not generate an SRTP key for call {}'s re-INVITE; 488",
+            call_id
+        );
         return builder::build_final_response(text, 488, "Not Acceptable Here", tag);
     }
 
@@ -190,7 +218,10 @@ pub(crate) async fn answer_reinvite(
     if restart {
         log::info!(
             "re-INVITE moves call {}'s media to {} ({:?} on {}); starting a new session",
-            call_id, next.addr, next.audio.codec, next.audio.pt
+            call_id,
+            next.addr,
+            next.audio.codec,
+            next.audio.pt
         );
         let started = match media::allocate_free_rtp_port().await {
             Ok(port) => {
@@ -201,7 +232,9 @@ pub(crate) async fn answer_reinvite(
                     input_device: ctx.input_device.clone(),
                     output_device: ctx.output_device.clone(),
                 };
-                media::start_call_media(&plan, offer).await.map(|s| (port, s))
+                media::start_call_media(&plan, offer)
+                    .await
+                    .map(|s| (port, s))
             }
             Err(e) => Err(e),
         };
@@ -211,7 +244,11 @@ pub(crate) async fn answer_reinvite(
                 replaced = Some(started);
             }
             Err(e) => {
-                log::error!("Could not start the moved media for call {}: {}; 488", call_id, e);
+                log::error!(
+                    "Could not start the moved media for call {}: {}; 488",
+                    call_id,
+                    e
+                );
                 return builder::build_final_response(text, 488, "Not Acceptable Here", tag);
             }
         }
@@ -259,7 +296,11 @@ pub(crate) async fn answer_reinvite(
                         continued_in = Some(path);
                     }
                     Err(e) => {
-                        log::warn!("Could not keep recording call {} after its media moved: {}", call_id, e);
+                        log::warn!(
+                            "Could not keep recording call {} after its media moved: {}",
+                            call_id,
+                            e
+                        );
                     }
                 }
             }
@@ -268,7 +309,12 @@ pub(crate) async fn answer_reinvite(
             call.set_remote_rtp(next.addr);
         }
         call.set_remote_hold(remote_hold);
-        (call.stamp_local_sdp(&answer), old, continued_in, security_changed)
+        (
+            call.stamp_local_sdp(&answer),
+            old,
+            continued_in,
+            security_changed,
+        )
     };
     if let Some(event) = security_changed {
         let _ = event_tx.send(SipEvent::CallStateChanged(event));

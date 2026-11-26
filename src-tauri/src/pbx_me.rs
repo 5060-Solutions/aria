@@ -53,7 +53,8 @@ pub fn check(method: &str, path: &str) -> Result<MeRoute, MessagingError> {
         None => None,
         Some(q) => {
             let (k, v) = q.split_once('=').ok_or_else(refuse)?;
-            let names_device = parts == ["me", "devices"] || parts.starts_with(&["me", "devices", "current"]);
+            let names_device =
+                parts == ["me", "devices"] || parts.starts_with(&["me", "devices", "current"]);
             if k != "sip_instance" || !names_device {
                 return Err(refuse());
             }
@@ -64,7 +65,10 @@ pub fn check(method: &str, path: &str) -> Result<MeRoute, MessagingError> {
             Some((k.to_string(), v))
         }
     };
-    Ok(MeRoute { segments: parts.iter().map(|s| s.to_string()).collect(), query })
+    Ok(MeRoute {
+        segments: parts.iter().map(|s| s.to_string()).collect(),
+        query,
+    })
 }
 
 /// Send the request and return the JSON answer (`null` for an empty one).
@@ -77,7 +81,8 @@ pub async fn request(
     body: Option<Value>,
 ) -> Result<Value, MessagingError> {
     let route_ = check(method, path)?;
-    let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| VoicemailError::Malformed)?;
+    let method =
+        reqwest::Method::from_bytes(method.as_bytes()).map_err(|_| VoicemailError::Malformed)?;
     let bytes = call(state, mailbox, password, &|http, api, s| {
         let mut segments = vec!["api", "v1"];
         segments.extend(route_.segments.iter().map(String::as_str));
@@ -108,21 +113,28 @@ pub async fn extension_id(
     static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
         std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
-    let key = format!("{}|{}|{}", mailbox.account_id, mailbox.extension, mailbox.domain);
+    let key = format!(
+        "{}|{}|{}",
+        mailbox.account_id, mailbox.extension, mailbox.domain
+    );
     if let Some(id) = cache.lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return Ok(id.clone());
     }
     let seen = std::sync::Mutex::new(String::new());
     call(state, mailbox, password, &|http, api, s| {
         *seen.lock().unwrap_or_else(|p| p.into_inner()) = s.extension_id.clone();
-        http.get(route(api, &["api", "v1", "me", "devices"])).bearer_auth(&s.jwt)
+        http.get(route(api, &["api", "v1", "me", "devices"]))
+            .bearer_auth(&s.jwt)
     })
     .await?;
     let id = seen.into_inner().unwrap_or_else(|p| p.into_inner());
     if id.is_empty() {
         return Err(VoicemailError::Malformed.into());
     }
-    cache.lock().unwrap_or_else(|p| p.into_inner()).insert(key, id.clone());
+    cache
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, id.clone());
     Ok(id)
 }
 
@@ -161,9 +173,16 @@ mod tests {
     #[test]
     fn only_the_current_device_takes_a_sip_instance() {
         let r = check("GET", "/me/devices/current?sip_instance=urn:uuid:6f1c%3Aa").unwrap();
-        assert_eq!(r.query, Some(("sip_instance".into(), "urn:uuid:6f1c:a".into())));
+        assert_eq!(
+            r.query,
+            Some(("sip_instance".into(), "urn:uuid:6f1c:a".into()))
+        );
         assert!(check("GET", "/me/devices?sip_instance=urn:uuid:x").is_ok());
-        let r = check("POST", "/me/devices/current/context?sip_instance=urn:uuid:x").unwrap();
+        let r = check(
+            "POST",
+            "/me/devices/current/context?sip_instance=urn:uuid:x",
+        )
+        .unwrap();
         assert_eq!(r.query, Some(("sip_instance".into(), "urn:uuid:x".into())));
         assert!(check("GET", "/me/call-handoff?sip_instance=urn:uuid:x").is_err());
         assert!(check("GET", "/me/devices/current?other=1").is_err());

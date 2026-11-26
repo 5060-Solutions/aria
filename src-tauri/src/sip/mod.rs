@@ -1,32 +1,32 @@
 pub mod account;
 pub mod auth;
-pub mod call_move;
 pub mod builder;
+pub mod call_move;
 pub mod codec;
 pub mod connection;
 pub mod diagnostics;
+mod emergency;
 mod handlers;
 #[allow(dead_code)]
 pub mod ice;
-mod emergency;
 mod instance;
 pub mod media;
 pub mod mwi;
+#[cfg(test)]
+mod pbx_e2e;
 pub mod presence;
-pub mod replaces;
 pub(crate) mod recording_parts;
+pub mod replaces;
 mod signaling;
 #[allow(dead_code)]
 pub mod srtp;
 pub mod srv;
 pub mod state;
-pub mod transfer;
 pub(crate) mod transaction;
+pub mod transfer;
 pub mod transport;
 #[cfg(test)]
 mod voip_stack_harness;
-#[cfg(test)]
-mod pbx_e2e;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -37,8 +37,8 @@ pub use account::AccountConfig;
 pub use transport::TransportType;
 
 use self::builder::{
-    build_bye_with_routes, build_cancel, build_options, build_refer,
-    build_refer_with_replaces, build_register, build_subscribe, extract_header, extract_via_branch, is_request,
+    build_bye_with_routes, build_cancel, build_options, build_refer, build_refer_with_replaces,
+    build_register, build_subscribe, extract_header, extract_via_branch, is_request,
 };
 use self::diagnostics::DiagnosticLog;
 use self::media::MediaSessionExt;
@@ -46,8 +46,8 @@ use self::presence::{BlfEntry, EventType, SubscriptionState};
 use self::state::{AccountState, CallFSM, CallFSMEvent, EndReason, RegisterTimeoutPolicy};
 use self::transport::{SipMessage, SipTransport};
 
-pub use self::state::RegistrationStatus as RegistrationState;
 pub use self::presence::Subscription;
+pub use self::state::RegistrationStatus as RegistrationState;
 
 /// Extract display name from a SIP URI like "Display Name" <sip:user@domain>
 fn extract_display_name(uri: &str) -> Option<String> {
@@ -85,7 +85,9 @@ impl CallEventPayload {
         Self {
             account_id: call.account_id.clone(),
             call_id: call.id.clone(),
-            state: state_override.map(String::from).unwrap_or_else(|| call.state_name().to_string()),
+            state: state_override
+                .map(String::from)
+                .unwrap_or_else(|| call.state_name().to_string()),
             remote_uri: call.remote_uri.clone(),
             remote_name: extract_display_name(&call.remote_uri),
             direction: call.direction_str().to_string(),
@@ -277,9 +279,17 @@ pub enum SipEvent {
     DiagnosticMessage(DiagnosticLog),
     TransferProgress(TransferEvent),
     PresenceChanged(String, Vec<BlfEntry>), // account_id, entries
-    ConferenceCreated { conference_id: String, call_ids: Vec<String> },
-    ConferenceSplit { conference_id: String, call_id: String },
-    ConferenceEnded { conference_id: String },
+    ConferenceCreated {
+        conference_id: String,
+        call_ids: Vec<String>,
+    },
+    ConferenceSplit {
+        conference_id: String,
+        call_id: String,
+    },
+    ConferenceEnded {
+        conference_id: String,
+    },
     VoicemailStatus(VoicemailStatusEvent),
     RecordingStateChanged(RecordingEvent),
 }
@@ -423,7 +433,10 @@ pub(crate) async fn finish_call_media(
 /// appended to this one (see `recording_parts`). The caller has registered
 /// `continued_in` with `recording_parts::expect` before the new session
 /// could be stopped.
-pub(crate) async fn finish_replaced_media(old: media::MediaSession, continued_in: std::path::PathBuf) {
+pub(crate) async fn finish_replaced_media(
+    old: media::MediaSession,
+    continued_in: std::path::PathBuf,
+) {
     let saved = tokio::task::spawn_blocking(move || {
         let path = old.stop_recording().map(|p| p.map(recording_parts::join));
         old.stop();
@@ -535,9 +548,16 @@ impl ManagerState {
     }
 
     /// Find a call by SIP Call-ID header across all accounts
-    pub(crate) fn find_call_by_header(&self, call_id_header: &str) -> Option<(&AccountState, &CallFSM)> {
+    pub(crate) fn find_call_by_header(
+        &self,
+        call_id_header: &str,
+    ) -> Option<(&AccountState, &CallFSM)> {
         for account in self.accounts.values() {
-            if let Some(call) = account.calls.iter().find(|c| c.call_id_header == call_id_header) {
+            if let Some(call) = account
+                .calls
+                .iter()
+                .find(|c| c.call_id_header == call_id_header)
+            {
                 return Some((account, call));
             }
         }
@@ -545,9 +565,16 @@ impl ManagerState {
     }
 
     /// Find a call by SIP Call-ID header across all accounts mutably
-    pub(crate) fn find_call_by_header_mut(&mut self, call_id_header: &str) -> Option<(&str, &mut CallFSM)> {
+    pub(crate) fn find_call_by_header_mut(
+        &mut self,
+        call_id_header: &str,
+    ) -> Option<(&str, &mut CallFSM)> {
         for (account_id, account) in self.accounts.iter_mut() {
-            if let Some(call) = account.calls.iter_mut().find(|c| c.call_id_header == call_id_header) {
+            if let Some(call) = account
+                .calls
+                .iter_mut()
+                .find(|c| c.call_id_header == call_id_header)
+            {
                 return Some((account_id.as_str(), call));
             }
         }
@@ -556,7 +583,10 @@ impl ManagerState {
 
     /// Get all active calls across all accounts
     pub(crate) fn all_active_calls(&self) -> Vec<&CallFSM> {
-        self.accounts.values().flat_map(|a| a.calls.iter()).collect()
+        self.accounts
+            .values()
+            .flat_map(|a| a.calls.iter())
+            .collect()
     }
 }
 
@@ -720,7 +750,12 @@ impl SipManager {
     }
 
     /// Emit a registration state change event
-    fn emit_registration_event(&self, account_id: &str, state: RegistrationState, error: Option<String>) {
+    fn emit_registration_event(
+        &self,
+        account_id: &str,
+        state: RegistrationState,
+        error: Option<String>,
+    ) {
         self.emit(SipEvent::RegistrationChanged(RegistrationEvent {
             account_id: account_id.to_string(),
             state,
@@ -729,8 +764,16 @@ impl SipManager {
     }
 
     /// The step-by-step picture for `account_id`, if an attempt was ever made.
-    pub async fn connection_report(&self, account_id: &str) -> Option<connection::ConnectionReport> {
-        self.state.read().await.connection_reports.get(account_id).cloned()
+    pub async fn connection_report(
+        &self,
+        account_id: &str,
+    ) -> Option<connection::ConnectionReport> {
+        self.state
+            .read()
+            .await
+            .connection_reports
+            .get(account_id)
+            .cloned()
     }
 
     /// The status chip's "Retry now" / "Re-register".
@@ -746,26 +789,28 @@ impl SipManager {
         let refresh = {
             let mut s = self.state.write().await;
             match s.accounts.get_mut(&account_id) {
-                Some(existing) if existing.transport.is_some() => match existing.registration.status() {
-                    RegistrationState::Registering => return Ok("already_registering".into()),
-                    RegistrationState::Registered => {
-                        existing.adopt_config(&account);
-                        existing.refreshing = false;
-                        existing.on_register_timeout = RegisterTimeoutPolicy::Reconnect;
-                        existing.registration.begin_re_registration();
-                        if let Some(r) = s.connection_reports.get_mut(&account_id) {
-                            r.outcome = connection::Outcome::Registering;
-                            r.pending(connection::StepKind::Authenticate);
-                            r.pending(connection::StepKind::Registered);
+                Some(existing) if existing.transport.is_some() => {
+                    match existing.registration.status() {
+                        RegistrationState::Registering => return Ok("already_registering".into()),
+                        RegistrationState::Registered => {
+                            existing.adopt_config(&account);
+                            existing.refreshing = false;
+                            existing.on_register_timeout = RegisterTimeoutPolicy::Reconnect;
+                            existing.registration.begin_re_registration();
+                            if let Some(r) = s.connection_reports.get_mut(&account_id) {
+                                r.outcome = connection::Outcome::Registering;
+                                r.pending(connection::StepKind::Authenticate);
+                                r.pending(connection::StepKind::Registered);
+                            }
+                            true
                         }
-                        true
+                        _ => {
+                            existing.transport = None;
+                            existing.timer_generation += 1;
+                            false
+                        }
                     }
-                    _ => {
-                        existing.transport = None;
-                        existing.timer_generation += 1;
-                        false
-                    }
-                },
+                }
                 Some(existing) => {
                     existing.transport = None;
                     existing.timer_generation += 1;
@@ -778,8 +823,18 @@ impl SipManager {
             return self.register(account).await;
         }
         if let Err(e) = send_register(&self.state, &self.event_tx, &account_id, None).await {
-            log::warn!("Forced refresh for {} could not be sent; reconnecting: {}", account_id, e);
-            Self::handle_transport_death(self.state.clone(), self.event_tx.clone(), account_id, true).await;
+            log::warn!(
+                "Forced refresh for {} could not be sent; reconnecting: {}",
+                account_id,
+                e
+            );
+            Self::handle_transport_death(
+                self.state.clone(),
+                self.event_tx.clone(),
+                account_id,
+                true,
+            )
+            .await;
             return Ok("reconnecting".into());
         }
         Ok("refreshing".into())
@@ -839,7 +894,10 @@ impl SipManager {
                     } else {
                         // Settings that take effect per call (SRTP, codecs,
                         // auto-record) only need the config refreshed.
-                        log::info!("Account {} already registered — updating config", account_id);
+                        log::info!(
+                            "Account {} already registered — updating config",
+                            account_id
+                        );
                         existing.adopt_config(&account);
                         (false, Some(existing.registration.status()))
                     }
@@ -866,37 +924,57 @@ impl SipManager {
         // attempt, so a retry does not start the list over.
         let mut failover = {
             let s = self.state.read().await;
-            s.accounts.get(&account_id).map(|a| a.failover.clone()).unwrap_or_default()
+            s.accounts
+                .get(&account_id)
+                .map(|a| a.failover.clone())
+                .unwrap_or_default()
         };
         failover.restart();
-        let Connected { server_addr, transport, rx, local_addr, target } =
-            match resolve_and_connect(&self.state, &self.event_tx, &account, &mut report, &mut failover).await {
-                Ok(v) => v,
-                Err(ConnectFailure { message: e, .. }) => {
-                    // An account the backend already knows must end up in
-                    // Error like any other failed registration, so the chip,
-                    // the panel and the retry loop all see the same thing. A
-                    // brand-new account has no state yet; the caller records
-                    // the error from the returned message.
-                    let marked = {
-                        let mut s = self.state.write().await;
-                        match s.accounts.get_mut(&account_id) {
-                            Some(a) => {
-                                a.registration.start_registration(account.clone());
-                                a.registration.registration_failed(0, &e);
-                                a.transport = None;
-                                a.failover = failover;
-                                true
-                            }
-                            None => false,
+        let Connected {
+            server_addr,
+            transport,
+            rx,
+            local_addr,
+            target,
+        } = match resolve_and_connect(
+            &self.state,
+            &self.event_tx,
+            &account,
+            &mut report,
+            &mut failover,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(ConnectFailure { message: e, .. }) => {
+                // An account the backend already knows must end up in
+                // Error like any other failed registration, so the chip,
+                // the panel and the retry loop all see the same thing. A
+                // brand-new account has no state yet; the caller records
+                // the error from the returned message.
+                let marked = {
+                    let mut s = self.state.write().await;
+                    match s.accounts.get_mut(&account_id) {
+                        Some(a) => {
+                            a.registration.start_registration(account.clone());
+                            a.registration.registration_failed(0, &e);
+                            a.transport = None;
+                            a.failover = failover;
+                            true
                         }
-                    };
-                    if marked {
-                        self.emit_registration_event(&account_id, RegistrationState::Error, Some(e.clone()));
+                        None => false,
                     }
-                    return Err(e);
+                };
+                if marked {
+                    self.emit_registration_event(
+                        &account_id,
+                        RegistrationState::Error,
+                        Some(e.clone()),
+                    );
                 }
-            };
+                return Err(e);
+            }
+        };
 
         log::info!(
             "Registering {}@{} via {:?} to {} ({}) (local: {})",
@@ -915,7 +993,9 @@ impl SipManager {
         let generation = {
             let mut state = self.state.write().await;
             if !state.accounts.contains_key(&account_id) {
-                state.accounts.insert(account_id.clone(), AccountState::new(account.clone()));
+                state
+                    .accounts
+                    .insert(account_id.clone(), AccountState::new(account.clone()));
             }
             if state.active_account_id.is_none() {
                 state.active_account_id = Some(account_id.clone());
@@ -926,7 +1006,9 @@ impl SipManager {
             account_state.failover = failover;
             account_state.target = Some(target);
             account_state.flow_timer = None;
-            account_state.registration.start_registration(account.clone());
+            account_state
+                .registration
+                .start_registration(account.clone());
             account_state.registration.set_server_addr(server_addr);
             account_state.registration.set_local_addr(local_addr);
             account_state.transport = Some(transport);
@@ -966,7 +1048,12 @@ impl SipManager {
             return Err(e);
         }
 
-        Self::start_account_timers(self.state.clone(), self.event_tx.clone(), account_id, generation);
+        Self::start_account_timers(
+            self.state.clone(),
+            self.event_tx.clone(),
+            account_id,
+            generation,
+        );
 
         Ok("registering".into())
     }
@@ -1032,9 +1119,21 @@ impl SipManager {
         account_id: String,
         generation: u64,
     ) {
-        tokio::spawn(Self::re_register_loop(state.clone(), event_tx.clone(), account_id.clone(), generation));
-        tokio::spawn(Self::options_keepalive_loop(state.clone(), event_tx.clone(), account_id.clone(), generation));
-        tokio::spawn(Self::crlf_keepalive_loop(state, event_tx, account_id, generation));
+        tokio::spawn(Self::re_register_loop(
+            state.clone(),
+            event_tx.clone(),
+            account_id.clone(),
+            generation,
+        ));
+        tokio::spawn(Self::options_keepalive_loop(
+            state.clone(),
+            event_tx.clone(),
+            account_id.clone(),
+            generation,
+        ));
+        tokio::spawn(Self::crlf_keepalive_loop(
+            state, event_tx, account_id, generation,
+        ));
     }
 
     /// Whether the account still exists on this transport generation.
@@ -1077,8 +1176,9 @@ impl SipManager {
                 // used to be a fixed 120 s whatever the server said; a
                 // registrar granting 60 s left the phone unreachable half the
                 // time.
-                let interval = std::time::Duration::from_secs(u64::from(account.granted_expires) / 2)
-                    .max(min_refresh);
+                let interval =
+                    std::time::Duration::from_secs(u64::from(account.granted_expires) / 2)
+                        .max(min_refresh);
                 let due = account
                     .registration
                     .registered_at()
@@ -1102,7 +1202,8 @@ impl SipManager {
 
             if let Err(e) = send_register(&state, &event_tx, &aid, None).await {
                 log::error!("Re-REGISTER failed for {} — transport dead: {}", aid, e);
-                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), true).await;
+                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), true)
+                    .await;
                 return;
             }
         }
@@ -1119,17 +1220,27 @@ impl SipManager {
         let now = std::time::Instant::now();
         let (config, failover, dns, busy) = {
             let s = state.read().await;
-            let Some(a) = s.accounts.get(aid) else { return false };
+            let Some(a) = s.accounts.get(aid) else {
+                return false;
+            };
             let mut cfg = a.config.clone();
             cfg.transport = a.configured_transport.clone();
-            (cfg, a.failover.clone(), s.dns.clone(), a.calls.iter().any(|c| !c.is_ended()))
+            (
+                cfg,
+                a.failover.clone(),
+                s.dns.clone(),
+                a.calls.iter().any(|c| !c.is_ended()),
+            )
         };
 
         if failover.needs_resolve(now) && !failover.is_empty() {
             let (host, port) = Self::target_endpoint(&config);
             match srv::resolve(&*dns, host, port, &config.transport, &mut srv::random_draw).await {
                 Ok(resolved) => {
-                    log::debug!("Server list for {aid} renewed: {} target(s)", resolved.targets.len());
+                    log::debug!(
+                        "Server list for {aid} renewed: {} target(s)",
+                        resolved.targets.len()
+                    );
                     if let Some(a) = state.write().await.accounts.get_mut(aid) {
                         a.failover.install(resolved, std::time::Instant::now());
                     }
@@ -1142,23 +1253,41 @@ impl SipManager {
         if busy {
             return false;
         }
-        let Some(candidate) = state.read().await.accounts.get(aid).and_then(|a| a.failover.failback_candidate(now)) else {
+        let Some(candidate) = state
+            .read()
+            .await
+            .accounts
+            .get(aid)
+            .and_then(|a| a.failover.failback_candidate(now))
+        else {
             return false;
         };
         let (tls_name, local_addr) = {
             let s = state.read().await;
-            let Some(a) = s.accounts.get(aid) else { return false };
-            let name = config.tls_name_for(a.failover.via_srv(), a.failover.lookup_host()).to_string();
-            let Some(local) = a.local_addr else { return false };
+            let Some(a) = s.accounts.get(aid) else {
+                return false;
+            };
+            let name = config
+                .tls_name_for(a.failover.via_srv(), a.failover.lookup_host())
+                .to_string();
+            let Some(local) = a.local_addr else {
+                return false;
+            };
             (name, local)
         };
         let probe_config = with_transport(&config, &candidate.transport);
         let t1 = state.read().await.timing.t1;
         if probe_target(&probe_config, &candidate, &tls_name, local_addr, t1).await {
-            log::info!("Higher-priority server {} ({}) answers again; moving back to it", candidate.addr, candidate.host);
+            log::info!(
+                "Higher-priority server {} ({}) answers again; moving back to it",
+                candidate.addr,
+                candidate.host
+            );
             {
                 let mut s = state.write().await;
-                let Some(a) = s.accounts.get_mut(aid) else { return false };
+                let Some(a) = s.accounts.get_mut(aid) else {
+                    return false;
+                };
                 // A call may have started during the probe.
                 if a.calls.iter().any(|c| !c.is_ended()) {
                     log::info!("A call started while probing; staying on the current server");
@@ -1166,11 +1295,21 @@ impl SipManager {
                 }
                 a.failover.prefer(&candidate);
             }
-            SipManager::handle_transport_death(state.clone(), event_tx.clone(), aid.to_string(), true).await;
+            SipManager::handle_transport_death(
+                state.clone(),
+                event_tx.clone(),
+                aid.to_string(),
+                true,
+            )
+            .await;
             true
         } else {
             if let Some(a) = state.write().await.accounts.get_mut(aid) {
-                a.failover.report_failure(&candidate, &srv::Failure::Connect, std::time::Instant::now());
+                a.failover.report_failure(
+                    &candidate,
+                    &srv::Failure::Connect,
+                    std::time::Instant::now(),
+                );
             }
             false
         }
@@ -1199,7 +1338,12 @@ impl SipManager {
         loop {
             let (interval, wait, timing, transactions) = {
                 let s = state.read().await;
-                (s.timing.options_interval, s.timing.options_wait, s.timing, s.transactions.clone())
+                (
+                    s.timing.options_interval,
+                    s.timing.options_wait,
+                    s.timing,
+                    s.transactions.clone(),
+                )
             };
             tokio::time::sleep(interval).await;
 
@@ -1217,13 +1361,21 @@ impl SipManager {
                         continue;
                     }
                 }
-                let (Some(local_addr), Some(server_addr), Some(transport)) =
-                    (account.local_addr, account.server_addr, account.transport.clone())
-                else {
+                let (Some(local_addr), Some(server_addr), Some(transport)) = (
+                    account.local_addr,
+                    account.server_addr,
+                    account.transport.clone(),
+                ) else {
                     continue;
                 };
                 account.options_cseq += 1;
-                (account.config.clone(), local_addr, server_addr, transport, account.options_cseq)
+                (
+                    account.config.clone(),
+                    local_addr,
+                    server_addr,
+                    transport,
+                    account.options_cseq,
+                )
             };
 
             let msg = build_options(
@@ -1259,7 +1411,10 @@ impl SipManager {
                         return;
                     }
                     matches!(outcome, Ok(transaction::Outcome::Answered(_)))
-                        || s.accounts.get(&aid).and_then(|a| a.last_heard).is_some_and(|at| at >= since)
+                        || s.accounts
+                            .get(&aid)
+                            .and_then(|a| a.last_heard)
+                            .is_some_and(|at| at >= since)
                 }
             };
             round_ended = Some(std::time::Instant::now());
@@ -1281,11 +1436,17 @@ impl SipManager {
                     .get(&aid)
                     .is_some_and(|a| a.calls.iter().any(|c| !c.is_ended()));
                 if on_call {
-                    log::warn!("Server of {} is not answering, but a call is up; not failing over", aid);
+                    log::warn!(
+                        "Server of {} is not answering, but a call is up; not failing over",
+                        aid
+                    );
                     misses = 1;
                     continue;
                 }
-                log::error!("OPTIONS keepalive lost for {} — the server has stopped answering", aid);
+                log::error!(
+                    "OPTIONS keepalive lost for {} — the server has stopped answering",
+                    aid
+                );
                 fail_over(&state, &event_tx, &aid, srv::Failure::Timeout, false).await;
                 return;
             }
@@ -1338,7 +1499,8 @@ impl SipManager {
                 log::error!("CRLF keep-alive could not be written for {}: {}", aid, e);
                 // The connection is gone, but a call on it is not ended here:
                 // reconnecting keeps the calls.
-                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), true).await;
+                Self::handle_transport_death(state.clone(), event_tx.clone(), aid.clone(), true)
+                    .await;
                 return;
             }
             log::trace!("CRLF keep-alive sent for {}", aid);
@@ -1400,7 +1562,11 @@ impl SipManager {
             Some(id) => id.to_string(),
             None => {
                 let s = self.state.read().await;
-                match s.active_account_id.clone().or_else(|| s.accounts.keys().next().cloned()) {
+                match s
+                    .active_account_id
+                    .clone()
+                    .or_else(|| s.accounts.keys().next().cloned())
+                {
                     Some(id) => id,
                     None => return Ok(()),
                 }
@@ -1410,7 +1576,9 @@ impl SipManager {
         let (needs_request, wait) = {
             let mut s = self.state.write().await;
             let wait = s.timing.unregister_wait;
-            let Some(account) = s.accounts.get_mut(&aid) else { return Ok(()) };
+            let Some(account) = s.accounts.get_mut(&aid) else {
+                return Ok(());
+            };
             // Stop the refresh and keepalive; the receive loop stays for the answer.
             account.timer_generation += 1;
             let registered = account.registration.status() == RegistrationState::Registered
@@ -1424,7 +1592,11 @@ impl SipManager {
             (registered, wait)
         };
 
-        if !needs_request || send_register(&self.state, &self.event_tx, &aid, None).await.is_err() {
+        if !needs_request
+            || send_register(&self.state, &self.event_tx, &aid, None)
+                .await
+                .is_err()
+        {
             finish_unregister(&self.state, &self.event_tx, &aid).await;
             return Ok(());
         }
@@ -1438,7 +1610,10 @@ impl SipManager {
                 return Ok(());
             }
         }
-        log::warn!("No answer to unregister for {}; forgetting the account", aid);
+        log::warn!(
+            "No answer to unregister for {}; forgetting the account",
+            aid
+        );
         finish_unregister(&self.state, &self.event_tx, &aid).await;
         Ok(())
     }
@@ -1468,7 +1643,10 @@ impl SipManager {
             log::info!("Active account set to: {}", account_id);
             Ok(())
         } else {
-            Err(format!("Account {} not found or not registered", account_id))
+            Err(format!(
+                "Account {} not found or not registered",
+                account_id
+            ))
         }
     }
 
@@ -1545,7 +1723,9 @@ impl SipManager {
             let s = self.state.read().await;
             let aid = match account_id {
                 Some(id) => id.to_string(),
-                None => s.active_account_id.clone()
+                None => s
+                    .active_account_id
+                    .clone()
                     .or_else(|| s.accounts.keys().next().cloned())
                     .ok_or("No account configured")?,
             };
@@ -1555,8 +1735,20 @@ impl SipManager {
                 // no backoff, Retry-After or failover state may delay it.
                 if emergency::is_emergency(uri) {
                     drop(s);
-                    let (cfg, local, server, transport, public) = self.emergency_transport(&aid).await?;
-                    return self.place_call(uri, aid, cfg, local, server, transport, public, call_id_override).await;
+                    let (cfg, local, server, transport, public) =
+                        self.emergency_transport(&aid).await?;
+                    return self
+                        .place_call(
+                            uri,
+                            aid,
+                            cfg,
+                            local,
+                            server,
+                            transport,
+                            public,
+                            call_id_override,
+                        )
+                        .await;
                 }
                 return Err("Not registered".into());
             }
@@ -1564,10 +1756,26 @@ impl SipManager {
             let server_addr = account.server_addr.ok_or("No server addr")?;
             let transport = account.transport.clone().ok_or("No transport")?;
             let public_addr = account.public_addr;
-            (account.config.clone(), local_addr, server_addr, transport, aid, public_addr)
+            (
+                account.config.clone(),
+                local_addr,
+                server_addr,
+                transport,
+                aid,
+                public_addr,
+            )
         };
-        self.place_call(uri, aid, account_config, local_addr, server_addr, transport, public_addr, call_id_override)
-            .await
+        self.place_call(
+            uri,
+            aid,
+            account_config,
+            local_addr,
+            server_addr,
+            transport,
+            public_addr,
+            call_id_override,
+        )
+        .await
     }
 
     /// A transport an emergency call can be sent on while the account is not
@@ -1578,11 +1786,21 @@ impl SipManager {
     async fn emergency_transport(
         &self,
         aid: &str,
-    ) -> Result<(AccountConfig, SocketAddr, SocketAddr, SipTransport, Option<SocketAddr>), String> {
+    ) -> Result<
+        (
+            AccountConfig,
+            SocketAddr,
+            SocketAddr,
+            SipTransport,
+            Option<SocketAddr>,
+        ),
+        String,
+    > {
         let (config, failover, dns) = {
             let s = self.state.read().await;
             let a = s.get_account(aid).ok_or("Account not found")?;
-            if let (Some(t), Some(l), Some(sv)) = (a.transport.clone(), a.local_addr, a.server_addr) {
+            if let (Some(t), Some(l), Some(sv)) = (a.transport.clone(), a.local_addr, a.server_addr)
+            {
                 return Ok((a.config.clone(), l, sv, t, a.public_addr));
             }
             let mut cfg = a.config.clone();
@@ -1592,16 +1810,31 @@ impl SipManager {
         let mut failover = failover;
         if failover.is_empty() {
             let (host, port) = Self::target_endpoint(&config);
-            let resolved = srv::resolve(&*dns, host, port, &config.transport, &mut srv::random_draw).await?;
+            let resolved =
+                srv::resolve(&*dns, host, port, &config.transport, &mut srv::random_draw).await?;
             failover.install(resolved, std::time::Instant::now());
         }
-        let tls_name = config.tls_name_for(failover.via_srv(), failover.lookup_host()).to_string();
+        let tls_name = config
+            .tls_name_for(failover.via_srv(), failover.lookup_host())
+            .to_string();
         let mut last = "no server".to_string();
         for target in failover.targets().to_vec() {
             let effective = with_transport(&config, &target.transport);
-            match open_transport_for(&self.state, &self.event_tx, &effective, target.addr, &tls_name).await {
+            match open_transport_for(
+                &self.state,
+                &self.event_tx,
+                &effective,
+                target.addr,
+                &tls_name,
+            )
+            .await
+            {
                 Ok((transport, rx, local_addr)) => {
-                    log::warn!("Emergency call: using {} ({}) without a registration", target.addr, target.host);
+                    log::warn!(
+                        "Emergency call: using {} ({}) without a registration",
+                        target.addr,
+                        target.host
+                    );
                     let generation = {
                         let mut s = self.state.write().await;
                         let a = s.accounts.get_mut(aid).ok_or("Account not found")?;
@@ -1620,7 +1853,12 @@ impl SipManager {
                         aid.to_string(),
                         generation,
                     );
-                    let public = self.state.read().await.get_account(aid).and_then(|a| a.public_addr);
+                    let public = self
+                        .state
+                        .read()
+                        .await
+                        .get_account(aid)
+                        .and_then(|a| a.public_addr);
                     return Ok((effective, local_addr, target.addr, transport, public));
                 }
                 Err(e) => {
@@ -1644,15 +1882,15 @@ impl SipManager {
         public_addr: Option<SocketAddr>,
         call_id_override: Option<String>,
     ) -> Result<String, String> {
-
         let call_id = builder::generate_call_id();
         let from_tag = builder::generate_tag();
 
         // Allocate RTP port and discover public IP via STUN for NAT traversal
         let stun_servers = self.state.read().await.stun_servers.clone();
-        let (rtp_port, stun_public_ip, _stun_public_port) = media::allocate_port_with_stun(&stun_servers)
-            .await
-            .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
+        let (rtp_port, stun_public_ip, _stun_public_port) =
+            media::allocate_port_with_stun(&stun_servers)
+                .await
+                .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
 
         // STUN first, then what the registrar reported; for a server on a
         // private network, neither (see `media::sdp_address`). This was
@@ -1665,14 +1903,22 @@ impl SipManager {
         );
         let public_ip = Some(sdp_ip.to_string());
         let (invite, local_srtp_key) = builder::build_invite_with_public_ip(
-            &account_config, uri, local_addr, rtp_port, &call_id, 1, &from_tag, None,
+            &account_config,
+            uri,
+            local_addr,
+            rtp_port,
+            &call_id,
+            1,
+            &from_tag,
+            None,
             public_ip.as_deref(),
         );
 
         let branch = extract_via_branch(&invite).unwrap_or_default();
 
         let local_uri = format!("sip:{}@{}", account_config.username, account_config.domain);
-        let mut call = CallFSM::new_outbound(&aid, uri, call_id, from_tag, rtp_port, branch, local_uri);
+        let mut call =
+            CallFSM::new_outbound(&aid, uri, call_id, from_tag, rtp_port, branch, local_uri);
         call.local_srtp_key = local_srtp_key;
         // The address this offer carries; the authenticated retry reuses it.
         call.sdp_public_ip = Some(sdp_ip);
@@ -1691,16 +1937,28 @@ impl SipManager {
                 account.calls.push(call);
             }
         }
-        self.emit(SipEvent::CallStateChanged(CallEvent::new(
-            &aid, &id, "dialing", uri, "outbound"
-        ).with_sip_call_id(&sip_call_id_header)));
+        self.emit(SipEvent::CallStateChanged(
+            CallEvent::new(&aid, &id, "dialing", uri, "outbound")
+                .with_sip_call_id(&sip_call_id_header),
+        ));
 
         log::info!("Sending INVITE to {}", uri);
-        if let Err(e) = send_invite(&self.state, &self.event_tx, &id, &transport, server_addr, invite).await {
+        if let Err(e) = send_invite(
+            &self.state,
+            &self.event_tx,
+            &id,
+            &transport,
+            server_addr,
+            invite,
+        )
+        .await
+        {
             if let Some(account) = self.state.write().await.get_account_mut(&aid) {
                 account.calls.retain(|c| c.id != id);
             }
-            self.emit(SipEvent::CallStateChanged(CallEvent::new(&aid, &id, "ended", uri, "outbound")));
+            self.emit(SipEvent::CallStateChanged(CallEvent::new(
+                &aid, &id, "ended", uri, "outbound",
+            )));
             return Err(e);
         }
 
@@ -1739,9 +1997,34 @@ impl SipManager {
     }
 
     pub async fn hangup(&self, call_id: &str) -> Result<(), String> {
-        let (action_msg, server_addr, transport, account_id, remote_uri, direction, sent_cancel, is_incoming) = {
+        let (
+            action_msg,
+            server_addr,
+            transport,
+            account_id,
+            remote_uri,
+            direction,
+            sent_cancel,
+            is_incoming,
+        ) = {
             let mut s = self.state.write().await;
-            let (aid, cseq, remote_uri, direction, our_tag, their_tag, call_id_header, last_invite_branch, invite_cseq, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact) = {
+            let (
+                aid,
+                cseq,
+                remote_uri,
+                direction,
+                our_tag,
+                their_tag,
+                call_id_header,
+                last_invite_branch,
+                invite_cseq,
+                local_uri,
+                route_set,
+                is_incoming,
+                is_dialing_or_ringing,
+                raw_invite,
+                remote_contact,
+            ) = {
                 let (aid, call) = s.find_call_mut(call_id).ok_or("Call not found")?;
                 let aid = aid.to_string();
                 // Only a BYE is a new request in the dialog. A CANCEL reuses
@@ -1761,7 +2044,11 @@ impl SipManager {
                 // An unanswered inbound call has our tag already (we chose it
                 // for the 180); an unanswered outbound one has no remote tag
                 // yet, and the 486 path below needs one for ours.
-                let our_tag = if our_tag.is_empty() { builder::generate_tag() } else { our_tag };
+                let our_tag = if our_tag.is_empty() {
+                    builder::generate_tag()
+                } else {
+                    our_tag
+                };
                 let call_id_header = call.call_id_header.clone();
                 let last_invite_branch = call.last_invite_branch.clone();
                 let invite_cseq = call.invite_cseq;
@@ -1771,7 +2058,23 @@ impl SipManager {
                 let is_dialing_or_ringing = call.is_dialing() || call.is_ringing();
                 let raw_invite = call.raw_invite().map(|str_| str_.to_string());
                 let remote_contact = call.remote_contact.clone();
-                (aid, cseq, remote_uri, direction, our_tag, their_tag, call_id_header, last_invite_branch, invite_cseq, local_uri, route_set, is_incoming, is_dialing_or_ringing, raw_invite, remote_contact)
+                (
+                    aid,
+                    cseq,
+                    remote_uri,
+                    direction,
+                    our_tag,
+                    their_tag,
+                    call_id_header,
+                    last_invite_branch,
+                    invite_cseq,
+                    local_uri,
+                    route_set,
+                    is_incoming,
+                    is_dialing_or_ringing,
+                    raw_invite,
+                    remote_contact,
+                )
             };
 
             let account = s.get_account(&aid).ok_or("Account not found")?;
@@ -1826,13 +2129,23 @@ impl SipManager {
                 Some(bye)
             };
 
-            (msg, sa, transport, aid, remote_uri, direction, is_dialing_or_ringing, is_incoming)
+            (
+                msg,
+                sa,
+                transport,
+                aid,
+                remote_uri,
+                direction,
+                is_dialing_or_ringing,
+                is_incoming,
+            )
         };
 
         if let Some(msg) = action_msg {
             if is_incoming {
                 // A response to their INVITE, resent until it is ACKed.
-                send_invite_final_response(&self.state, call_id, msg, &transport, server_addr).await?;
+                send_invite_final_response(&self.state, call_id, msg, &transport, server_addr)
+                    .await?;
             } else {
                 // A CANCEL or BYE, resent over UDP until it is answered.
                 send_non_invite(&self.state, &transport, server_addr, msg).await?;
@@ -1859,10 +2172,16 @@ impl SipManager {
                 call.bye_sent = true;
                 let cseq = call.next_cseq();
                 let (our_tag, their_tag) = call.dialog_tags();
-                let target = call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone());
+                let target = call
+                    .remote_contact
+                    .clone()
+                    .unwrap_or_else(|| call.remote_uri.clone());
                 let route_set = call.route_set().to_vec();
-                let (call_id_header, local_uri, remote_uri) =
-                    (call.call_id_header.clone(), call.local_uri.clone(), call.remote_uri.clone());
+                let (call_id_header, local_uri, remote_uri) = (
+                    call.call_id_header.clone(),
+                    call.local_uri.clone(),
+                    call.remote_uri.clone(),
+                );
                 let account = s.get_account(&aid).ok_or("Account not found")?;
                 let la = account.local_addr.ok_or("No local addr")?;
                 Some(build_bye_with_routes(
@@ -1886,7 +2205,10 @@ impl SipManager {
             (media, late_bye)
         };
         if let Some(bye) = late_bye {
-            log::info!("Call {} was answered as it was cancelled; sending BYE", call_id);
+            log::info!(
+                "Call {} was answered as it was cancelled; sending BYE",
+                call_id
+            );
             let _ = send_non_invite(&self.state, &transport, server_addr, bye).await;
         }
         let recording_path = finish_call_media(call_id, media).await;
@@ -1905,7 +2227,19 @@ impl SipManager {
     }
 
     pub async fn answer(&self, call_id: &str) -> Result<(), String> {
-        let (raw_invite, local_addr, server_addr, rtp_port, to_tag, username, remote_uri, account_id, transport, srtp_mode, codec_prefs) = {
+        let (
+            raw_invite,
+            local_addr,
+            server_addr,
+            rtp_port,
+            to_tag,
+            username,
+            remote_uri,
+            account_id,
+            transport,
+            srtp_mode,
+            codec_prefs,
+        ) = {
             let s = self.state.read().await;
             let (account, call) = s.find_call(call_id).ok_or("Call not found")?;
             if !call.is_incoming() {
@@ -1944,11 +2278,16 @@ impl SipManager {
         // rtp-engine's own pick ran a Yealink call (G.722 first) on G.722
         // while the answer said PCMU: no audio either way.
         let Some(remote) = media::remote_media(sdp, Some(&codec_prefs)) else {
-            self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here").await;
+            self.decline_incoming(call_id, &raw_invite, &to_tag, 488, "Not Acceptable Here")
+                .await;
             return Err("The caller offered no media this phone can carry".into());
         };
         let remote_rtp = remote.addr;
-        log::info!("Negotiated codec for inbound: {:?} on payload type {}", remote.audio.codec, remote.audio.pt);
+        log::info!(
+            "Negotiated codec for inbound: {:?} on payload type {}",
+            remote.audio.codec,
+            remote.audio.pt
+        );
 
         // SRTP answer: when the account offers SDES and the caller's offer is
         // RTP/SAVP with a key, generate our own key, answer encrypted, and run
@@ -1972,7 +2311,10 @@ impl SipManager {
 
         let (input_dev, output_dev) = {
             let s = self.state.read().await;
-            (s.preferred_input_device.clone(), s.preferred_output_device.clone())
+            (
+                s.preferred_input_device.clone(),
+                s.preferred_output_device.clone(),
+            )
         };
 
         let plan = media::MediaPlan {
@@ -1986,7 +2328,14 @@ impl SipManager {
             Ok(started) => (started.session, started.srtp_active),
             Err(e) => {
                 log::error!("Could not start audio for incoming call {}: {}", call_id, e);
-                self.decline_incoming(call_id, &raw_invite, &to_tag, 480, "Temporarily Unavailable").await;
+                self.decline_incoming(
+                    call_id,
+                    &raw_invite,
+                    &to_tag,
+                    480,
+                    "Temporarily Unavailable",
+                )
+                .await;
                 return Err(format!("Could not start audio: {}", e));
             }
         };
@@ -2010,7 +2359,11 @@ impl SipManager {
 
         // Our crypto line only when the session actually came up encrypted,
         // so the answer never claims SRTP the media is not using.
-        let answer_crypto = if srtp_active { our_srtp_key.as_deref() } else { None };
+        let answer_crypto = if srtp_active {
+            our_srtp_key.as_deref()
+        } else {
+            None
+        };
         let answer_sdp = builder::build_sdp_answer_with(
             sdp,
             &builder::AnswerOptions {
@@ -2050,7 +2403,10 @@ impl SipManager {
             )
             .ok_or("Failed to build 200 OK")?;
             call.set_to_tag(to_tag.clone());
-            call.pending_2xx = Some(state::Pending2xx { cseq: invite_cseq, response: response.clone() });
+            call.pending_2xx = Some(state::Pending2xx {
+                cseq: invite_cseq,
+                response: response.clone(),
+            });
             call.srtp_active = srtp_active;
             call.remote_media = Some(plan.remote.clone().for_session(srtp_active));
             call.set_remote_hold(remote_hold);
@@ -2085,7 +2441,13 @@ impl SipManager {
         let internal_id = call_id.to_string();
         tokio::spawn(async move {
             let acked = retransmit_2xx_until_ack(
-                &mgr.state, &internal_id, invite_cseq, &response, &transport, server_addr, timing,
+                &mgr.state,
+                &internal_id,
+                invite_cseq,
+                &response,
+                &transport,
+                server_addr,
+                timing,
             )
             .await;
             if !acked {
@@ -2113,10 +2475,19 @@ impl SipManager {
 
     /// Turn down an incoming call that cannot be answered, with a final
     /// response to its INVITE, and report it ended.
-    async fn decline_incoming(&self, call_id: &str, raw_invite: &str, to_tag: &str, code: u16, reason: &str) {
+    async fn decline_incoming(
+        &self,
+        call_id: &str,
+        raw_invite: &str,
+        to_tag: &str,
+        code: u16,
+        reason: &str,
+    ) {
         let sent = {
             let mut s = self.state.write().await;
-            let Some((aid, call)) = s.find_call_mut(call_id) else { return };
+            let Some((aid, call)) = s.find_call_mut(call_id) else {
+                return;
+            };
             let aid = aid.to_string();
             if !call.is_incoming() {
                 return;
@@ -2129,14 +2500,21 @@ impl SipManager {
             (aid, remote_uri, transport, server_addr)
         };
         let (aid, remote_uri, transport, server_addr) = sent;
-        if let (Some(transport), Some(server_addr), Some(resp)) =
-            (transport, server_addr, builder::build_final_response(raw_invite, code, reason, to_tag))
-        {
-            let _ = send_invite_final_response(&self.state, call_id, resp, &transport, server_addr).await;
+        if let (Some(transport), Some(server_addr), Some(resp)) = (
+            transport,
+            server_addr,
+            builder::build_final_response(raw_invite, code, reason, to_tag),
+        ) {
+            let _ = send_invite_final_response(&self.state, call_id, resp, &transport, server_addr)
+                .await;
         }
-        self.emit(SipEvent::CallStateChanged(
-            CallEvent::new(&aid, call_id, "ended", &remote_uri, "inbound"),
-        ));
+        self.emit(SipEvent::CallStateChanged(CallEvent::new(
+            &aid,
+            call_id,
+            "ended",
+            &remote_uri,
+            "inbound",
+        )));
     }
 
     /// Put the call on hold, or take it off.
@@ -2184,13 +2562,18 @@ impl SipManager {
     }
 
     /// Start recording the call audio
-    pub async fn start_recording(&self, call_id: &str, recordings_dir: &std::path::Path) -> Result<String, String> {
+    pub async fn start_recording(
+        &self,
+        call_id: &str,
+        recordings_dir: &std::path::Path,
+    ) -> Result<String, String> {
         log::info!("Starting recording for call {}", call_id);
         let s = self.state.read().await;
         let (_, call) = s.find_call(call_id).ok_or("Call not found")?;
         if let Some(media) = call.media() {
             let output_path = rtp_engine::generate_recording_filename(call_id, recordings_dir);
-            media.start_recording(output_path.clone())
+            media
+                .start_recording(output_path.clone())
                 .map_err(|e| format!("Failed to start recording: {}", e))?;
             Ok(output_path.to_string_lossy().to_string())
         } else {
@@ -2262,7 +2645,9 @@ impl SipManager {
             // Ours in From, theirs in To, whichever way the call was set up.
             let (our_tag, their_tag) = call.dialog_tags();
             let info = (
-                call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone()),
+                call.remote_contact
+                    .clone()
+                    .unwrap_or_else(|| call.remote_uri.clone()),
                 call.remote_uri.clone(),
                 call.call_id_header.clone(),
                 cseq,
@@ -2281,7 +2666,8 @@ impl SipManager {
             (info, la, sa, tp, aid, transport)
         };
 
-        let (request_target, remote_uri, sip_call_id, cseq, from_tag, to_tag, route_set, local_uri) = call_info;
+        let (request_target, remote_uri, sip_call_id, cseq, from_tag, to_tag, route_set, local_uri) =
+            call_info;
 
         let refer = build_refer(
             &request_target,
@@ -2297,7 +2683,8 @@ impl SipManager {
             &remote_uri,
         );
 
-        self.send_refer(&account_id, call_id, &transport, server_addr, refer).await?;
+        self.send_refer(&account_id, call_id, &transport, server_addr, refer)
+            .await?;
 
         log::info!(
             "Sent blind REFER to transfer call {} -> {}",
@@ -2318,7 +2705,15 @@ impl SipManager {
     /// Attended transfer: send REFER with Replaces to connect two existing calls
     #[allow(dead_code)]
     pub async fn transfer_attended(&self, call_id_a: &str, call_id_b: &str) -> Result<(), String> {
-        let (call_a_info, call_b_info, local_addr, server_addr, transport_str, account_id, transport) = {
+        let (
+            call_a_info,
+            call_b_info,
+            local_addr,
+            server_addr,
+            transport_str,
+            account_id,
+            transport,
+        ) = {
             let mut s = self.state.write().await;
 
             let (_, call_b) = s.find_call(call_id_b).ok_or("Call B not found")?;
@@ -2343,7 +2738,10 @@ impl SipManager {
             let cseq = call_a.next_cseq();
             let (a_our_tag, a_their_tag) = call_a.dialog_tags();
             let a_info = (
-                call_a.remote_contact.clone().unwrap_or_else(|| call_a.remote_uri.clone()),
+                call_a
+                    .remote_contact
+                    .clone()
+                    .unwrap_or_else(|| call_a.remote_uri.clone()),
                 call_a.remote_uri.clone(),
                 call_a.call_id_header.clone(),
                 cseq,
@@ -2362,7 +2760,16 @@ impl SipManager {
             (a_info, b_info, la, sa, tp, aid, transport)
         };
 
-        let (a_target, a_remote_uri, a_sip_call_id, a_cseq, a_from_tag, a_to_tag, a_route_set, a_local_uri) = call_a_info;
+        let (
+            a_target,
+            a_remote_uri,
+            a_sip_call_id,
+            a_cseq,
+            a_from_tag,
+            a_to_tag,
+            a_route_set,
+            a_local_uri,
+        ) = call_a_info;
         let (b_remote_uri, b_sip_call_id, b_replaces_to_tag, b_replaces_from_tag) = call_b_info;
 
         let refer = build_refer_with_replaces(
@@ -2382,7 +2789,8 @@ impl SipManager {
             &a_remote_uri,
         );
 
-        self.send_refer(&account_id, call_id_a, &transport, server_addr, refer).await?;
+        self.send_refer(&account_id, call_id_a, &transport, server_addr, refer)
+            .await?;
 
         log::info!(
             "Sent attended REFER to transfer call {} (with Replaces for call {})",
@@ -2435,11 +2843,11 @@ impl SipManager {
         }
 
         let conference_id = format!("conf-{}", uuid::Uuid::new_v4());
-        
+
         let mut s = self.state.write().await;
         let mut media_count = 0;
         let mut account_id = None;
-        
+
         // Validate all calls exist and have active media
         for call_id in call_ids {
             if let Some((aid, call)) = s.find_call_mut(call_id) {
@@ -2453,11 +2861,11 @@ impl SipManager {
                 return Err(format!("Call {} not found", call_id));
             }
         }
-        
+
         if media_count < 2 {
             return Err("Need at least 2 calls with active media".into());
         }
-        
+
         // Enable conference mode on all media sessions
         for call_id in call_ids {
             if let Some((_, call)) = s.find_call_mut(call_id) {
@@ -2471,42 +2879,48 @@ impl SipManager {
                 }
             }
         }
-        
+
         // Store conference state
         if let Some(aid) = &account_id {
             if let Some(account) = s.get_account_mut(aid) {
-                account.conferences.insert(conference_id.clone(), call_ids.to_vec());
+                account
+                    .conferences
+                    .insert(conference_id.clone(), call_ids.to_vec());
             }
         }
-        
-        log::info!("Created conference {} with {} calls", conference_id, call_ids.len());
-        
+
+        log::info!(
+            "Created conference {} with {} calls",
+            conference_id,
+            call_ids.len()
+        );
+
         // Emit conference created event
         drop(s);
         self.emit(SipEvent::ConferenceCreated {
             conference_id: conference_id.clone(),
             call_ids: call_ids.to_vec(),
         });
-        
+
         Ok(conference_id)
     }
-    
+
     /// Split a call from a conference
     pub async fn conference_split(&self, conference_id: &str, call_id: &str) -> Result<(), String> {
         let (remaining_call_ids, conference_ended) = {
             let mut s = self.state.write().await;
-            
+
             // Find and update the conference
             let mut found_conference = false;
             let mut remaining = Vec::new();
             let mut ended = false;
-            
+
             for account in s.accounts.values_mut() {
                 if let Some(call_ids) = account.conferences.get_mut(conference_id) {
                     call_ids.retain(|id| id != call_id);
                     remaining = call_ids.clone();
                     found_conference = true;
-                    
+
                     // If only one call left, end the conference
                     if call_ids.len() < 2 {
                         account.conferences.remove(conference_id);
@@ -2515,11 +2929,11 @@ impl SipManager {
                     break;
                 }
             }
-            
+
             if !found_conference {
                 return Err("Conference not found".into());
             }
-            
+
             // Disable conference mode and put the split call on hold
             if let Some((_, call)) = s.find_call_mut(call_id) {
                 if let Some(media) = call.media() {
@@ -2527,10 +2941,10 @@ impl SipManager {
                 }
                 call.hold();
             }
-            
+
             (remaining, ended)
         };
-        
+
         // If conference ended, disable conference mode for remaining call
         if conference_ended && !remaining_call_ids.is_empty() {
             let mut s = self.state.write().await;
@@ -2542,18 +2956,18 @@ impl SipManager {
                 }
             }
         }
-        
+
         log::info!("Split call {} from conference {}", call_id, conference_id);
-        
+
         // Emit event
         self.emit(SipEvent::ConferenceSplit {
             conference_id: conference_id.to_string(),
             call_id: call_id.to_string(),
         });
-        
+
         Ok(())
     }
-    
+
     /// End a conference and hang up all calls in it
     pub async fn conference_end(&self, conference_id: &str) -> Result<(), String> {
         let call_ids_to_hangup = {
@@ -2567,14 +2981,14 @@ impl SipManager {
             }
             call_ids
         };
-        
+
         // Hang up each call
         for call_id in &call_ids_to_hangup {
             if let Err(e) = self.hangup(call_id).await {
                 log::error!("Failed to hang up call {} in conference: {}", call_id, e);
             }
         }
-        
+
         // Remove conference
         {
             let mut s = self.state.write().await;
@@ -2582,27 +2996,35 @@ impl SipManager {
                 account.conferences.remove(conference_id);
             }
         }
-        
-        log::info!("Ended conference {} with {} calls", conference_id, call_ids_to_hangup.len());
-        
+
+        log::info!(
+            "Ended conference {} with {} calls",
+            conference_id,
+            call_ids_to_hangup.len()
+        );
+
         // Emit event
         self.emit(SipEvent::ConferenceEnded {
             conference_id: conference_id.to_string(),
         });
-        
+
         Ok(())
     }
-    
+
     /// Swap between two calls (put one on hold, resume other)
     pub async fn swap_calls(&self, hold_call_id: &str, resume_call_id: &str) -> Result<(), String> {
         // Put the first call on hold
         self.hold(hold_call_id, true).await?;
-        
+
         // Resume the second call
         self.hold(resume_call_id, false).await?;
-        
-        log::info!("Swapped calls: held {}, resumed {}", hold_call_id, resume_call_id);
-        
+
+        log::info!(
+            "Swapped calls: held {}, resumed {}",
+            hold_call_id,
+            resume_call_id
+        );
+
         Ok(())
     }
 
@@ -2610,11 +3032,18 @@ impl SipManager {
         self.registration_state_for_account(None).await
     }
 
-    pub async fn registration_state_for_account(&self, account_id: Option<&str>) -> (RegistrationState, Option<String>) {
+    pub async fn registration_state_for_account(
+        &self,
+        account_id: Option<&str>,
+    ) -> (RegistrationState, Option<String>) {
         let s = self.state.read().await;
         let aid = match account_id {
             Some(id) => id.to_string(),
-            None => match s.active_account_id.clone().or_else(|| s.accounts.keys().next().cloned()) {
+            None => match s
+                .active_account_id
+                .clone()
+                .or_else(|| s.accounts.keys().next().cloned())
+            {
                 Some(id) => id,
                 None => return (RegistrationState::Unregistered, None),
             },
@@ -2714,16 +3143,31 @@ impl SipManager {
     /// If the send fails, triggers transport death and reconnection.
     /// Called by the frontend on wake from sleep, network online, or window re-focus.
     pub async fn probe_registration_health(&self) {
-        let accounts_to_probe: Vec<(String, AccountConfig, SocketAddr, SocketAddr, SipTransport, u32)> = {
+        let accounts_to_probe: Vec<(
+            String,
+            AccountConfig,
+            SocketAddr,
+            SocketAddr,
+            SipTransport,
+            u32,
+        )> = {
             let mut s = self.state.write().await;
-            s.accounts.values_mut()
+            s.accounts
+                .values_mut()
                 .filter(|a| a.registration.status() == RegistrationState::Registered)
                 .filter_map(|a| {
                     let la = a.local_addr?;
                     let sa = a.server_addr?;
                     let t = a.transport.clone()?;
                     a.options_cseq += 1;
-                    Some((a.config.id.clone(), a.config.clone(), la, sa, t, a.options_cseq))
+                    Some((
+                        a.config.id.clone(),
+                        a.config.clone(),
+                        la,
+                        sa,
+                        t,
+                        a.options_cseq,
+                    ))
                 })
                 .collect()
         };
@@ -2732,7 +3176,10 @@ impl SipManager {
             return;
         }
 
-        log::info!("Probing registration health for {} account(s)", accounts_to_probe.len());
+        log::info!(
+            "Probing registration health for {} account(s)",
+            accounts_to_probe.len()
+        );
 
         for (account_id, config, local_addr, server_addr, transport, cseq) in accounts_to_probe {
             let call_id = builder::generate_call_id();
@@ -2748,13 +3195,18 @@ impl SipManager {
             );
 
             if let Err(e) = transport.send_to(msg.as_bytes(), server_addr).await {
-                log::warn!("Health probe failed for {} — triggering reconnect: {}", account_id, e);
+                log::warn!(
+                    "Health probe failed for {} — triggering reconnect: {}",
+                    account_id,
+                    e
+                );
                 Self::handle_transport_death(
                     self.state.clone(),
                     self.event_tx.clone(),
                     account_id,
                     false,
-                ).await;
+                )
+                .await;
             } else {
                 log::info!("Health probe OK for {}", account_id);
             }
@@ -2766,7 +3218,9 @@ impl SipManager {
     pub async fn process_pending_resubscriptions(&self) -> Vec<String> {
         let targets: Vec<(String, crate::sip::state::EventType)> = {
             let mut s = self.state.write().await;
-            let aid = s.active_account_id.clone()
+            let aid = s
+                .active_account_id
+                .clone()
                 .or_else(|| s.accounts.keys().next().cloned());
             if let Some(ref aid) = aid {
                 if let Some(account) = s.get_account_mut(aid) {
@@ -2802,7 +3256,9 @@ impl SipManager {
     ) -> Result<String, String> {
         let (account_config, local_addr, server_addr, transport, aid) = {
             let s = self.state.read().await;
-            let aid = s.active_account_id.clone()
+            let aid = s
+                .active_account_id
+                .clone()
                 .or_else(|| s.accounts.keys().next().cloned())
                 .ok_or("No account configured")?;
             let account = s.get_account(&aid).ok_or("Account not found")?;
@@ -2812,7 +3268,13 @@ impl SipManager {
             let local_addr = account.local_addr.ok_or("No local addr")?;
             let server_addr = account.server_addr.ok_or("No server addr")?;
             let transport = account.transport.clone().ok_or("No transport")?;
-            (account.config.clone(), local_addr, server_addr, transport, aid)
+            (
+                account.config.clone(),
+                local_addr,
+                server_addr,
+                transport,
+                aid,
+            )
         };
 
         let call_id = builder::generate_call_id();
@@ -2880,11 +3342,14 @@ impl SipManager {
     pub async fn unsubscribe(&self, subscription_id: &str) -> Result<(), String> {
         let (account_config, local_addr, server_addr, transport, sub_info, aid) = {
             let mut s = self.state.write().await;
-            let aid = s.active_account_id.clone()
+            let aid = s
+                .active_account_id
+                .clone()
                 .or_else(|| s.accounts.keys().next().cloned())
                 .ok_or("No account configured")?;
             let account = s.get_account_mut(&aid).ok_or("Account not found")?;
-            let sub = account.subscriptions
+            let sub = account
+                .subscriptions
                 .iter_mut()
                 .find(|s| s.id == subscription_id)
                 .ok_or("Subscription not found")?;
@@ -2903,7 +3368,14 @@ impl SipManager {
             let local_addr = account.local_addr.ok_or("No local addr")?;
             let server_addr = account.server_addr.ok_or("No server addr")?;
             let transport = account.transport.clone().ok_or("No transport")?;
-            (account.config.clone(), local_addr, server_addr, transport, info, aid)
+            (
+                account.config.clone(),
+                local_addr,
+                server_addr,
+                transport,
+                info,
+                aid,
+            )
         };
 
         let (target_uri, call_id, cseq, from_tag, to_tag, event_type) = sub_info;
@@ -2923,13 +3395,13 @@ impl SipManager {
 
         transport.send_to(msg.as_bytes(), server_addr).await?;
 
-
         log::info!("Sent SUBSCRIBE (Expires: 0) for {}", target_uri);
 
         {
             let mut s = self.state.write().await;
             if let Some(account) = s.get_account_mut(&aid) {
-                let extension = account.subscriptions
+                let extension = account
+                    .subscriptions
                     .iter()
                     .find(|sub| sub.id == subscription_id)
                     .map(|sub| presence::extract_extension_from_uri(&sub.target_uri));
@@ -2973,80 +3445,89 @@ impl SipManager {
     pub async fn get_system_status(&self) -> SystemStatus {
         let s = self.state.read().await;
 
-        let accounts: Vec<AccountStatus> = s.accounts.values().map(|account| {
-            let registration_state = account.registration.state_name().to_string();
-            let registration_error = account.registration.error_reason().map(|e| e.to_string());
-            let server_address = account.server_addr.map(|a| a.to_string());
-            let transport_type = account.transport.as_ref().map(|t| match t {
-                SipTransport::Udp(_) => "UDP".to_string(),
-                SipTransport::Tcp(_) => "TCP".to_string(),
-                SipTransport::Tls(_) => "TLS".to_string(),
-            });
-            let local_address = account.transport.as_ref().map(|t| {
-                let raw = t.local_addr();
-                let ip = raw.ip();
-                let port = raw.port();
-                if ip.is_unspecified() {
-                    if let Some(server) = account.server_addr {
-                        let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
-                            .and_then(|sock| { sock.connect(server)?; sock.local_addr() })
-                            .map(|a| a.ip())
-                            .unwrap_or(ip);
-                        format!("{}:{}", real_ip, port)
+        let accounts: Vec<AccountStatus> = s
+            .accounts
+            .values()
+            .map(|account| {
+                let registration_state = account.registration.state_name().to_string();
+                let registration_error = account.registration.error_reason().map(|e| e.to_string());
+                let server_address = account.server_addr.map(|a| a.to_string());
+                let transport_type = account.transport.as_ref().map(|t| match t {
+                    SipTransport::Udp(_) => "UDP".to_string(),
+                    SipTransport::Tcp(_) => "TCP".to_string(),
+                    SipTransport::Tls(_) => "TLS".to_string(),
+                });
+                let local_address = account.transport.as_ref().map(|t| {
+                    let raw = t.local_addr();
+                    let ip = raw.ip();
+                    let port = raw.port();
+                    if ip.is_unspecified() {
+                        if let Some(server) = account.server_addr {
+                            let real_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+                                .and_then(|sock| {
+                                    sock.connect(server)?;
+                                    sock.local_addr()
+                                })
+                                .map(|a| a.ip())
+                                .unwrap_or(ip);
+                            format!("{}:{}", real_ip, port)
+                        } else {
+                            format!("{}:{}", ip, port)
+                        }
                     } else {
                         format!("{}:{}", ip, port)
                     }
-                } else {
-                    format!("{}:{}", ip, port)
+                });
+                let public_address = account.public_addr.map(|a| a.to_string());
+                let uptime_secs =
+                    if let state::RegistrationState::Registered { registered_at, .. } =
+                        account.registration.state()
+                    {
+                        Some(registered_at.elapsed().as_secs())
+                    } else {
+                        None
+                    };
+
+                let account_id = account.config.id.clone();
+                let active_calls: Vec<CallStatusInfo> = account
+                    .calls
+                    .iter()
+                    .map(|c| {
+                        let duration_secs = c.connected_at().map(|t| t.elapsed().as_secs());
+                        let (codec, rtp_stats) = c
+                            .media()
+                            .map(|m| (Some(format!("{:?}", m.get_codec())), Some(m.get_stats())))
+                            .unwrap_or((None, None));
+                        CallStatusInfo {
+                            id: c.id.clone(),
+                            account_id: account_id.clone(),
+                            remote_uri: c.remote_uri.clone(),
+                            state: c.state_name().to_lowercase(),
+                            direction: c.direction_str().to_lowercase(),
+                            duration_secs,
+                            codec,
+                            rtp_stats,
+                            srtp_active: c.srtp_active,
+                            sip_call_id: c.call_id_header.clone(),
+                        }
+                    })
+                    .collect();
+
+                AccountStatus {
+                    account_id,
+                    username: account.config.username.clone(),
+                    domain: account.config.domain.clone(),
+                    registration_state,
+                    registration_error,
+                    server_address,
+                    transport_type,
+                    local_address,
+                    public_address,
+                    uptime_secs,
+                    active_calls,
                 }
-            });
-            let public_address = account.public_addr.map(|a| a.to_string());
-            let uptime_secs = if let state::RegistrationState::Registered { registered_at, .. } =
-                account.registration.state()
-            {
-                Some(registered_at.elapsed().as_secs())
-            } else {
-                None
-            };
-
-            let account_id = account.config.id.clone();
-            let active_calls: Vec<CallStatusInfo> = account.calls
-                .iter()
-                .map(|c| {
-                    let duration_secs = c.connected_at().map(|t| t.elapsed().as_secs());
-                    let (codec, rtp_stats) = c
-                        .media()
-                        .map(|m| (Some(format!("{:?}", m.get_codec())), Some(m.get_stats())))
-                        .unwrap_or((None, None));
-                    CallStatusInfo {
-                        id: c.id.clone(),
-                        account_id: account_id.clone(),
-                        remote_uri: c.remote_uri.clone(),
-                        state: c.state_name().to_lowercase(),
-                        direction: c.direction_str().to_lowercase(),
-                        duration_secs,
-                        codec,
-                        rtp_stats,
-                        srtp_active: c.srtp_active,
-                        sip_call_id: c.call_id_header.clone(),
-                    }
-                })
-                .collect();
-
-            AccountStatus {
-                account_id,
-                username: account.config.username.clone(),
-                domain: account.config.domain.clone(),
-                registration_state,
-                registration_error,
-                server_address,
-                transport_type,
-                local_address,
-                public_address,
-                uptime_secs,
-                active_calls,
-            }
-        }).collect();
+            })
+            .collect();
 
         let total_active_calls = s.all_active_calls().len();
 
@@ -3090,14 +3571,22 @@ impl SipManager {
                 for (aid, call_id) in due {
                     let sent = {
                         let mut s = state.write().await;
-                        let Some(account) = s.get_account_mut(&aid) else { continue };
-                        let (Some(local_addr), Some(server_addr), Some(transport)) =
-                            (account.local_addr, account.server_addr, account.transport.clone())
-                        else {
+                        let Some(account) = s.get_account_mut(&aid) else {
+                            continue;
+                        };
+                        let (Some(local_addr), Some(server_addr), Some(transport)) = (
+                            account.local_addr,
+                            account.server_addr,
+                            account.transport.clone(),
+                        ) else {
                             continue;
                         };
                         let config = account.config.clone();
-                        let Some(sub) = account.subscriptions.iter_mut().find(|s| s.call_id == call_id) else {
+                        let Some(sub) = account
+                            .subscriptions
+                            .iter_mut()
+                            .find(|s| s.call_id == call_id)
+                        else {
                             continue;
                         };
                         sub.cseq += 1;
@@ -3118,12 +3607,21 @@ impl SipManager {
                         );
                         // Not due again until this one is answered.
                         sub.expires_at = sub.expires_at.map(|_| {
-                            std::time::Instant::now() + std::time::Duration::from_secs(u64::from(sub.expires))
+                            std::time::Instant::now()
+                                + std::time::Duration::from_secs(u64::from(sub.expires))
                         });
-                        (msg, transport, server_addr, sub.target_uri.clone(), sub.cseq)
+                        (
+                            msg,
+                            transport,
+                            server_addr,
+                            sub.target_uri.clone(),
+                            sub.cseq,
+                        )
                     };
                     let (msg, transport, server_addr, target_uri, cseq) = sent;
-                    if let Err(e) = send_subscribe(&state, &aid, &call_id, &transport, server_addr, msg).await {
+                    if let Err(e) =
+                        send_subscribe(&state, &aid, &call_id, &transport, server_addr, msg).await
+                    {
                         log::error!("SUBSCRIBE refresh failed for {}: {}", target_uri, e);
                     } else {
                         log::debug!("Sent SUBSCRIBE refresh for {} (cseq={})", target_uri, cseq);
@@ -3168,9 +3666,19 @@ impl SipManager {
         generation: u64,
     ) {
         tokio::spawn(async move {
-            let died = Self::run_receive_loop(state.clone(), event_tx.clone(), account_id.clone(), rx, generation).await;
+            let died = Self::run_receive_loop(
+                state.clone(),
+                event_tx.clone(),
+                account_id.clone(),
+                rx,
+                generation,
+            )
+            .await;
             if died {
-                log::warn!("Receive loop ended for account {} — transport dead", account_id);
+                log::warn!(
+                    "Receive loop ended for account {} — transport dead",
+                    account_id
+                );
                 Self::handle_transport_death(state, event_tx, account_id, false).await;
             }
         });
@@ -3189,108 +3697,109 @@ impl SipManager {
         keep_calls: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(async move {
-        let ended_calls = {
-            let mut s = state.write().await;
-            let account = match s.accounts.get_mut(&account_id) {
-                Some(a) => a,
-                None => return, // Account removed (user unregistered) — do nothing
-            };
+            let ended_calls = {
+                let mut s = state.write().await;
+                let account = match s.accounts.get_mut(&account_id) {
+                    Some(a) => a,
+                    None => return, // Account removed (user unregistered) — do nothing
+                };
 
-            let was_active = matches!(
-                account.registration.status(),
-                RegistrationState::Registered | RegistrationState::Registering
-            );
+                let was_active = matches!(
+                    account.registration.status(),
+                    RegistrationState::Registered | RegistrationState::Registering
+                );
 
-            if !was_active || account.unregistering {
-                // Already in error/unregistered/reconnecting — don't double-trigger
-                return;
-            }
-
-            // An emergency call outlives its transport: its dialog is kept, and
-            // the reconnect starts at the target it was on, so a BYE or
-            // re-INVITE goes to the same server over the new connection.
-            let keep_calls = if emergency_call_active(account) {
-                if let Some(target) = account.target.clone() {
-                    account.failover.prefer(&target);
+                if !was_active || account.unregistering {
+                    // Already in error/unregistered/reconnecting — don't double-trigger
+                    return;
                 }
-                true
-            } else {
-                keep_calls
+
+                // An emergency call outlives its transport: its dialog is kept, and
+                // the reconnect starts at the target it was on, so a BYE or
+                // re-INVITE goes to the same server over the new connection.
+                let keep_calls = if emergency_call_active(account) {
+                    if let Some(target) = account.target.clone() {
+                        account.failover.prefer(&target);
+                    }
+                    true
+                } else {
+                    keep_calls
+                };
+
+                // Transition to reconnecting
+                account.registration.transport_lost();
+                account.refreshing = false;
+                // The old transport's loops are obsolete; the reconnect starts new ones.
+                account.timer_generation += 1;
+
+                // End all active calls for this account. Their media is finished
+                // after the lock is released, below.
+                let ended_calls: Vec<(CallEventPayload, Option<media::MediaSession>)> =
+                    if keep_calls {
+                        Vec::new()
+                    } else {
+                        account
+                            .calls
+                            .drain(..)
+                            .map(|mut call| {
+                                let event = CallEventPayload::new(
+                                    &account_id,
+                                    &call.id,
+                                    "ended",
+                                    &call.remote_uri,
+                                    call.direction_str(),
+                                );
+                                (event, call.take_media())
+                            })
+                            .collect()
+                    };
+
+                // Save subscription targets for re-subscription after reconnect
+                let resub_targets: Vec<(String, crate::sip::state::EventType)> = account
+                    .subscriptions
+                    .iter()
+                    .map(|s| (s.target_uri.clone(), s.event_type.clone()))
+                    .collect();
+                account.pending_resubscriptions = resub_targets;
+
+                // Clear stale transport state
+                account.transport = None;
+                account.subscriptions.clear();
+                account.conferences.clear();
+                account.blf_states.clear();
+                // Reset realm fallback so reconnect gets a fresh auth attempt
+                account.realm_fallback = None;
+                account.realm_fallback_exhausted = false;
+
+                ended_calls
             };
 
-            // Transition to reconnecting
-            account.registration.transport_lost();
-            account.refreshing = false;
-            // The old transport's loops are obsolete; the reconnect starts new ones.
-            account.timer_generation += 1;
-
-            // End all active calls for this account. Their media is finished
-            // after the lock is released, below.
-            let ended_calls: Vec<(CallEventPayload, Option<media::MediaSession>)> = if keep_calls {
-                Vec::new()
-            } else {
-                account
-                    .calls
-                    .drain(..)
-                    .map(|mut call| {
-                        let event = CallEventPayload::new(
-                            &account_id,
-                            &call.id,
-                            "ended",
-                            &call.remote_uri,
-                            call.direction_str(),
-                        );
-                        (event, call.take_media())
-                    })
-                    .collect()
-            };
-
-            // Save subscription targets for re-subscription after reconnect
-            let resub_targets: Vec<(String, crate::sip::state::EventType)> = account
-                .subscriptions
-                .iter()
-                .map(|s| (s.target_uri.clone(), s.event_type.clone()))
-                .collect();
-            account.pending_resubscriptions = resub_targets;
-
-            // Clear stale transport state
-            account.transport = None;
-            account.subscriptions.clear();
-            account.conferences.clear();
-            account.blf_states.clear();
-            // Reset realm fallback so reconnect gets a fresh auth attempt
-            account.realm_fallback = None;
-            account.realm_fallback_exhausted = false;
-
-            ended_calls
-        };
-
-        for (mut event, media) in ended_calls {
-            if let Some(path) = finish_call_media(&event.call_id, media).await {
-                event = event.with_recording_path(path);
+            for (mut event, media) in ended_calls {
+                if let Some(path) = finish_call_media(&event.call_id, media).await {
+                    event = event.with_recording_path(path);
+                }
+                let _ = event_tx.send(SipEvent::CallStateChanged(event));
             }
-            let _ = event_tx.send(SipEvent::CallStateChanged(event));
-        }
 
-        // Emit reconnecting state to UI
-        let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
-            account_id: account_id.clone(),
-            state: RegistrationState::Reconnecting,
-            error: Some("Connection lost — reconnecting...".into()),
-        }));
-        with_report(&state, &event_tx, &account_id, |r| {
-            // Keep what went wrong (a refresh that got no reply, say) so the
-            // panel can show why it is reconnecting.
-            let why = r.error.take();
-            r.restart();
-            r.error = why;
-            r.outcome = connection::Outcome::Reconnecting;
-            r.reconnect_attempt = 0;
-        })
-        .await;
+            // Emit reconnecting state to UI
+            let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
+                account_id: account_id.clone(),
+                state: RegistrationState::Reconnecting,
+                error: Some("Connection lost — reconnecting...".into()),
+            }));
+            with_report(&state, &event_tx, &account_id, |r| {
+                // Keep what went wrong (a refresh that got no reply, say) so the
+                // panel can show why it is reconnecting.
+                let why = r.error.take();
+                r.restart();
+                r.error = why;
+                r.outcome = connection::Outcome::Reconnecting;
+                r.reconnect_attempt = 0;
+            })
+            .await;
 
-        // Start auto-reconnect with exponential backoff (spawned as a new task)
-        tokio::spawn(Self::start_reconnect_loop(state, event_tx, account_id));
+            // Start auto-reconnect with exponential backoff (spawned as a new task)
+            tokio::spawn(Self::start_reconnect_loop(state, event_tx, account_id));
         })
     }
 
@@ -3311,7 +3820,9 @@ impl SipManager {
         let mut delay = {
             let s = state.read().await;
             match s.accounts.get(&account_id) {
-                Some(a) if a.failover.has_alternative(std::time::Instant::now()) => std::time::Duration::ZERO,
+                Some(a) if a.failover.has_alternative(std::time::Instant::now()) => {
+                    std::time::Duration::ZERO
+                }
                 _ => std::time::Duration::from_secs(BACKOFF_SECS[0]),
             }
         };
@@ -3335,7 +3846,10 @@ impl SipManager {
                     }
                     None => {
                         // Account removed — stop reconnecting
-                        log::info!("Reconnect loop stopping for {} — account removed", account_id);
+                        log::info!(
+                            "Reconnect loop stopping for {} — account removed",
+                            account_id
+                        );
                         return;
                     }
                 }
@@ -3355,7 +3869,10 @@ impl SipManager {
                     account.registration.reconnect_attempt();
                 }
             }
-            with_report(&state, &event_tx, &account_id, |r| r.reconnect_attempt = attempt + 1).await;
+            with_report(&state, &event_tx, &account_id, |r| {
+                r.reconnect_attempt = attempt + 1
+            })
+            .await;
 
             let _ = event_tx.send(SipEvent::RegistrationChanged(RegistrationEvent {
                 account_id: account_id.clone(),
@@ -3376,14 +3893,19 @@ impl SipManager {
             let account_config = {
                 let s = state.read().await;
                 match s.accounts.get(&account_id) {
-                    Some(account) if account.registration.status() == RegistrationState::Reconnecting => {
+                    Some(account)
+                        if account.registration.status() == RegistrationState::Reconnecting =>
+                    {
                         // The configured transport, which `Auto` leaves to DNS.
                         let mut cfg = account.config.clone();
                         cfg.transport = account.configured_transport.clone();
                         cfg
                     }
                     _ => {
-                        log::info!("Reconnect loop stopping for {} — state changed during backoff", account_id);
+                        log::info!(
+                            "Reconnect loop stopping for {} — state changed during backoff",
+                            account_id
+                        );
                         return;
                     }
                 }
@@ -3392,7 +3914,10 @@ impl SipManager {
             // Attempt to reconnect: resolve, connect transport, send REGISTER
             match Self::attempt_reconnect(&state, &event_tx, &account_id, &account_config).await {
                 Ok((rx, generation)) => {
-                    log::info!("Reconnect transport established for {} — waiting for registration", account_id);
+                    log::info!(
+                        "Reconnect transport established for {} — waiting for registration",
+                        account_id
+                    );
                     Self::start_receive_loop_for_account(
                         state.clone(),
                         event_tx.clone(),
@@ -3408,12 +3933,19 @@ impl SipManager {
                     return;
                 }
                 Err(e) => {
-                    log::warn!("Reconnect attempt {} failed for {}: {}", attempt + 1, account_id, e.message);
+                    log::warn!(
+                        "Reconnect attempt {} failed for {}: {}",
+                        attempt + 1,
+                        account_id,
+                        e.message
+                    );
                     // The list says how long (backoff, `Retry-After`); a
                     // failure that is not about the targets, DNS say, backs
                     // off by attempt.
                     delay = e.wait.unwrap_or_else(|| {
-                        std::time::Duration::from_secs(BACKOFF_SECS[(attempt as usize + 1).min(BACKOFF_SECS.len() - 1)])
+                        std::time::Duration::from_secs(
+                            BACKOFF_SECS[(attempt as usize + 1).min(BACKOFF_SECS.len() - 1)],
+                        )
                     });
                 }
             }
@@ -3503,7 +4035,14 @@ impl SipManager {
             let _ = event_tx.send(SipEvent::DiagnosticMessage(diag));
 
             if is_request(&text) {
-                handlers::handle_incoming_request(&state, &event_tx, &text, msg.remote, &account_id).await;
+                handlers::handle_incoming_request(
+                    &state,
+                    &event_tx,
+                    &text,
+                    msg.remote,
+                    &account_id,
+                )
+                .await;
             } else {
                 handlers::handle_response(&state, &event_tx, &text, &account_id).await;
             }
@@ -3523,7 +4062,10 @@ impl SipManager {
         // (and any REGISTER behind it) waits until the call ends.
         {
             let s = state.read().await;
-            if s.accounts.get(account_id).is_some_and(|a| emergency_call_active(a) && a.transport.is_some()) {
+            if s.accounts
+                .get(account_id)
+                .is_some_and(|a| emergency_call_active(a) && a.transport.is_some())
+            {
                 return Err(ConnectFailure {
                     message: "an emergency call is in progress".into(),
                     wait: Some(std::time::Duration::from_secs(1)),
@@ -3549,10 +4091,20 @@ impl SipManager {
         };
         let mut failover = {
             let s = state.read().await;
-            s.accounts.get(account_id).map(|a| a.failover.clone()).unwrap_or_default()
+            s.accounts
+                .get(account_id)
+                .map(|a| a.failover.clone())
+                .unwrap_or_default()
         };
-        let connected = resolve_and_connect(state, event_tx, account, &mut report, &mut failover).await;
-        let Connected { server_addr, transport, rx, local_addr, target } = match connected {
+        let connected =
+            resolve_and_connect(state, event_tx, account, &mut report, &mut failover).await;
+        let Connected {
+            server_addr,
+            transport,
+            rx,
+            local_addr,
+            target,
+        } = match connected {
             Ok(v) => v,
             Err(e) => {
                 // Keep the failures and the round count for the next attempt.
@@ -3602,12 +4154,15 @@ impl SipManager {
         }));
 
         send_register(state, event_tx, account_id, None).await?;
-        log::info!("Sent reconnect REGISTER for {} to {}", account_id, server_addr);
+        log::info!(
+            "Sent reconnect REGISTER for {} to {}",
+            account_id,
+            server_addr
+        );
 
         Ok((rx, generation))
     }
 }
-
 
 /// Create the account's transport and work out the local address other
 /// hosts can reach it on. `account.transport` is the concrete transport for
@@ -3619,7 +4174,11 @@ async fn open_transport_for(
     server_addr: SocketAddr,
     tls_name: &str,
 ) -> Result<(SipTransport, mpsc::Receiver<SipMessage>, SocketAddr), String> {
-    log::info!("Creating {:?} transport to {}", account.transport, server_addr);
+    log::info!(
+        "Creating {:?} transport to {}",
+        account.transport,
+        server_addr
+    );
     // One target must not hold up the next: a black-holed address would
     // otherwise cost the transport's own 10 s per step.
     let (mut transport, rx) = match account.transport {
@@ -3628,9 +4187,12 @@ async fn open_transport_for(
             (SipTransport::Udp(t), rx)
         }
         TransportType::Tcp => {
-            let (t, rx) = tokio::time::timeout(srv::CONNECT_TIMEOUT, transport::TcpTransport::connect(server_addr))
-                .await
-                .map_err(|_| format!("TCP connect to {server_addr} timed out"))??;
+            let (t, rx) = tokio::time::timeout(
+                srv::CONNECT_TIMEOUT,
+                transport::TcpTransport::connect(server_addr),
+            )
+            .await
+            .map_err(|_| format!("TCP connect to {server_addr} timed out"))??;
             (SipTransport::Tcp(t), rx)
         }
         TransportType::Tls => {
@@ -3659,9 +4221,16 @@ async fn open_transport_for(
     // Resolve `0.0.0.0` to the actual outbound interface IP
     let raw_addr = transport.local_addr();
     let local_addr = if raw_addr.ip().is_unspecified() {
-        let bind: &str = if server_addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+        let bind: &str = if server_addr.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
         let real_ip = std::net::UdpSocket::bind(bind)
-            .and_then(|s| { s.connect(server_addr)?; s.local_addr() })
+            .and_then(|s| {
+                s.connect(server_addr)?;
+                s.local_addr()
+            })
             .map(|a| a.ip())
             .unwrap_or(raw_addr.ip());
         std::net::SocketAddr::new(real_ip, raw_addr.port())
@@ -3690,7 +4259,10 @@ struct ConnectFailure {
 
 impl From<String> for ConnectFailure {
     fn from(message: String) -> Self {
-        Self { message, wait: None }
+        Self {
+            message,
+            wait: None,
+        }
     }
 }
 
@@ -3705,7 +4277,10 @@ fn with_transport(account: &AccountConfig, transport: &TransportType) -> Account
 /// means the list is for some other server.
 fn failover_key(account: &AccountConfig) -> String {
     let (host, port) = SipManager::target_endpoint(account);
-    format!("{host}|{port:?}|{}", account.transport.param_static_or_auto())
+    format!(
+        "{host}|{port:?}|{}",
+        account.transport.param_static_or_auto()
+    )
 }
 
 /// Resolve the server (when the list is missing or past its TTL) and connect
@@ -3737,10 +4312,22 @@ async fn resolve_and_connect(
         save_report(state, event_tx, report).await;
         let started = tokio::time::Instant::now();
         let dns = state.read().await.dns.clone();
-        match srv::resolve(&*dns, target_host, target_port, &account.transport, &mut srv::random_draw).await {
+        match srv::resolve(
+            &*dns,
+            target_host,
+            target_port,
+            &account.transport,
+            &mut srv::random_draw,
+        )
+        .await
+        {
             Ok(resolved) => {
                 let elapsed = started.elapsed();
-                if target_host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok() {
+                if target_host
+                    .trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok()
+                {
                     report.skipped(StepKind::Resolve, "literal address");
                 } else {
                     let first = &resolved.targets[0];
@@ -3788,11 +4375,16 @@ async fn resolve_and_connect(
                 } else {
                     last_error
                 };
-                return Err(ConnectFailure { message, wait: Some(wait) });
+                return Err(ConnectFailure {
+                    message,
+                    wait: Some(wait),
+                });
             }
         };
         let effective = with_transport(account, &target.transport);
-        let tls_name = account.tls_name_for(failover.via_srv(), failover.lookup_host()).to_string();
+        let tls_name = account
+            .tls_name_for(failover.via_srv(), failover.lookup_host())
+            .to_string();
 
         report.running(StepKind::Connect);
         save_report(state, event_tx, report).await;
@@ -3807,13 +4399,23 @@ async fn resolve_and_connect(
                     }
                     TransportType::Tcp => format!("connected in {ms} ms"),
                     TransportType::Tls if effective.tls_insecure => {
-                        format!("handshake in {ms} ms, certificate not checked (allow untrusted is on)")
+                        format!(
+                            "handshake in {ms} ms, certificate not checked (allow untrusted is on)"
+                        )
                     }
-                    TransportType::Tls => format!("handshake in {ms} ms, certificate OK for {tls_name}"),
+                    TransportType::Tls => {
+                        format!("handshake in {ms} ms, certificate OK for {tls_name}")
+                    }
                 };
                 report.ok(StepKind::Connect, detail, Some(elapsed));
                 save_report(state, event_tx, report).await;
-                return Ok(Connected { server_addr: target.addr, transport, rx, local_addr, target });
+                return Ok(Connected {
+                    server_addr: target.addr,
+                    transport,
+                    rx,
+                    local_addr,
+                    target,
+                });
             }
             Err(e) => {
                 log::warn!("Connect to {} ({}) failed: {}", target.addr, target.host, e);
@@ -3907,11 +4509,24 @@ pub(crate) async fn send_register(
         let server_addr = account.server_addr.ok_or("No server addr")?;
         let transport = account.transport.clone().ok_or("No transport")?;
         let cseq = account.registration.next_cseq();
-        let expires = if account.unregistering { 0 } else { account.requested_expires };
+        let expires = if account.unregistering {
+            0
+        } else {
+            account.requested_expires
+        };
         let call_id = account.registration.call_id().to_string();
         let from_tag = account.registration.local_tag().to_string();
-        let msg = build_register(&account.config, local_addr, &call_id, cseq, &from_tag, auth_header, expires);
-        let first_of_attempt = auth_header.is_none() && !account.refreshing && !account.unregistering;
+        let msg = build_register(
+            &account.config,
+            local_addr,
+            &call_id,
+            cseq,
+            &from_tag,
+            auth_header,
+            expires,
+        );
+        let first_of_attempt =
+            auth_header.is_none() && !account.refreshing && !account.unregistering;
         if first_of_attempt {
             if let Some(report) = s.connection_reports.get_mut(account_id) {
                 report.running(connection::StepKind::Register);
@@ -3935,7 +4550,11 @@ pub(crate) async fn send_register(
         let mut sent: u32 = 1;
         loop {
             let remaining = timing.timer_f.saturating_sub(started.elapsed());
-            let wait = if reliable { remaining } else { interval.min(remaining) };
+            let wait = if reliable {
+                remaining
+            } else {
+                interval.min(remaining)
+            };
             tokio::time::sleep(wait).await;
 
             let outstanding = {
@@ -3952,7 +4571,11 @@ pub(crate) async fn send_register(
                 return;
             }
             log::debug!("Retransmitting REGISTER cseq {} for {}", cseq, aid);
-            if transport.send_to(msg.as_bytes(), server_addr).await.is_err() {
+            if transport
+                .send_to(msg.as_bytes(), server_addr)
+                .await
+                .is_err()
+            {
                 register_timed_out(&state, &event_tx, &aid, sent, started.elapsed()).await;
                 return;
             }
@@ -4003,7 +4626,9 @@ pub(crate) async fn send_invite(
             return;
         }
         let mut s = state.write().await;
-        let Some((account_id, call)) = s.find_call_mut(&call_id) else { return };
+        let Some((account_id, call)) = s.find_call_mut(&call_id) else {
+            return;
+        };
         // Only the INVITE the call is waiting on: an auth retry replaced the
         // first one, and a call the user already ended has had its event.
         if !call.is_dialing() || call.last_invite_branch != branch {
@@ -4040,8 +4665,16 @@ pub(crate) async fn send_non_invite(
         let s = state.read().await;
         (s.transactions.clone(), s.timing)
     };
-    transaction::send_request(&transactions, transport, dest, msg, transaction::Kind::NonInvite, timing, None)
-        .await
+    transaction::send_request(
+        &transactions,
+        transport,
+        dest,
+        msg,
+        transaction::Kind::NonInvite,
+        timing,
+        None,
+    )
+    .await
 }
 
 /// Send a SUBSCRIBE for the subscription `sub_call_id` of `account_id` as a
@@ -4067,7 +4700,9 @@ pub(crate) async fn send_subscribe(
             return;
         }
         let mut s = state.write().await;
-        let Some(account) = s.get_account_mut(&account_id) else { return };
+        let Some(account) = s.get_account_mut(&account_id) else {
+            return;
+        };
         let before = account.subscriptions.len();
         account.subscriptions.retain(|sub| {
             !(sub.call_id == sub_call_id
@@ -4086,7 +4721,11 @@ pub(crate) async fn send_subscribe(
 
 /// The CSeq number of a SIP message.
 pub(crate) fn cseq_number(msg: &str) -> Option<u32> {
-    extract_header(msg, "CSeq")?.split_whitespace().next()?.parse().ok()
+    extract_header(msg, "CSeq")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
 }
 
 /// RFC 3261 T2: the longest interval between retransmissions.
@@ -4108,10 +4747,11 @@ pub(crate) async fn retransmit_2xx_until_ack(
     dest: SocketAddr,
     timing: Timing,
 ) -> bool {
-    let acked = retransmit_response_until_ack(state, call_id, response, transport, dest, timing, |c| {
-        !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq)
-    })
-    .await;
+    let acked =
+        retransmit_response_until_ack(state, call_id, response, transport, dest, timing, |c| {
+            !c.is_ended() && c.pending_2xx.as_ref().is_some_and(|p| p.cseq == cseq)
+        })
+        .await;
     if !acked {
         if let Some((_, c)) = state.write().await.find_call_mut(call_id) {
             c.pending_2xx = None;
@@ -4138,7 +4778,10 @@ pub(crate) async fn send_invite_final_response(
     let timing = {
         let mut s = state.write().await;
         if let Some((_, call)) = s.find_call_mut(call_id) {
-            call.pending_final = Some(state::Pending2xx { cseq, response: response.clone() });
+            call.pending_final = Some(state::Pending2xx {
+                cseq,
+                response: response.clone(),
+            });
         }
         s.timing
     };
@@ -4147,9 +4790,15 @@ pub(crate) async fn send_invite_final_response(
     let transport = transport.clone();
     let call_id = call_id.to_string();
     tokio::spawn(async move {
-        let acked = retransmit_response_until_ack(&state, &call_id, &response, &transport, dest, timing, |c| {
-            c.pending_final.as_ref().is_some_and(|p| p.cseq == cseq)
-        })
+        let acked = retransmit_response_until_ack(
+            &state,
+            &call_id,
+            &response,
+            &transport,
+            dest,
+            timing,
+            |c| c.pending_final.as_ref().is_some_and(|p| p.cseq == cseq),
+        )
         .await;
         if !acked {
             log::warn!("No ACK for the final response to call {}", call_id);
@@ -4178,19 +4827,34 @@ async fn retransmit_response_until_ack(
     let mut interval = timing.t1;
     loop {
         let remaining = timer_h.saturating_sub(started.elapsed());
-        let wait = if reliable { remaining } else { interval.min(remaining) };
+        let wait = if reliable {
+            remaining
+        } else {
+            interval.min(remaining)
+        };
         tokio::time::sleep(wait).await;
 
-        let still = state.read().await.find_call(call_id).is_some_and(|(_, c)| outstanding(c));
+        let still = state
+            .read()
+            .await
+            .find_call(call_id)
+            .is_some_and(|(_, c)| outstanding(c));
         if !still {
             return true;
         }
         if started.elapsed() >= timer_h {
             return false;
         }
-        log::debug!("No ACK yet for call {}; retransmitting its final response", call_id);
+        log::debug!(
+            "No ACK yet for call {}; retransmitting its final response",
+            call_id
+        );
         if let Err(e) = transport.send_to(response.as_bytes(), dest).await {
-            log::warn!("Could not retransmit the final response for call {}: {}", call_id, e);
+            log::warn!(
+                "Could not retransmit the final response for call {}: {}",
+                call_id,
+                e
+            );
         }
         interval = (interval * 2).min(T2);
     }
@@ -4242,13 +4906,18 @@ async fn register_timed_out(
             finish_unregister(state, event_tx, account_id).await;
         }
         RegisterTimeoutPolicy::Reconnect => {
-            log::warn!("REGISTER for {} was not answered; trying another server", account_id);
+            log::warn!(
+                "REGISTER for {} was not answered; trying another server",
+                account_id
+            );
             fail_over(state, event_tx, account_id, srv::Failure::Timeout, true).await;
         }
         RegisterTimeoutPolicy::Error => {
             let error = {
                 let mut s = state.write().await;
-                let Some(account) = s.accounts.get_mut(account_id) else { return };
+                let Some(account) = s.accounts.get_mut(account_id) else {
+                    return;
+                };
                 account.registration.registration_timeout();
                 account.transport = None;
                 account.registration.error_reason().map(str::to_owned)
@@ -4265,7 +4934,10 @@ async fn register_timed_out(
 /// An emergency call is up on this account. While it is, nothing replaces or
 /// closes the transport it runs on: reconnect, failover and failback wait.
 fn emergency_call_active(account: &AccountState) -> bool {
-    account.calls.iter().any(|c| !c.is_ended() && emergency::is_emergency(&c.remote_uri))
+    account
+        .calls
+        .iter()
+        .any(|c| !c.is_ended() && emergency::is_emergency(&c.remote_uri))
 }
 
 /// Whether a server answers at all, without registering anything: a connect
@@ -4281,7 +4953,11 @@ async fn probe_target(
     match target.transport {
         TransportType::Tcp => {
             matches!(
-                tokio::time::timeout(srv::CONNECT_TIMEOUT, tokio::net::TcpStream::connect(target.addr)).await,
+                tokio::time::timeout(
+                    srv::CONNECT_TIMEOUT,
+                    tokio::net::TcpStream::connect(target.addr)
+                )
+                .await,
                 Ok(Ok(_))
             )
         }
@@ -4294,9 +4970,17 @@ async fn probe_target(
             Ok(Ok(_))
         ),
         TransportType::Udp | TransportType::Auto => {
-            let bind = if target.addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
-            let Ok(sock) = tokio::net::UdpSocket::bind(bind).await else { return false };
-            let Ok(sock_addr) = sock.local_addr() else { return false };
+            let bind = if target.addr.is_ipv6() {
+                "[::]:0"
+            } else {
+                "0.0.0.0:0"
+            };
+            let Ok(sock) = tokio::net::UdpSocket::bind(bind).await else {
+                return false;
+            };
+            let Ok(sock_addr) = sock.local_addr() else {
+                return false;
+            };
             let msg = build_options(
                 &account.domain,
                 SocketAddr::new(local_addr.ip(), sock_addr.port()),
@@ -4347,9 +5031,12 @@ pub(crate) async fn fail_over(
         let mut s = state.write().await;
         if let Some(account) = s.accounts.get(account_id) {
             if emergency_call_active(account) && account.transport.is_some() {
-                log::warn!("{account_id}: {failure:?}, but an emergency call is up; failing over after it");
+                log::warn!(
+                    "{account_id}: {failure:?}, but an emergency call is up; failing over after it"
+                );
                 // Queued: the same failure is acted on when the call has ended.
-                let (state, event_tx, id) = (state.clone(), event_tx.clone(), account_id.to_string());
+                let (state, event_tx, id) =
+                    (state.clone(), event_tx.clone(), account_id.to_string());
                 tokio::spawn(async move {
                     loop {
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -4367,7 +5054,11 @@ pub(crate) async fn fail_over(
                         let mut s = state.write().await;
                         if let Some(account) = s.accounts.get_mut(&id) {
                             if let Some(target) = account.target.clone() {
-                                account.failover.report_failure(&target, &failure, std::time::Instant::now());
+                                account.failover.report_failure(
+                                    &target,
+                                    &failure,
+                                    std::time::Instant::now(),
+                                );
                             }
                         }
                     }
@@ -4378,12 +5069,26 @@ pub(crate) async fn fail_over(
         }
         if let Some(account) = s.accounts.get_mut(account_id) {
             if let Some(target) = account.target.clone() {
-                log::warn!("Server {} ({}) failed for {}: {:?}", target.addr, target.host, account_id, failure);
-                account.failover.report_failure(&target, &failure, std::time::Instant::now());
+                log::warn!(
+                    "Server {} ({}) failed for {}: {:?}",
+                    target.addr,
+                    target.host,
+                    account_id,
+                    failure
+                );
+                account
+                    .failover
+                    .report_failure(&target, &failure, std::time::Instant::now());
             }
         }
     }
-    SipManager::handle_transport_death(state.clone(), event_tx.clone(), account_id.to_string(), keep_calls).await;
+    SipManager::handle_transport_death(
+        state.clone(),
+        event_tx.clone(),
+        account_id.to_string(),
+        keep_calls,
+    )
+    .await;
 }
 
 /// Forget an account and tell the UI it is unregistered.
@@ -4393,7 +5098,10 @@ pub(crate) async fn finish_unregister(
     account_id: &str,
 ) {
     // The panel's last word on this account: it was taken down on purpose.
-    with_report(state, event_tx, account_id, |r| r.finish(connection::Outcome::Unregistered)).await;
+    with_report(state, event_tx, account_id, |r| {
+        r.finish(connection::Outcome::Unregistered)
+    })
+    .await;
     {
         let mut s = state.write().await;
         if s.accounts.remove(account_id).is_none() {
@@ -4436,7 +5144,6 @@ fn connection_changed(existing: &AccountState, next: &AccountConfig) -> bool {
     key(current) != key(next)
 }
 
-
 #[cfg(test)]
 mod construction_tests {
     use super::SipManager;
@@ -4455,7 +5162,10 @@ mod construction_tests {
             let _handle = manager.clone();
         })
         .join();
-        assert!(built.is_ok(), "constructing a SipManager without a runtime panicked");
+        assert!(
+            built.is_ok(),
+            "constructing a SipManager without a runtime panicked"
+        );
     }
 
     /// `start_background_tasks` is the one place the loops start, and calling
@@ -4483,7 +5193,12 @@ mod call_id_tests {
                 .make_call_with_id("sip:100@example.com", bad)
                 .await
                 .expect_err("non-UUID id must be rejected");
-            assert!(err.contains("UUID"), "unexpected error for {:?}: {}", bad, err);
+            assert!(
+                err.contains("UUID"),
+                "unexpected error for {:?}: {}",
+                bad,
+                err
+            );
         }
     }
 }

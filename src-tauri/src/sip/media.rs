@@ -4,15 +4,18 @@ use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
 
 use crate::sip::builder::{self, NegotiatedAudio};
-pub use rtp_engine::{CodecType, MediaSession};
 use rtp_engine::StunResult;
+pub use rtp_engine::{CodecType, MediaSession};
 
 /// How long each STUN server gets to answer before the next is tried.
 const STUN_TIMEOUT_MS: u64 = 3000;
 
 /// The STUN servers a manager asks by default: `rtp_engine`'s public list.
 pub(crate) fn default_stun_servers() -> Vec<String> {
-    rtp_engine::DEFAULT_STUN_SERVERS.iter().map(|s| s.to_string()).collect()
+    rtp_engine::DEFAULT_STUN_SERVERS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Ask each of `servers` in turn for `socket`'s public address.
@@ -22,7 +25,10 @@ pub(crate) fn default_stun_servers() -> Vec<String> {
 /// its managers at a local stub instead of the public servers — a lookup
 /// that timed out there cost a call three seconds and failed the tests that
 /// time dialling.
-async fn discover_public_address(socket: &UdpSocket, servers: &[String]) -> Result<StunResult, String> {
+async fn discover_public_address(
+    socket: &UdpSocket,
+    servers: &[String],
+) -> Result<StunResult, String> {
     let mut last_error = None;
     for server in servers {
         match rtp_engine::stun::discover_with_socket(socket, server, STUN_TIMEOUT_MS).await {
@@ -72,7 +78,8 @@ impl RemoteMedia {
     /// An unspecified address (`c=0.0.0.0`, the old way to hold) is not a
     /// new destination: the session stays where it is.
     pub fn needs_restart_for(&self, next: &RemoteMedia) -> bool {
-        let moved = next.addr != self.addr && !next.addr.ip().is_unspecified() && next.addr.port() != 0;
+        let moved =
+            next.addr != self.addr && !next.addr.ip().is_unspecified() && next.addr.port() != 0;
         moved || next.audio != self.audio || next.srtp_key != self.srtp_key
     }
 
@@ -116,7 +123,11 @@ pub struct StartedMedia {
 /// come from [`builder::negotiate_audio`] and the SRTP decision is the same
 /// for an answer, a 183, a 200 and a re-INVITE.
 pub async fn start_call_media(plan: &MediaPlan, sdp: &str) -> Result<StartedMedia, String> {
-    let RemoteMedia { addr, audio, srtp_key: ref remote_key } = plan.remote;
+    let RemoteMedia {
+        addr,
+        audio,
+        srtp_key: ref remote_key,
+    } = plan.remote;
     let contexts = match (&plan.local_srtp_key, remote_key) {
         (Some(ours), Some(theirs)) => {
             match (
@@ -126,7 +137,10 @@ pub async fn start_call_media(plan: &MediaPlan, sdp: &str) -> Result<StartedMedi
                 (Ok(tx), Ok(rx)) => Some((tx, rx)),
                 (Err(e), _) | (_, Err(e)) => {
                     // Never log the keys themselves: they decrypt the call.
-                    log::error!("Could not build SRTP contexts ({:?}); this call is NOT encrypted", e);
+                    log::error!(
+                        "Could not build SRTP contexts ({:?}); this call is NOT encrypted",
+                        e
+                    );
                     None
                 }
             }
@@ -138,15 +152,27 @@ pub async fn start_call_media(plan: &MediaPlan, sdp: &str) -> Result<StartedMedi
     let session = match contexts {
         Some((tx, rx)) => {
             MediaSession::start_with_srtp_keys_and_devices(
-                plan.local_port, addr, audio.codec, tx, rx, input, output,
+                plan.local_port,
+                addr,
+                audio.codec,
+                tx,
+                rx,
+                input,
+                output,
             )
             .await
         }
-        None => MediaSession::start_with_devices(plan.local_port, addr, audio.codec, input, output).await,
+        None => {
+            MediaSession::start_with_devices(plan.local_port, addr, audio.codec, input, output)
+                .await
+        }
     }
     .map_err(|e| e.to_string())?;
     apply_negotiated_payload_types(&session, audio, sdp);
-    Ok(StartedMedia { session, srtp_active })
+    Ok(StartedMedia {
+        session,
+        srtp_active,
+    })
 }
 
 /// The far end's media for a call, read from its SDP: where to send, what
@@ -162,7 +188,11 @@ pub fn remote_media(
     let (ip, port) = builder::parse_sdp_connection(sdp)?;
     let addr: SocketAddr = format!("{}:{}", ip, port).parse().ok()?;
     let audio = builder::negotiate_audio(sdp, prefs)?;
-    Some(RemoteMedia { addr, audio, srtp_key: builder::parse_sdp_crypto(sdp) })
+    Some(RemoteMedia {
+        addr,
+        audio,
+        srtp_key: builder::parse_sdp_crypto(sdp),
+    })
 }
 
 /// An even RTP port with its RTCP neighbour free, released for the media
@@ -201,18 +231,27 @@ pub async fn allocate_port_with_stun(
         Ok(result) if !result.public_ip.is_unspecified() => {
             log::info!(
                 "STUN discovery: local {}:{} -> public {}:{}",
-                result.local_ip, result.local_port, result.public_ip, result.public_port
+                result.local_ip,
+                result.local_port,
+                result.public_ip,
+                result.public_port
             );
             // Symmetric NAT may change the port when the media socket binds
             // again; the public IP is what the SDP uses.
             Ok((rtp_port, Some(result.public_ip), Some(result.public_port)))
         }
         Ok(result) => {
-            log::warn!("STUN answered with an unspecified address ({}); ignoring it", result.public_ip);
+            log::warn!(
+                "STUN answered with an unspecified address ({}); ignoring it",
+                result.public_ip
+            );
             Ok((rtp_port, None, None))
         }
         Err(e) => {
-            log::warn!("STUN discovery failed; the SDP will carry the local interface address: {}", e);
+            log::warn!(
+                "STUN discovery failed; the SDP will carry the local interface address: {}",
+                e
+            );
             Ok((rtp_port, None, None))
         }
     }
@@ -268,7 +307,11 @@ async fn allocate_rtp_socket() -> Result<(UdpSocket, u16), String> {
 pub fn sdp_address(local: IpAddr, public: Option<IpAddr>, server: Option<IpAddr>) -> IpAddr {
     let public = public.filter(|ip| !ip.is_unspecified());
     if server.is_some_and(is_private_network) {
-        return if local.is_unspecified() { public.unwrap_or(local) } else { local };
+        return if local.is_unspecified() {
+            public.unwrap_or(local)
+        } else {
+            local
+        };
     }
     match public {
         Some(ip) => ip,
@@ -304,15 +347,13 @@ pub async fn discover_public_ip(stun_servers: &[String]) -> Result<IpAddr, Strin
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await
         .map_err(|e| format!("Failed to bind socket for STUN: {}", e))?;
-    
+
     match discover_public_address(&socket, stun_servers).await {
         Ok(result) => {
             log::info!("STUN discovered public IP: {}", result.public_ip);
             Ok(result.public_ip)
         }
-        Err(e) => {
-            Err(format!("STUN discovery failed: {}", e))
-        }
+        Err(e) => Err(format!("STUN discovery failed: {}", e)),
     }
 }
 
@@ -372,15 +413,31 @@ mod remote_media_tests {
     #[test]
     fn a_new_address_codec_or_key_needs_a_new_session_and_nothing_else_does() {
         let current = remote_media(&sdp("10.0.0.1", 40000, "0 8", ""), None).unwrap();
-        assert_eq!(current.audio, NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 });
+        assert_eq!(
+            current.audio,
+            NegotiatedAudio {
+                codec: CodecType::Pcmu,
+                pt: 0
+            }
+        );
         let same = remote_media(&sdp("10.0.0.1", 40000, "0 8", "a=sendonly\r\n"), None).unwrap();
         assert!(!current.needs_restart_for(&same));
-        for moved in [sdp("10.0.0.1", 40002, "0 8", ""), sdp("10.0.0.9", 40000, "0 8", ""), sdp("10.0.0.1", 40000, "8 0", "")] {
-            assert!(current.needs_restart_for(&remote_media(&moved, None).unwrap()), "{moved}");
+        for moved in [
+            sdp("10.0.0.1", 40002, "0 8", ""),
+            sdp("10.0.0.9", 40000, "0 8", ""),
+            sdp("10.0.0.1", 40000, "8 0", ""),
+        ] {
+            assert!(
+                current.needs_restart_for(&remote_media(&moved, None).unwrap()),
+                "{moved}"
+            );
         }
         let held = remote_media(&sdp("0.0.0.0", 40000, "0 8", ""), None).unwrap();
         assert!(!current.needs_restart_for(&held));
-        let rekeyed = RemoteMedia { srtp_key: Some("k".into()), ..current.clone() };
+        let rekeyed = RemoteMedia {
+            srtp_key: Some("k".into()),
+            ..current.clone()
+        };
         assert!(current.needs_restart_for(&rekeyed));
     }
 
@@ -390,10 +447,26 @@ mod remote_media_tests {
     #[test]
     fn remote_media_negotiates_like_the_answer() {
         let yealink = sdp("10.0.0.1", 40000, "9 0 8 101", "a=rtpmap:9 G722/8000\r\n");
-        let got = remote_media(&yealink, Some(&crate::sip::account::default_codec_preferences())).unwrap();
-        assert_eq!(got.audio, NegotiatedAudio { codec: CodecType::Pcmu, pt: 0 });
+        let got = remote_media(
+            &yealink,
+            Some(&crate::sip::account::default_codec_preferences()),
+        )
+        .unwrap();
+        assert_eq!(
+            got.audio,
+            NegotiatedAudio {
+                codec: CodecType::Pcmu,
+                pt: 0
+            }
+        );
         let narrow = remote_media(&sdp("10.0.0.1", 40000, "9 18", ""), None).unwrap();
-        assert_eq!(narrow.audio, NegotiatedAudio { codec: CodecType::G729, pt: 18 });
+        assert_eq!(
+            narrow.audio,
+            NegotiatedAudio {
+                codec: CodecType::G729,
+                pt: 18
+            }
+        );
         assert!(remote_media(&sdp("10.0.0.1", 40000, "9", ""), None).is_none());
     }
 }
@@ -419,13 +492,21 @@ mod sdp_address_tests {
     /// sent RTP out to the internet and back. It gets the local one.
     #[test]
     fn a_lan_server_gets_the_local_address_even_when_stun_succeeded() {
-        let got = sdp_address(ip("192.168.1.20"), Some(ip("203.0.113.7")), Some(ip("192.168.1.1")));
+        let got = sdp_address(
+            ip("192.168.1.20"),
+            Some(ip("203.0.113.7")),
+            Some(ip("192.168.1.1")),
+        );
         assert_eq!(got, ip("192.168.1.20"));
     }
 
     #[test]
     fn a_public_server_behind_nat_gets_the_public_address() {
-        let got = sdp_address(ip("192.168.1.20"), Some(ip("203.0.113.7")), Some(ip("159.203.80.231")));
+        let got = sdp_address(
+            ip("192.168.1.20"),
+            Some(ip("203.0.113.7")),
+            Some(ip("159.203.80.231")),
+        );
         assert_eq!(got, ip("203.0.113.7"));
     }
 
@@ -446,10 +527,28 @@ mod sdp_address_tests {
 
     #[test]
     fn private_networks_are_recognised() {
-        for p in ["10.2.0.3", "172.16.5.5", "192.168.0.1", "127.0.0.1", "169.254.1.1", "100.64.0.1", "100.127.255.1", "fd00::1", "fe80::1", "::1"] {
+        for p in [
+            "10.2.0.3",
+            "172.16.5.5",
+            "192.168.0.1",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "100.127.255.1",
+            "fd00::1",
+            "fe80::1",
+            "::1",
+        ] {
             assert!(is_private_network(ip(p)), "{p} should be private");
         }
-        for p in ["159.203.80.231", "8.8.8.8", "100.128.0.1", "172.32.0.1", "2001:db8::1", "2606:4700::1111"] {
+        for p in [
+            "159.203.80.231",
+            "8.8.8.8",
+            "100.128.0.1",
+            "172.32.0.1",
+            "2001:db8::1",
+            "2606:4700::1111",
+        ] {
             assert!(!is_private_network(ip(p)), "{p} should be public");
         }
     }

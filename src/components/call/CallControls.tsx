@@ -22,13 +22,12 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../stores/appStore";
 import CallIcon from "@mui/icons-material/Call";
-import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceEnd, sipSwapCalls, sipSendDtmf, sipTransferBlind } from "../../hooks/useSip";
+import { hangupCall, placeCall, sipAnswer, sipMute, sipHold, sipStartRecording, sipStopRecording, sipConferenceEnd, sipSwapCalls, sipTransferBlind } from "../../hooks/useSip";
 import PhoneForwardedIcon from "@mui/icons-material/PhoneForwarded";
 import DevicesIcon from "@mui/icons-material/Devices";
 import { MoveToDialog } from "./MoveToDialog";
 import { useMoveMailbox } from "../../hooks/useCallMove";
 import { dialUri } from "../../utils/sipUri";
-import { DialerButton } from "../dialer/DialerButton";
 import { log } from "../../utils/log";
 import { errorText, notifyError } from "../../stores/toastStore";
 import { pushAudioDevices } from "../../utils/audioDevices";
@@ -104,7 +103,13 @@ function ControlButton({ icon, label, active, onClick }: ControlButtonProps) {
   );
 }
 
-export function CallControls() {
+interface CallControlsProps {
+  /** The in-call keypad is open (it is part of the call screen's layout, not a popover). */
+  keypadOpen: boolean;
+  onToggleKeypad: () => void;
+}
+
+export function CallControls({ keypadOpen, onToggleKeypad }: CallControlsProps) {
   const { t } = useTranslation();
   const activeCall = useAppStore((s) => s.activeCall);
   const activeCalls = useAppStore((s) => s.activeCalls);
@@ -129,7 +134,6 @@ export function CallControls() {
   const [transferring, setTransferring] = useState(false);
   const [moveToOpen, setMoveToOpen] = useState(false);
   const moveMailbox = useMoveMailbox();
-  const [dtmfAnchor, setDtmfAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioAnchor, setAudioAnchor] = useState<HTMLButtonElement | null>(null);
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
 
@@ -380,8 +384,8 @@ export function CallControls() {
       key: "keypad",
       icon: <DialpadIcon />,
       label: t("call.keypad"),
-      active: Boolean(dtmfAnchor),
-      onClick: (e) => setDtmfAnchor(dtmfAnchor ? null : e.currentTarget),
+      active: keypadOpen,
+      onClick: onToggleKeypad,
     },
     {
       key: "audio",
@@ -497,57 +501,6 @@ export function CallControls() {
           </motion.div>
         </Box>
       </Box>
-
-      {/* DTMF keypad popover */}
-      <Popover
-        open={Boolean(dtmfAnchor)}
-        anchorEl={dtmfAnchor}
-        onClose={() => setDtmfAnchor(null)}
-        anchorOrigin={{ vertical: "top", horizontal: "center" }}
-        transformOrigin={{ vertical: "bottom", horizontal: "center" }}
-        slotProps={{
-          paper: {
-            sx: {
-              borderRadius: "16px",
-              p: 2,
-              mb: 1,
-            },
-          },
-        }}
-      >
-        <Box
-          sx={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 1fr)",
-            gap: 1,
-            justifyItems: "center",
-          }}
-        >
-          {[
-            { digit: "1", letters: "" },
-            { digit: "2", letters: "ABC" },
-            { digit: "3", letters: "DEF" },
-            { digit: "4", letters: "GHI" },
-            { digit: "5", letters: "JKL" },
-            { digit: "6", letters: "MNO" },
-            { digit: "7", letters: "PQRS" },
-            { digit: "8", letters: "TUV" },
-            { digit: "9", letters: "WXYZ" },
-            { digit: "*", letters: "" },
-            { digit: "0", letters: "+" },
-            { digit: "#", letters: "" },
-          ].map(({ digit, letters }) => (
-            <DialerButton
-              key={digit}
-              digit={digit}
-              letters={letters || undefined}
-              onPress={(d) => {
-                sipSendDtmf(activeCall.id, d).catch(() => {});
-              }}
-            />
-          ))}
-        </Box>
-      </Popover>
 
       {/* Audio device picker popover */}
       <Popover

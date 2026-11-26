@@ -7,9 +7,9 @@ use super::builder::{
     build_simple_response, extract_from_tag, extract_header, extract_via_branch,
     parse_sdp_connection, parse_sipfrag_status,
 };
-use super::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use super::media;
 use super::replaces;
+use super::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use super::{CallEvent, ManagerState, SipEvent, TransferEvent};
 
 /// Handle an incoming REFER request: accept, start transfer, send NOTIFY updates
@@ -83,7 +83,16 @@ pub async fn handle_incoming_refer(
     }));
 
     // Extract dialog info for sending NOTIFY
-    let (notify_target, notify_remote_uri, notify_local_uri, notify_call_id, notify_from_tag, notify_to_tag, transport_str, transport) = {
+    let (
+        notify_target,
+        notify_remote_uri,
+        notify_local_uri,
+        notify_call_id,
+        notify_from_tag,
+        notify_to_tag,
+        transport_str,
+        transport,
+    ) = {
         let s = state.read().await;
         let account = match s.get_account(account_id) {
             Some(a) => a,
@@ -103,7 +112,9 @@ pub async fn handle_incoming_refer(
         // NOTIFY a 481. The request goes to the remote Contact, like the BYE.
         let (our_tag, their_tag) = call.dialog_tags();
         (
-            call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone()),
+            call.remote_contact
+                .clone()
+                .unwrap_or_else(|| call.remote_uri.clone()),
             call.remote_uri.clone(),
             call.local_uri.clone(),
             call.call_id_header.clone(),
@@ -122,25 +133,29 @@ pub async fn handle_incoming_refer(
             Some(a) => a,
             None => return,
         };
-        account.calls.iter_mut().find(|c| c.id == call_internal_id).map(|call| {
-            call.cseq += 1;
-            let cseq = call.cseq;
-            let local_addr = transport.local_addr();
-            build_notify_refer(
-                &notify_target,
-                &notify_local_uri,
-                &notify_remote_uri,
-                local_addr,
-                &notify_call_id,
-                cseq,
-                &notify_from_tag,
-                &notify_to_tag,
-                &transport_str,
-                100,
-                "Trying",
-                "active;expires=60",
-            )
-        })
+        account
+            .calls
+            .iter_mut()
+            .find(|c| c.id == call_internal_id)
+            .map(|call| {
+                call.cseq += 1;
+                let cseq = call.cseq;
+                let local_addr = transport.local_addr();
+                build_notify_refer(
+                    &notify_target,
+                    &notify_local_uri,
+                    &notify_remote_uri,
+                    local_addr,
+                    &notify_call_id,
+                    cseq,
+                    &notify_from_tag,
+                    &notify_to_tag,
+                    &transport_str,
+                    100,
+                    "Trying",
+                    "active;expires=60",
+                )
+            })
     };
     if let Some(notify) = notify {
         let _ = super::send_non_invite(state, &transport, remote, notify).await;
@@ -167,19 +182,27 @@ pub async fn handle_incoming_refer(
                 None => return,
             };
             let public_addr = account.public_addr;
-            (account.config.clone(), local_addr, server_addr, transport, public_addr, s.stun_servers.clone())
+            (
+                account.config.clone(),
+                local_addr,
+                server_addr,
+                transport,
+                public_addr,
+                s.stun_servers.clone(),
+            )
         };
 
         let new_call_id = builder::generate_call_id();
         let new_from_tag = builder::generate_tag();
         // Allocate RTP port and discover public IP via STUN for NAT traversal
-        let (rtp_port, stun_public_ip) = match super::media::allocate_port_with_stun(&stun_servers).await {
-            Ok((port, ip, _)) => (port, ip),
-            Err(e) => {
-                log::error!("Failed to allocate RTP port with STUN: {}", e);
-                return;
-            }
-        };
+        let (rtp_port, stun_public_ip) =
+            match super::media::allocate_port_with_stun(&stun_servers).await {
+                Ok((port, ip, _)) => (port, ip),
+                Err(e) => {
+                    log::error!("Failed to allocate RTP port with STUN: {}", e);
+                    return;
+                }
+            };
 
         // Use STUN-discovered public IP for SDP, fallback to registration-discovered public IP
         let sdp_ip = super::media::sdp_address(
@@ -202,7 +225,15 @@ pub async fn handle_incoming_refer(
 
         let branch = extract_via_branch(&invite).unwrap_or_default();
         let local_uri = format!("sip:{}@{}", account_config.username, account_config.domain);
-        let mut new_call = CallFSM::new_outbound(account_id, &refer_to, new_call_id, new_from_tag, rtp_port, branch, local_uri);
+        let mut new_call = CallFSM::new_outbound(
+            account_id,
+            &refer_to,
+            new_call_id,
+            new_from_tag,
+            rtp_port,
+            branch,
+            local_uri,
+        );
         new_call.local_srtp_key = local_srtp_key;
         new_call.sdp_public_ip = Some(sdp_ip);
         let new_id = new_call.id.clone();
@@ -212,17 +243,18 @@ pub async fn handle_incoming_refer(
         if let Some(account) = state.write().await.get_account_mut(account_id) {
             account.calls.push(new_call);
         }
-        let _ = event_tx.send(SipEvent::CallStateChanged(
-            CallEvent::new(account_id, &new_id, "dialing", &refer_to, "outbound")
-        ));
-        let send_result = super::send_invite(state, event_tx, &new_id, &transport, server_addr, invite).await;
+        let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+            account_id, &new_id, "dialing", &refer_to, "outbound",
+        )));
+        let send_result =
+            super::send_invite(state, event_tx, &new_id, &transport, server_addr, invite).await;
         if send_result.is_err() {
             if let Some(account) = state.write().await.get_account_mut(account_id) {
                 account.calls.retain(|c| c.id != new_id);
             }
-            let _ = event_tx.send(SipEvent::CallStateChanged(
-                CallEvent::new(account_id, &new_id, "ended", &refer_to, "outbound")
-            ));
+            let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+                account_id, &new_id, "ended", &refer_to, "outbound",
+            )));
         }
 
         send_result
@@ -242,25 +274,29 @@ pub async fn handle_incoming_refer(
                 Some(a) => a,
                 None => return,
             };
-            account.calls.iter_mut().find(|c| c.id == call_internal_id).map(|call| {
-                call.cseq += 1;
-                let cseq = call.cseq;
-                let local_addr = transport.local_addr();
-                build_notify_refer(
-                    &notify_target,
-                    &notify_local_uri,
-                    &notify_remote_uri,
-                    local_addr,
-                    &notify_call_id,
-                    cseq,
-                    &notify_from_tag,
-                    &notify_to_tag,
-                    &transport_str,
-                    sf_status,
-                    sf_reason,
-                    sf_sub,
-                )
-            })
+            account
+                .calls
+                .iter_mut()
+                .find(|c| c.id == call_internal_id)
+                .map(|call| {
+                    call.cseq += 1;
+                    let cseq = call.cseq;
+                    let local_addr = transport.local_addr();
+                    build_notify_refer(
+                        &notify_target,
+                        &notify_local_uri,
+                        &notify_remote_uri,
+                        local_addr,
+                        &notify_call_id,
+                        cseq,
+                        &notify_from_tag,
+                        &notify_to_tag,
+                        &transport_str,
+                        sf_status,
+                        sf_reason,
+                        sf_sub,
+                    )
+                })
         };
         if let Some(notify) = notify {
             let _ = super::send_non_invite(state, &transport, remote, notify).await;
@@ -315,8 +351,16 @@ pub async fn handle_notify_refer(
             Some(a) => a,
             None => return,
         };
-        match account.calls.iter().find(|c| c.call_id_header == call_id_header) {
-            Some(call) => (call.id.clone(), call.remote_uri.clone(), call.direction_str().to_string()),
+        match account
+            .calls
+            .iter()
+            .find(|c| c.call_id_header == call_id_header)
+        {
+            Some(call) => (
+                call.id.clone(),
+                call.remote_uri.clone(),
+                call.direction_str().to_string(),
+            ),
             None => return,
         }
     };
@@ -353,7 +397,13 @@ pub async fn handle_notify_refer(
         };
         let recording_path = crate::sip::finish_call_media(&call_id, media).await;
 
-        let mut ended = CallEvent::new(account_id, &call_id, "ended", &call_remote_uri, &call_direction);
+        let mut ended = CallEvent::new(
+            account_id,
+            &call_id,
+            "ended",
+            &call_remote_uri,
+            &call_direction,
+        );
         if let Some(path) = recording_path {
             ended = ended.with_recording_path(path);
         }
@@ -373,7 +423,9 @@ pub async fn handle_invite_with_replaces(
     let new_call_header = extract_header(text, "Call-ID").unwrap_or_default();
     let (outcome, replaced_id) = {
         let s = state.read().await;
-        let Some(account) = s.get_account(account_id) else { return };
+        let Some(account) = s.get_account(account_id) else {
+            return;
+        };
         let dialogs: Vec<replaces::Dialog> = account
             .calls
             .iter()
@@ -413,7 +465,9 @@ pub async fn handle_invite_with_replaces(
         }
         return;
     }
-    let Some(replaced_id) = replaced_id else { return };
+    let Some(replaced_id) = replaced_id else {
+        return;
+    };
 
     // Terminate the replaced call: a BYE for an answered dialog, a CANCEL for
     // one this app is still placing. Ending it only here left the far end
@@ -438,7 +492,10 @@ pub async fn handle_invite_with_replaces(
     let rtp_port = match super::media::MediaSession::allocate_port().await {
         Ok(port) => port,
         Err(e) => {
-            log::error!("Failed to allocate RTP port for INVITE with Replaces: {}", e);
+            log::error!(
+                "Failed to allocate RTP port for INVITE with Replaces: {}",
+                e
+            );
             return;
         }
     };
@@ -490,13 +547,9 @@ pub async fn handle_invite_with_replaces(
         (la, user, transport)
     };
 
-    if let Some(resp) = build_200_ok_invite_with_user(
-        text,
-        local_addr,
-        rtp_port,
-        &to_tag,
-        Some(&username),
-    ) {
+    if let Some(resp) =
+        build_200_ok_invite_with_user(text, local_addr, rtp_port, &to_tag, Some(&username))
+    {
         let _ = transport.send_to(resp.as_bytes(), remote).await;
     }
 
@@ -507,14 +560,24 @@ pub async fn handle_invite_with_replaces(
             // The same pick as the answer's first payload type (the 200
             // above was built from the offer's order).
             let negotiated = builder::negotiate_audio(sdp, None);
-            log::info!("Negotiated codec for INVITE with Replaces: {:?}", negotiated);
+            log::info!(
+                "Negotiated codec for INVITE with Replaces: {:?}",
+                negotiated
+            );
 
             let (input_dev, output_dev) = {
                 let s = state.read().await;
-                (s.preferred_input_device.clone(), s.preferred_output_device.clone())
+                (
+                    s.preferred_input_device.clone(),
+                    s.preferred_output_device.clone(),
+                )
             };
             let codec = negotiated.map_or(media::CodecType::Pcmu, |n| n.codec);
-            match media::MediaSession::start_with_devices(rtp_port, remote_rtp, codec, input_dev, output_dev).await {
+            match media::MediaSession::start_with_devices(
+                rtp_port, remote_rtp, codec, input_dev, output_dev,
+            )
+            .await
+            {
                 Ok(session) => {
                     if let Some(audio) = negotiated {
                         media::apply_negotiated_payload_types(&session, audio, sdp);
@@ -554,9 +617,13 @@ pub async fn handle_invite_with_replaces(
         }
     }
 
-    let _ = event_tx.send(SipEvent::CallStateChanged(
-        CallEvent::new(account_id, &new_internal_id, "connected", &new_remote_uri, "inbound")
-    ));
+    let _ = event_tx.send(SipEvent::CallStateChanged(CallEvent::new(
+        account_id,
+        &new_internal_id,
+        "connected",
+        &new_remote_uri,
+        "inbound",
+    )));
 }
 
 /// Send what ends a dialog replaced by an INVITE with Replaces and mark it
@@ -569,7 +636,9 @@ async fn end_replaced_dialog(
     let (msg, transport, server_addr) = {
         let mut s = state.write().await;
         let account = s.get_account_mut(account_id)?;
-        let local_addr = account.local_addr.or_else(|| account.transport.as_ref().map(|t| t.local_addr()));
+        let local_addr = account
+            .local_addr
+            .or_else(|| account.transport.as_ref().map(|t| t.local_addr()));
         let (transport, server_addr) = (account.transport.clone(), account.server_addr);
         let transport_param = account.config.transport.param().to_string();
         let call = account.calls.iter_mut().find(|c| c.id == call_id)?;
@@ -578,7 +647,10 @@ async fn end_replaced_dialog(
                 call.bye_sent = true;
                 let cseq = call.next_cseq();
                 let (ours, theirs) = call.dialog_tags();
-                let target = call.remote_contact.clone().unwrap_or_else(|| call.remote_uri.clone());
+                let target = call
+                    .remote_contact
+                    .clone()
+                    .unwrap_or_else(|| call.remote_uri.clone());
                 Some(builder::build_bye_with_routes(
                     &target,
                     la,
@@ -592,17 +664,19 @@ async fn end_replaced_dialog(
                     &call.remote_uri,
                 ))
             }
-            (Some(la), Some(_)) if call.is_dialing() || call.is_ringing() => Some(builder::build_cancel(
-                &call.remote_uri,
-                la,
-                &call.call_id_header,
-                call.invite_cseq,
-                &call.dialog_tags().0,
-                &transport_param,
-                &call.last_invite_branch.clone().unwrap_or_default(),
-                &call.local_uri,
-                &call.remote_uri,
-            )),
+            (Some(la), Some(_)) if call.is_dialing() || call.is_ringing() => {
+                Some(builder::build_cancel(
+                    &call.remote_uri,
+                    la,
+                    &call.call_id_header,
+                    call.invite_cseq,
+                    &call.dialog_tags().0,
+                    &transport_param,
+                    &call.last_invite_branch.clone().unwrap_or_default(),
+                    &call.local_uri,
+                    &call.remote_uri,
+                ))
+            }
             _ => None,
         };
         (msg, transport, server_addr)
@@ -610,13 +684,25 @@ async fn end_replaced_dialog(
     if let (Some(msg), Some(transport), Some(addr)) = (msg, transport, server_addr) {
         // Nothing from the call or the account goes into this line: both
         // derive from the account's data, which the log must never carry.
-        if super::send_non_invite(state, &transport, addr, msg).await.is_err() {
+        if super::send_non_invite(state, &transport, addr, msg)
+            .await
+            .is_err()
+        {
             log::warn!("Could not end a replaced dialog; the far end may still think it is up");
         }
     }
     let mut s = state.write().await;
-    let call = s.get_account_mut(account_id)?.calls.iter_mut().find(|c| c.id == call_id)?;
+    let call = s
+        .get_account_mut(account_id)?
+        .calls
+        .iter_mut()
+        .find(|c| c.id == call_id)?;
     let media = call.take_media();
     let _ = call.process(CallFSMEvent::LocalHangup);
-    Some((call.id.clone(), call.remote_uri.clone(), call.direction_str().to_string(), media))
+    Some((
+        call.id.clone(),
+        call.remote_uri.clone(),
+        call.direction_str().to_string(),
+        media,
+    ))
 }

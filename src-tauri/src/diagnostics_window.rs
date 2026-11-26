@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewWindow, WindowEvent};
+use tauri::{
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewWindow, WindowEvent,
+};
 
 /// The window label; `App.tsx` renders the panel when it finds itself here.
 pub const LABEL: &str = "debug";
@@ -37,7 +39,12 @@ pub struct Frame {
 /// left fits. Neither fitting, it still goes right (clipped at the edge is
 /// recoverable; off the left edge is not).
 pub fn docked_frame(main: &Frame, width: f64, monitor: Option<&Frame>) -> Frame {
-    let right = Frame { x: main.x + main.width + DOCK_GAP, y: main.y, width, height: main.height };
+    let right = Frame {
+        x: main.x + main.width + DOCK_GAP,
+        y: main.y,
+        width,
+        height: main.height,
+    };
     if let Some(m) = monitor {
         if right.x + width > m.x + m.width {
             let left_x = main.x - DOCK_GAP - width;
@@ -81,7 +88,11 @@ impl DiagnosticsWindow {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str::<Saved>(&s).ok())
             .is_none_or(|s| s.docked);
-        Self { docked: AtomicBool::new(docked), expected: Mutex::new(None), path }
+        Self {
+            docked: AtomicBool::new(docked),
+            expected: Mutex::new(None),
+            path,
+        }
     }
 
     pub fn docked(&self) -> bool {
@@ -145,10 +156,15 @@ pub fn reposition(app: &AppHandle) {
     if !state.docked() {
         return;
     }
-    let (Some(main), Some(diag)) = (app.get_webview_window("main"), app.get_webview_window(LABEL)) else {
+    let (Some(main), Some(diag)) = (
+        app.get_webview_window("main"),
+        app.get_webview_window(LABEL),
+    ) else {
         return;
     };
-    let Some(main_frame) = frame_of(&main) else { return };
+    let Some(main_frame) = frame_of(&main) else {
+        return;
+    };
     let width = frame_of(&diag).map_or(DEFAULT_WIDTH, |f| f.width);
     let target = docked_frame(&main_frame, width, monitor_of(&main).as_ref());
     state.remember(Some(target));
@@ -185,9 +201,23 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
     let main = app.get_webview_window("main");
     let main_frame = main.as_ref().and_then(frame_of);
     let frame = match main_frame {
-        Some(mf) if state.docked() => docked_frame(&mf, DEFAULT_WIDTH, main.as_ref().and_then(monitor_of).as_ref()),
-        Some(mf) => Frame { x: mf.x + mf.width + DOCK_GAP, y: mf.y, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT },
-        None => Frame { x: 100.0, y: 100.0, width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT },
+        Some(mf) if state.docked() => docked_frame(
+            &mf,
+            DEFAULT_WIDTH,
+            main.as_ref().and_then(monitor_of).as_ref(),
+        ),
+        Some(mf) => Frame {
+            x: mf.x + mf.width + DOCK_GAP,
+            y: mf.y,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+        },
+        None => Frame {
+            x: 100.0,
+            y: 100.0,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+        },
     };
     state.remember(state.docked().then_some(frame));
 
@@ -208,12 +238,18 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
             if !state.docked() {
                 return;
             }
-            let Some(expected) = state.expected() else { return };
+            let Some(expected) = state.expected() else {
+                return;
+            };
             let scale = handle
                 .get_webview_window(LABEL)
                 .and_then(|w| w.scale_factor().ok())
                 .unwrap_or(1.0);
-            if moved_away(&expected, f64::from(pos.x) / scale, f64::from(pos.y) / scale) {
+            if moved_away(
+                &expected,
+                f64::from(pos.x) / scale,
+                f64::from(pos.y) / scale,
+            ) {
                 log::info!("diagnostics window dragged away; undocked");
                 state.set_docked(false);
                 state.remember(None);
@@ -232,9 +268,22 @@ mod tests {
     /// window, top-aligned and as tall as it.
     #[test]
     fn docked_frame_sits_to_the_right_of_the_main_window() {
-        let main = Frame { x: 100.0, y: 50.0, width: 420.0, height: 720.0 };
+        let main = Frame {
+            x: 100.0,
+            y: 50.0,
+            width: 420.0,
+            height: 720.0,
+        };
         let frame = docked_frame(&main, 560.0, None);
-        assert_eq!(frame, Frame { x: 100.0 + 420.0 + DOCK_GAP, y: 50.0, width: 560.0, height: 720.0 });
+        assert_eq!(
+            frame,
+            Frame {
+                x: 100.0 + 420.0 + DOCK_GAP,
+                y: 50.0,
+                width: 560.0,
+                height: 720.0
+            }
+        );
     }
 
     /// When the right side would leave the screen, the window docks to the
@@ -242,23 +291,52 @@ mod tests {
     /// rather than disappearing off the left edge.
     #[test]
     fn docked_frame_flips_to_the_left_when_the_right_does_not_fit() {
-        let main = Frame { x: 1200.0, y: 50.0, width: 420.0, height: 720.0 };
-        let monitor = Frame { x: 0.0, y: 0.0, width: 1920.0, height: 1080.0 };
+        let main = Frame {
+            x: 1200.0,
+            y: 50.0,
+            width: 420.0,
+            height: 720.0,
+        };
+        let monitor = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
         let frame = docked_frame(&main, 560.0, Some(&monitor));
         assert_eq!(frame.x, 1200.0 - DOCK_GAP - 560.0);
         assert_eq!(frame.y, 50.0);
 
-        let narrow = Frame { x: 0.0, y: 0.0, width: 900.0, height: 700.0 };
-        let main = Frame { x: 200.0, y: 50.0, width: 420.0, height: 600.0 };
+        let narrow = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 900.0,
+            height: 700.0,
+        };
+        let main = Frame {
+            x: 200.0,
+            y: 50.0,
+            width: 420.0,
+            height: 600.0,
+        };
         let frame = docked_frame(&main, 560.0, Some(&narrow));
-        assert_eq!(frame.x, 200.0 + 420.0 + DOCK_GAP, "right, clipped, not off the left edge");
+        assert_eq!(
+            frame.x,
+            200.0 + 420.0 + DOCK_GAP,
+            "right, clipped, not off the left edge"
+        );
     }
 
     /// A window the user dragged somewhere else is no longer where docking
     /// put it; a window moved by docking itself (within a pixel) still is.
     #[test]
     fn a_drag_away_from_the_docked_spot_is_detected() {
-        let expected = Frame { x: 528.0, y: 50.0, width: 560.0, height: 720.0 };
+        let expected = Frame {
+            x: 528.0,
+            y: 50.0,
+            width: 560.0,
+            height: 720.0,
+        };
         assert!(!moved_away(&expected, 528.4, 50.0));
         assert!(!moved_away(&expected, 527.0, 51.0));
         assert!(moved_away(&expected, 600.0, 50.0));

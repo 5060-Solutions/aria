@@ -158,10 +158,7 @@ fn parse_stun_binding_response(data: &[u8], transaction_id: &[u8; 12]) -> Option
 
 /// Perform a STUN binding request to discover the server-reflexive address.
 /// Returns None if the STUN server is unreachable or times out.
-pub async fn stun_binding(
-    socket: &UdpSocket,
-    stun_server: SocketAddr,
-) -> Option<SocketAddr> {
+pub async fn stun_binding(socket: &UdpSocket, stun_server: SocketAddr) -> Option<SocketAddr> {
     let transaction_id: [u8; 12] = rand::random();
     let request = build_stun_binding_request(&transaction_id);
 

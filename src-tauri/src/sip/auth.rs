@@ -69,8 +69,14 @@ mod registration_realm_tests {
 
     #[test]
     fn with_no_override_the_announced_realm_is_used() {
-        assert_eq!(registration_realm(None, None, Some("voip_stack"), 0), (None, false));
-        assert_eq!(registration_realm(Some(""), None, Some("voip_stack"), 0), (None, false));
+        assert_eq!(
+            registration_realm(None, None, Some("voip_stack"), 0),
+            (None, false)
+        );
+        assert_eq!(
+            registration_realm(Some(""), None, Some("voip_stack"), 0),
+            (None, false)
+        );
     }
 
     /// Providers that need an override still get it: it is always tried first.

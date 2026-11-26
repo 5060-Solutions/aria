@@ -183,7 +183,7 @@ describe("personLabel", () => {
   it("is the contact's name, else the formatted number", () => {
     const contacts = [{ name: "Dana", uri: "sip:x@y", phone: "+13035550100" }] as never;
     expect(personLabel("+13035550100", contacts)).toBe("Dana");
-    expect(personLabel("+13035550111", contacts)).toBe("+1 303 555 0111");
+    expect(personLabel("+13035550111", contacts)).toBe("(303) 555-0111");
   });
 });
 
