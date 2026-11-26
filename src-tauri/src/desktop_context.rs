@@ -83,15 +83,80 @@ fn gateway_and_mask(ip: Ipv4Addr) -> Option<(Ipv4Addr, Ipv4Addr)> {
         let w: Vec<&str> = l.split_whitespace().collect();
         (w.len() >= 4 && w[0] == "0.0.0.0" && w[1] == "0.0.0.0" && w[3] == ip.to_string()).then(|| w[2].parse().ok()).flatten()
     })?;
-    // The mask is not in that table; a /24 is the home and office norm.
-    Some((gateway, Ipv4Addr::new(255, 255, 255, 0)))
+    // The mask is the adapter's, from `ipconfig`; the hash must match what
+    // the phones and the Macs compute, so a guessed /24 would not do.
+    let mask = run("ipconfig", &[]).and_then(|t| parse_ipconfig_mask(&t, ip))?;
+    Some((gateway, mask))
+}
+
+/// The "Subnet Mask" of the `ipconfig` adapter block whose "IPv4 Address" is `ip`.
+#[cfg(any(target_os = "windows", test))]
+fn parse_ipconfig_mask(ipconfig: &str, ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    let value = |l: &str| l.split(':').next_back().map(|v| v.trim().trim_end_matches("(Preferred)").trim().to_string());
+    let mut in_block = false;
+    for line in ipconfig.lines() {
+        let t = line.trim();
+        if t.starts_with("IPv4 Address") {
+            in_block = value(t).is_some_and(|v| v.parse::<Ipv4Addr>().ok() == Some(ip));
+        } else if in_block && t.starts_with("Subnet Mask") {
+            return value(t)?.parse().ok();
+        } else if !t.is_empty() && !line.starts_with(' ') {
+            // A new adapter heading.
+            in_block = false;
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "linux")]
-fn gateway_and_mask(_ip: Ipv4Addr) -> Option<(Ipv4Addr, Ipv4Addr)> {
+fn gateway_and_mask(ip: Ipv4Addr) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    // The default route's gateway and interface, then that interface's
+    // prefix for `ip` (the route's interface, so a second interface's
+    // address cannot be mixed with the first one's gateway).
     let route = run("ip", &["-4", "route", "show", "default"])?;
-    let gateway = route.split_whitespace().skip_while(|w| *w != "via").nth(1)?.parse().ok()?;
-    Some((gateway, Ipv4Addr::new(255, 255, 255, 0)))
+    let mut words = route.split_whitespace();
+    let mut gateway: Option<Ipv4Addr> = None;
+    let mut dev: Option<String> = None;
+    while let Some(w) = words.next() {
+        match w {
+            "via" => gateway = words.next().and_then(|g| g.parse().ok()),
+            "dev" => dev = words.next().map(str::to_string),
+            _ => {}
+        }
+    }
+    let gateway = gateway?;
+    let addrs = match dev {
+        Some(dev) => run("ip", &["-4", "-o", "addr", "show", "dev", &dev])?,
+        None => run("ip", &["-4", "-o", "addr", "show"])?,
+    };
+    let mask = parse_ip_addr_mask(&addrs, ip)?;
+    Some((gateway, mask))
+}
+
+/// The mask of `ip` in `ip -4 -o addr show` output (`inet 10.1.4.20/22 ...`).
+#[cfg(any(target_os = "linux", test))]
+fn parse_ip_addr_mask(out: &str, ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    out.lines().find_map(|l| {
+        let mut w = l.split_whitespace();
+        while let Some(word) = w.next() {
+            if word == "inet" {
+                let (addr, prefix) = w.next()?.split_once('/')?;
+                if addr.parse::<Ipv4Addr>().ok() == Some(ip) {
+                    return mask_from_prefix(prefix.parse().ok()?);
+                }
+            }
+        }
+        None
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn mask_from_prefix(prefix: u32) -> Option<Ipv4Addr> {
+    match prefix {
+        0 => Some(Ipv4Addr::new(0, 0, 0, 0)),
+        1..=32 => Some(Ipv4Addr::from(u32::MAX << (32 - prefix))),
+        _ => None,
+    }
 }
 
 fn run(program: &str, args: &[&str]) -> Option<String> {
@@ -217,5 +282,30 @@ mod tests {
         assert_eq!(parse_hid_idle_secs("nothing"), None);
         assert!(parse_screen_locked("\"IOConsoleUsers\" = ({\"CGSSessionScreenIsLocked\"=Yes,\"x\"=1})"));
         assert!(!parse_screen_locked("\"IOConsoleUsers\" = ({\"x\"=1})"));
+    }
+
+    #[test]
+    fn reads_the_windows_subnet_mask_of_the_adapter_holding_the_address() {
+        let ipconfig = "\r\nEthernet adapter Ethernet:\r\n\r\n   IPv4 Address. . . . . . . . . . . : 10.1.4.20\r\n   Subnet Mask . . . . . . . . . . . : 255.255.252.0\r\n   Default Gateway . . . . . . . . . : 10.1.4.1\r\n\r\nWireless LAN adapter Wi-Fi:\r\n\r\n   IPv4 Address. . . . . . . . . . . : 192.168.1.20\r\n   Subnet Mask . . . . . . . . . . . : 255.255.255.0\r\n   Default Gateway . . . . . . . . . : 192.168.1.1\r\n";
+        assert_eq!(parse_ipconfig_mask(ipconfig, Ipv4Addr::new(10, 1, 4, 20)), Some(Ipv4Addr::new(255, 255, 252, 0)));
+        assert_eq!(parse_ipconfig_mask(ipconfig, Ipv4Addr::new(192, 168, 1, 20)), Some(Ipv4Addr::new(255, 255, 255, 0)));
+        assert_eq!(parse_ipconfig_mask(ipconfig, Ipv4Addr::new(172, 16, 0, 9)), None);
+    }
+
+    #[test]
+    fn reads_the_linux_prefix_of_the_address_from_ip_addr() {
+        let out = "2: eth0    inet 10.1.4.20/22 brd 10.1.7.255 scope global dynamic eth0\\       valid_lft 3000sec\n3: wlan0    inet 192.168.1.20/24 brd 192.168.1.255 scope global wlan0\\       valid_lft forever\n";
+        assert_eq!(parse_ip_addr_mask(out, Ipv4Addr::new(10, 1, 4, 20)), Some(Ipv4Addr::new(255, 255, 252, 0)));
+        assert_eq!(parse_ip_addr_mask(out, Ipv4Addr::new(192, 168, 1, 20)), Some(Ipv4Addr::new(255, 255, 255, 0)));
+        assert_eq!(parse_ip_addr_mask(out, Ipv4Addr::new(10, 9, 9, 9)), None);
+    }
+
+    #[test]
+    fn a_prefix_length_becomes_a_mask() {
+        assert_eq!(mask_from_prefix(24), Some(Ipv4Addr::new(255, 255, 255, 0)));
+        assert_eq!(mask_from_prefix(22), Some(Ipv4Addr::new(255, 255, 252, 0)));
+        assert_eq!(mask_from_prefix(0), Some(Ipv4Addr::new(0, 0, 0, 0)));
+        assert_eq!(mask_from_prefix(32), Some(Ipv4Addr::new(255, 255, 255, 255)));
+        assert_eq!(mask_from_prefix(33), None);
     }
 }
