@@ -192,7 +192,7 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
     bottom.current?.scrollIntoView?.({ block: "end" });
   }, [latest, mailbox.accountId, inbox.did_id, number, markRead]);
 
-  const label = personLabel(number, contacts);
+  const label = personLabel(number, contacts, defaultCountry);
   // Counted as sent: the PBX is given the trimmed text, so that is what costs segments.
   const count = countSegments(sendable(draft));
   const optedOut = thread?.opted_out ?? false;
@@ -202,7 +202,7 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
 
   const call = () => {
     if (!dialable) return;
-    placeCall({ uri: dialUri(number, account, defaultCountry), accountId: account.id, remoteName: label !== formatNumber(number) ? label : undefined }).catch((e) =>
+    placeCall({ uri: dialUri(number, account, defaultCountry), accountId: account.id, remoteName: label !== formatNumber(number, defaultCountry) ? label : undefined }).catch((e) =>
       notifyError(messagingErrorText(e)),
     );
   };
@@ -241,8 +241,8 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
             {label}
           </Typography>
           {dialable ? (
-            <Link component="button" type="button" underline="hover" variant="caption" onClick={call} sx={{ color: "text.secondary" }} aria-label={t("messages.call", { number: formatNumber(number) })}>
-              {formatNumber(number)}
+            <Link component="button" type="button" underline="hover" variant="caption" onClick={call} sx={{ color: "text.secondary" }} aria-label={t("messages.call", { number: formatNumber(number, defaultCountry) })}>
+              {formatNumber(number, defaultCountry)}
             </Link>
           ) : (
             <Typography variant="caption" sx={{ color: "text.secondary", display: "block" }}>
@@ -251,8 +251,8 @@ export function Thread({ mailbox, account, inbox, number, onBack }: ThreadProps)
           )}
         </Box>
         {dialable && (
-          <Tooltip title={t("messages.call", { number: formatNumber(number) })}>
-            <IconButton size="small" color="primary" onClick={call} aria-label={t("messages.call", { number: formatNumber(number) })}>
+          <Tooltip title={t("messages.call", { number: formatNumber(number, defaultCountry) })}>
+            <IconButton size="small" color="primary" onClick={call} aria-label={t("messages.call", { number: formatNumber(number, defaultCountry) })}>
               <PhoneIcon fontSize="small" />
             </IconButton>
           </Tooltip>

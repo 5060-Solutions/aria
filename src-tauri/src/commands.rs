@@ -1787,6 +1787,18 @@ pub async fn voicemail_list(
     state.list(&mailbox, &password).await
 }
 
+/// The company's calling country, the default for formatting dialled numbers.
+#[tauri::command]
+pub async fn pbx_calling_country(
+    mailbox: Mailbox,
+    bindings: State<'_, std::sync::Arc<PbxBindings>>,
+    state: State<'_, std::sync::Arc<VoicemailState>>,
+) -> Result<String, VoicemailError> {
+    let mailbox = bindings.resolve(&mailbox.account_id)?;
+    let password = voicemail_password(&mailbox.account_id).await?;
+    state.calling_country(&mailbox, &password).await
+}
+
 #[tauri::command]
 pub async fn voicemail_mark_read(
     mailbox: Mailbox,

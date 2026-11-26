@@ -12,7 +12,8 @@ import { contactForNumber, dialerMatches, formatNumber, uriUser } from "../../ut
 import { numberFontSize } from "../../utils/dialerNumber";
 import type { Contact } from "../../types/sip";
 import { DialerButton } from "./DialerButton";
-import { parsePhoneNumber, AsYouType, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
+import { parsePhoneNumber, type CountryCode, getCountries, getCountryCallingCode } from "libphonenumber-js";
+import { dialHint, formatAsYouType } from "../../utils/phoneFormat";
 
 const keys = [
   { digit: "1", letters: "" },
@@ -85,29 +86,10 @@ export function Dialer() {
     return () => observer.disconnect();
   }, []);
 
-  const formattedNumber = useMemo(() => {
-    if (!dialInput) return "";
-    if (/[a-z]/i.test(dialInput)) return dialInput;
-    
-    // Get just the digits to check length
-    const digits = dialInput.replace(/\D/g, "");
-    
-    // Don't format short numbers (extensions, test numbers like 9998)
-    // unless they start with + (international format)
-    const isInternational = dialInput.startsWith("+");
-    const isShortNumber = digits.length <= 6 && !isInternational;
-    
-    if (isShortNumber) {
-      return dialInput; // Return as-is for extensions
-    }
-    
-    try {
-      const formatter = new AsYouType(defaultCountry);
-      return formatter.input(dialInput);
-    } catch {
-      return dialInput;
-    }
-  }, [dialInput, defaultCountry]);
+  // Display only: what is dialled is the digits as typed (`dialDigits`), so
+  // an extension or a star code is never changed by the formatting.
+  const formattedNumber = useMemo(() => formatAsYouType(dialInput, defaultCountry), [dialInput, defaultCountry]);
+  const hint = useMemo(() => dialHint(dialInput, defaultCountry), [dialInput, defaultCountry]);
 
   const numberFontPx = numberFontSize(formattedNumber.length, numberRowWidth);
 
@@ -553,6 +535,14 @@ export function Dialer() {
               </AnimatePresence>
             </Box>
           </Box>
+          {hint && (
+            <Box
+              data-testid="dial-hint"
+              sx={{ mt: 0.25, fontSize: "0.8rem", color: "text.secondary", opacity: 0.8, letterSpacing: "0.02em", textAlign: "center" }}
+            >
+              {hint}
+            </Box>
+          )}
           {matches.length > 0 && (
             <Box
               role="listbox"
@@ -648,6 +638,7 @@ export function Dialer() {
             digit={digit}
             letters={letters || undefined}
             onPress={appendDigit}
+            onLongPress={digit === "0" ? () => appendDigit("+") : undefined}
           />
         ))}
       </Box>

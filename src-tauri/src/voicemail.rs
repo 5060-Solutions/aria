@@ -157,6 +157,11 @@ struct LoginReply {
 }
 
 #[derive(Deserialize)]
+struct CallingCountryReply {
+    country: String,
+}
+
+#[derive(Deserialize)]
 struct BoxReply {
     id: String,
 }
@@ -281,6 +286,31 @@ impl VoicemailState {
             session.box_id = Some(vbox.id.clone());
         }
         Ok(vbox.id)
+    }
+
+    /// The company's calling country (ISO 3166-1 alpha-2, upper case) from
+    /// `GET /api/v1/tenants/{tenant}/calling/settings`: the default country
+    /// for formatting what is dialled. A seat the PBX will not show the
+    /// settings to gets `Unauthorized`; the caller falls back to the device.
+    pub async fn calling_country(&self, mailbox: &Mailbox, password: &str) -> Result<String, VoicemailError> {
+        let reply = self
+            .send(mailbox, password, &|http, api, session| {
+                http.get(route(api, &["api", "v1", "tenants", &session.tenant_id, "calling", "settings"]))
+                    .bearer_auth(&session.jwt)
+            })
+            .await?;
+        match reply.status() {
+            s if s.is_success() => {}
+            reqwest::StatusCode::FORBIDDEN => return Err(VoicemailError::Unauthorized),
+            s => return Err(status_error(s)),
+        }
+        let settings: CallingCountryReply = reply.json().await.map_err(|_| VoicemailError::Malformed)?;
+        let country = settings.country.trim().to_ascii_uppercase();
+        if country.len() == 2 && country.chars().all(|c| c.is_ascii_uppercase()) {
+            Ok(country)
+        } else {
+            Err(VoicemailError::Malformed)
+        }
     }
 
     /// The mailbox's messages as the PBX orders them (newest first).
@@ -486,6 +516,7 @@ mod tests {
             match (req.method.as_str(), req.path.as_str()) {
                 ("GET", "/api/v1/extensions/ext-1/voicemail") => json(200, r#"{"id":"b1","extension_number":"1001","enabled":true}"#),
                 ("GET", "/api/v1/voicemail/boxes/b1/messages?limit=100") => json(200, MESSAGES),
+                ("GET", "/api/v1/tenants/t-1/calling/settings") => json(200, r#"{"country":"gb","outside_line_prefix":"9"}"#),
                 ("PATCH", "/api/v1/voicemail/messages/m2/read") => (204, "text/plain", Vec::new()),
                 ("DELETE", "/api/v1/voicemail/messages/m2") => (204, "text/plain", Vec::new()),
                 ("GET", "/api/v1/voicemail/messages/m2/audio") => (200, "audio/wav", b"RIFFwav".to_vec()),
@@ -529,6 +560,16 @@ mod tests {
         assert!(seen[1..].iter().all(|r| r.authorization.as_deref() == Some("Bearer jwt-1")), "{seen:?}");
         assert_eq!(seen[1].path, "/api/v1/extensions/ext-1/voicemail");
         assert_eq!(seen[2].path, "/api/v1/voicemail/boxes/b1/messages?limit=100");
+    }
+
+    #[tokio::test]
+    async fn the_calling_country_comes_from_the_tenants_calling_settings() {
+        let pass = test_password();
+        let stub = Stub::start(pbx(&["jwt-1"], pass.clone())).await;
+        let state = VoicemailState::new();
+        assert_eq!(state.calling_country(&mailbox(&stub), &pass).await.unwrap(), "GB");
+        let seen = stub.seen();
+        assert_eq!(seen.last().unwrap().path, "/api/v1/tenants/t-1/calling/settings");
     }
 
     #[tokio::test]

@@ -19,6 +19,7 @@ import type {
 import type { ConnectionReport, RetryPlan } from "../types/connection";
 import { storeCredential, getCredential, deleteCredential } from "../utils/credentials";
 import { log } from "../utils/log";
+import { storedDefaultCountry } from "../utils/phoneFormat";
 import { DARK_MODE_KEY, initialDarkMode } from "../utils/preferences";
 
 type View = "dialer" | "history" | "contacts" | "voicemail" | "messages" | "recordings" | "settings";
@@ -138,6 +139,8 @@ interface AppState {
   // Phone number settings
   defaultCountry: string;
   setDefaultCountry: (country: string) => void;
+  /** The company's calling country from the PBX; the default until the person picks one. */
+  setPbxCountry: (country: string) => void;
 
   // Call History
   callHistory: CallHistoryEntry[];
@@ -604,10 +607,16 @@ export const useAppStore = create<AppState>((set, get) => {
     clearDialInput: () => set({ dialInput: "" }),
 
     // Phone number settings
-    defaultCountry: localStorage.getItem("aria_default_country") || "US",
+    // A country the person picked wins; else what the PBX said last time;
+    // else the device's region.
+    defaultCountry: storedDefaultCountry(),
     setDefaultCountry: (country) => {
       localStorage.setItem("aria_default_country", country);
       set({ defaultCountry: country });
+    },
+    setPbxCountry: (country) => {
+      localStorage.setItem("aria_pbx_country", country);
+      if (!localStorage.getItem("aria_default_country")) set({ defaultCountry: country });
     },
 
     // Call History

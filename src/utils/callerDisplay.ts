@@ -1,4 +1,5 @@
-import { parsePhoneNumber, type CountryCode } from "libphonenumber-js";
+import type { CountryCode } from "libphonenumber-js";
+import { formatDisplayNumber } from "./phoneFormat";
 import type { Contact } from "../types/sip";
 
 /** The user part of a SIP URI (or the whole thing when it has no `@`). */
@@ -10,17 +11,9 @@ function digits(value: string): string {
   return value.replace(/\D/g, "");
 }
 
-/** A number as a person reads it: international format when it parses, else as it came. */
+/** A number as a person reads it: national for the default country, international otherwise; extensions as they came. */
 export function formatNumber(user: string, defaultCountry: CountryCode): string {
-  const d = digits(user);
-  if (d.length < 7 || !/^\+?[\d\s().-]+$/.test(user)) return user;
-  try {
-    const parsed = parsePhoneNumber(user, defaultCountry);
-    if (parsed?.isValid()) return parsed.formatInternational();
-  } catch {
-    // Not a phone number; shown as typed.
-  }
-  return user;
+  return formatDisplayNumber(user, defaultCountry);
 }
 
 function sameNumber(a: string, b: string): boolean {

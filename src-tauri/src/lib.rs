@@ -401,6 +401,7 @@ pub fn run() {
             commands::ai_auto_transcribe,
             commands::ai_set_auto_transcribe,
             commands::voicemail_list,
+            commands::pbx_calling_country,
             commands::voicemail_mark_read,
             commands::voicemail_delete,
             commands::voicemail_audio,

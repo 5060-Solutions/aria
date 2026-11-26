@@ -11,12 +11,12 @@ const contacts: Contact[] = [
 describe("callerDisplay", () => {
   it("shows a formatted number, never the host, for an unknown caller", () => {
     expect(callerDisplay({ remoteUri: "sip:+12128402440@192.81.23.4" }, [], "US")).toEqual({
-      primary: "+1 212 840 2440",
+      primary: "(212) 840-2440",
       secondary: null,
       withheld: false,
     });
     expect(callerDisplay({ remoteUri: "sip:2128402440@pbx.example" }, [], "US")).toEqual({
-      primary: "+1 212 840 2440",
+      primary: "(212) 840-2440",
       secondary: null,
       withheld: false,
     });
@@ -25,7 +25,7 @@ describe("callerDisplay", () => {
   it("names a matching contact, with the number underneath", () => {
     expect(callerDisplay({ remoteUri: "sip:+12128402440@192.81.23.4" }, contacts, "US")).toEqual({
       primary: "Sam Rivera",
-      secondary: "+1 212 840 2440",
+      secondary: "(212) 840-2440",
       withheld: false,
     });
     expect(callerDisplay({ remoteUri: "sip:1002@test.ariaroute.com" }, contacts, "US")).toEqual({
@@ -38,7 +38,7 @@ describe("callerDisplay", () => {
   it("prefers the name the PBX sent, with the number underneath", () => {
     expect(callerDisplay({ remoteUri: "sip:+12128402440@192.81.23.4", remoteName: "Front Desk" }, [], "US")).toEqual({
       primary: "Front Desk",
-      secondary: "+1 212 840 2440",
+      secondary: "(212) 840-2440",
       withheld: false,
     });
   });
@@ -50,7 +50,7 @@ describe("callerDisplay", () => {
       withheld: false,
     });
     expect(callerDisplay({ remoteUri: "sip:+12128402440@pbx", remoteName: "+12128402440" }, [], "US")).toEqual({
-      primary: "+1 212 840 2440",
+      primary: "(212) 840-2440",
       secondary: null,
       withheld: false,
     });
@@ -86,7 +86,7 @@ describe("dialerMatches", () => {
 
 describe("contactLine", () => {
   it("is the formatted number, or the bare extension, without the phone's own domain", () => {
-    expect(contactLine({ uri: "sip:+12128402440@test.ariaroute.com" }, "test.ariaroute.com", "US")).toBe("+1 212 840 2440");
+    expect(contactLine({ uri: "sip:+12128402440@test.ariaroute.com" }, "test.ariaroute.com", "US")).toBe("(212) 840-2440");
     expect(contactLine({ uri: "sip:1002@test.ariaroute.com" }, "test.ariaroute.com", "US")).toBe("1002");
     expect(contactLine({ uri: "sip:1002" }, "test.ariaroute.com", "US")).toBe("1002");
   });
@@ -97,6 +97,6 @@ describe("contactLine", () => {
 
   it("adds a different phone number after a dot", () => {
     expect(contactLine({ uri: "sip:1002@test.ariaroute.com", phone: "(212) 840-2440" }, "test.ariaroute.com", "US")).toBe("1002 · (212) 840-2440");
-    expect(contactLine({ uri: "sip:+12128402440@test.ariaroute.com", phone: "212-840-2440" }, "test.ariaroute.com", "US")).toBe("+1 212 840 2440");
+    expect(contactLine({ uri: "sip:+12128402440@test.ariaroute.com", phone: "212-840-2440" }, "test.ariaroute.com", "US")).toBe("(212) 840-2440");
   });
 });
