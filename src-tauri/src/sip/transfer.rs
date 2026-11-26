@@ -608,8 +608,10 @@ async fn end_replaced_dialog(
         (msg, transport, server_addr)
     };
     if let (Some(msg), Some(transport), Some(addr)) = (msg, transport, server_addr) {
-        if let Err(e) = super::send_non_invite(state, &transport, addr, msg).await {
-            log::warn!("Could not end the replaced dialog {call_id}: {e}");
+        // The error text is not logged: it is derived from the account's
+        // transport, and the log must never carry account data.
+        if super::send_non_invite(state, &transport, addr, msg).await.is_err() {
+            log::warn!("Could not end the replaced dialog {call_id}; the far end may still think it is up");
         }
     }
     let mut s = state.write().await;

@@ -48,6 +48,7 @@ fn local_ipv4() -> Option<Ipv4Addr> {
 }
 
 /// A `0xffffff00`-style (macOS ifconfig) or dotted netmask.
+#[cfg(any(target_os = "macos", test))]
 fn parse_mask(s: &str) -> Option<Ipv4Addr> {
     if let Some(hex) = s.strip_prefix("0x") {
         return u32::from_str_radix(hex, 16).ok().map(Ipv4Addr::from);
@@ -106,6 +107,7 @@ pub fn network_fingerprint(extension_id: &str) -> Option<String> {
 }
 
 /// `HIDIdleTime` (nanoseconds) in `ioreg -c IOHIDSystem` output.
+#[cfg(any(target_os = "macos", test))]
 pub fn parse_hid_idle_secs(ioreg: &str) -> Option<u64> {
     let line = ioreg.lines().find(|l| l.contains("\"HIDIdleTime\""))?;
     let ns: u64 = line.rsplit('=').next()?.trim().parse().ok()?;
@@ -113,6 +115,7 @@ pub fn parse_hid_idle_secs(ioreg: &str) -> Option<u64> {
 }
 
 /// Whether `ioreg -n Root -d1` says the session's screen is locked.
+#[cfg(any(target_os = "macos", test))]
 pub fn parse_screen_locked(ioreg: &str) -> bool {
     ioreg.lines().any(|l| l.contains("CGSSessionScreenIsLocked") && l.contains("Yes"))
         || ioreg.contains("\"CGSSessionScreenIsLocked\"=Yes")
