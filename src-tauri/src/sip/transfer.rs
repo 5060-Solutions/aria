@@ -9,6 +9,7 @@ use super::builder::{
 };
 use super::media;
 use super::replaces;
+use super::state::{CallFSM, CallFSMEvent, InboundCallParams};
 use super::{CallEvent, ManagerState, SipEvent, TransferEvent};
 
 /// Handle an incoming REFER request: accept, start transfer, send NOTIFY updates

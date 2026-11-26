@@ -195,7 +195,7 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "sha2 0.11.1",
+ "sha2 0.11.2",
  "sip-5060",
  "socket2",
  "tauri",
