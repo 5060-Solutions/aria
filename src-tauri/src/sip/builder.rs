@@ -17,7 +17,45 @@ pub use rsip::sip_parser::{
 
 // From Cargo.toml, so it cannot fall behind the release the way the literal
 // "Aria/0.2.0" did.
-pub const USER_AGENT: &str = concat!("Aria/", env!("CARGO_PKG_VERSION"));
+/// The `User-Agent` of every request: `Aria/0.8.4 (macOS; Joshs-MacBook)`. The
+/// PBX names this computer from it in the "Move to..." list, so two computers
+/// of one user are told apart.
+pub fn user_agent() -> &'static str {
+    static UA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    UA.get_or_init(|| user_agent_for(std::env::consts::OS, host_name().as_deref()))
+}
+
+/// [`user_agent`] for an operating system (`std::env::consts::OS`) and host.
+pub fn user_agent_for(os: &str, host: Option<&str>) -> String {
+    let os = match os {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    // The parenthesis and `;` delimit the fields: they never appear in one.
+    let host: String = host
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches(".local")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .take(40)
+        .collect();
+    let version = env!("CARGO_PKG_VERSION");
+    if host.is_empty() {
+        format!("Aria/{version} ({os})")
+    } else {
+        format!("Aria/{version} ({os}; {host})")
+    }
+}
+
+fn host_name() -> Option<String> {
+    let out = std::process::Command::new("hostname").output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
 // Only methods the request handler actually answers. MESSAGE is not one.
 const ALLOW: &str = "INVITE, ACK, CANCEL, BYE, NOTIFY, REFER, OPTIONS, INFO, SUBSCRIBE";
 
@@ -194,7 +232,7 @@ pub fn build_register(
     headers.push(rsip::headers::Expires::new(expires.to_string()).into());
     headers.push(rsip::headers::Allow::new(ALLOW).into());
     headers.push(rsip::headers::Supported::new(REGISTER_SUPPORTED).into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
 
     if let Some(auth) = auth_header {
         headers.push(rsip::headers::Authorization::new(auth).into());
@@ -325,7 +363,7 @@ pub fn build_invite_with_public_ip(
     headers.push(rsip::headers::Contact::new(contact).into());
     headers.push(rsip::headers::ContentType::new("application/sdp").into());
     headers.push(rsip::headers::Allow::new(ALLOW).into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
 
     if let Some((auth_value, auth_type)) = auth {
         match auth_type {
@@ -370,7 +408,7 @@ pub fn build_ack(
     let cseq_hdr = format!("{} ACK", cseq);
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     request_to_string(rsip::Method::Ack, request_uri, headers, vec![])
@@ -430,7 +468,7 @@ pub fn build_bye_with_routes(
     let cseq_hdr = format!("{} BYE", cseq);
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
 
     for route in route_set {
         headers.push(rsip::headers::Route::new(route.as_str()).into());
@@ -592,7 +630,7 @@ pub fn build_200_ok_invite_with_sdp(
     headers.push(rsip::headers::CSeq::new(cseq).into());
     headers.push(rsip::headers::Contact::new(format!("<{}>", contact_uri)).into());
     headers.push(rsip::headers::ContentType::new("application/sdp").into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new(sdp.len().to_string()).into());
 
     Some(response_to_string(
@@ -1257,7 +1295,7 @@ pub fn build_refer(
         "Referred-By".into(),
         format!("<sip:user@{}:{}>", local_addr.ip(), local_addr.port()),
     ));
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     request_to_string(rsip::Method::Refer, request_uri, headers, vec![])
@@ -1310,7 +1348,7 @@ pub fn build_refer_with_replaces(
         "Referred-By".into(),
         format!("<sip:user@{}:{}>", local_addr.ip(), local_addr.port()),
     ));
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     request_to_string(rsip::Method::Refer, request_uri, headers, vec![])
@@ -1341,7 +1379,7 @@ pub fn build_202_accepted(request: &str, to_tag: &str) -> Option<String> {
     headers.push(rsip::headers::To::new(to).into());
     headers.push(rsip::headers::CallId::new(call_id).into());
     headers.push(rsip::headers::CSeq::new(cseq).into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     Some(response_to_string(202.into(), headers, vec![]))
@@ -1381,7 +1419,7 @@ pub fn build_notify_refer(
     headers.push(rsip::headers::Event::new("refer").into());
     headers.push(rsip::headers::SubscriptionState::new(subscription_state).into());
     headers.push(rsip::headers::ContentType::new("message/sipfrag;version=2.0").into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new(body.len().to_string()).into());
 
     request_to_string(
@@ -1460,7 +1498,7 @@ pub fn build_invite_with_replaces(
     ));
     headers.push(rsip::headers::ContentType::new("application/sdp").into());
     headers.push(rsip::headers::Allow::new(ALLOW).into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
 
     if let Some(auth) = auth_header {
         headers.push(rsip::headers::ProxyAuthorization::new(auth).into());
@@ -1501,7 +1539,7 @@ pub fn build_options(
 
     let mut headers = base_request_headers(&via, &from_hdr, &to_hdr, call_id, &cseq_hdr);
     headers.push(rsip::headers::Accept::new("application/sdp").into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     request_to_string(rsip::Method::Options, request_uri, headers, vec![])
@@ -1565,7 +1603,7 @@ pub fn build_subscribe(
         )
         .into(),
     );
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
 
     if let Some(auth) = auth_header {
         headers.push(rsip::headers::Authorization::new(auth).into());
@@ -1602,7 +1640,7 @@ pub fn build_200_ok_subscribe(request_raw: &str, expires: u32) -> Option<String>
     headers.push(rsip::headers::CallId::new(call_id).into());
     headers.push(rsip::headers::CSeq::new(cseq).into());
     headers.push(rsip::headers::Expires::new(expires.to_string()).into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     Some(response_to_string(200.into(), headers, vec![]))
@@ -1651,7 +1689,7 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
     headers.push(rsip::headers::To::new(to).into());
     headers.push(rsip::headers::CallId::new(call_id).into());
     headers.push(rsip::headers::CSeq::new(cseq).into());
-    headers.push(rsip::headers::UserAgent::new(USER_AGENT).into());
+    headers.push(rsip::headers::UserAgent::new(user_agent()).into());
     headers.push(rsip::headers::ContentLength::new("0").into());
 
     // Use format! for the status line so we keep the exact reason phrase the caller wants.
@@ -1666,6 +1704,23 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_user_agent_names_the_os_and_the_computer() {
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            super::user_agent_for("macos", Some("Joshs-MacBook.local\n")),
+            format!("Aria/{v} (macOS; Joshs-MacBook)")
+        );
+        assert_eq!(
+            super::user_agent_for("windows", None),
+            format!("Aria/{v} (Windows)")
+        );
+        assert_eq!(
+            super::user_agent_for("linux", Some("a;b) c")),
+            format!("Aria/{v} (Linux; abc)")
+        );
+    }
+
     #[test]
     fn display_names_are_escaped_in_the_quoted_string() {
         use super::quoted_display_name as q;

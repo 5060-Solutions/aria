@@ -20,6 +20,8 @@ export interface Device {
   registrationId: string;
   label: string;
   online: boolean;
+  /** This computer, as the PBX knows it (`current`). */
+  current?: boolean;
 }
 
 /** A pending move expires after this long without its INVITE. */
@@ -38,7 +40,9 @@ export function parseActiveCall(raw: unknown): ActiveElsewhereCall | null {
   const device = rec(o.device);
   const remote = rec(o.remote);
   const id = str(o.id);
-  if (!id || !str(device.registration_id)) return null;
+  // A call whose device the PBX could not match to a registration is still a
+  // call on another device: the banner shows it, only moving it away needs the id.
+  if (!id || !(str(device.registration_id) || str(o.sip_call_id))) return null;
   return {
     id,
     state: o.state === "held" ? "held" : "active",
@@ -59,15 +63,37 @@ export function parseDevices(raw: unknown): Device[] {
   return raw
     .map((d) => {
       const o = rec(d);
-      return { registrationId: str(o.registration_id), label: str(o.label) || str(o.user_agent), online: o.online !== false };
+      return { registrationId: str(o.registration_id), label: str(o.label) || str(o.user_agent), online: o.online !== false, current: o.current === true };
     })
     .filter((d) => d.registrationId);
 }
 
-/** The calls to offer "Move here" for: not this app's own dialog. */
-export function callsElsewhere(calls: ActiveElsewhereCall[], ownSipCallIds: string[], ownRegistrationId: string | null): ActiveElsewhereCall[] {
+/** The digits of a number that identify it across spellings (`+1 303…`, `303…`). */
+function tail(n: string): string {
+  const d = n.replace(/\D/g, "");
+  return d.length > 10 ? d.slice(-10) : d;
+}
+
+/**
+ * The calls to offer "Move here" for: not this app's own dialog. A call the
+ * PBX could not tie to a registration (empty `registrationId`) cannot be told
+ * from this computer's by Call-ID alone while a dialog is ringing or changing,
+ * so it is dropped when this app has any live call to the same remote number.
+ */
+export function callsElsewhere(
+  calls: ActiveElsewhereCall[],
+  ownSipCallIds: string[],
+  ownRegistrationId: string | null,
+  ownRemoteNumbers: string[] = [],
+): ActiveElsewhereCall[] {
   const own = new Set(ownSipCallIds.filter(Boolean));
-  return calls.filter((c) => !(c.sipCallId && own.has(c.sipCallId)) && c.device.registrationId !== ownRegistrationId);
+  const remotes = new Set(ownRemoteNumbers.map(tail).filter(Boolean));
+  return calls.filter((c) => {
+    if (c.sipCallId && own.has(c.sipCallId)) return false;
+    if (c.device.registrationId === ownRegistrationId) return false;
+    if (!c.device.registrationId && remotes.has(tail(c.remote.number))) return false;
+    return true;
+  });
 }
 
 /** The name to show for the far party. */
@@ -151,7 +177,7 @@ export function moveFailureKey(status: number | undefined): string {
 
 /** Devices to offer in "Move to...": online, and not this one. */
 export function otherOnlineDevices(devices: Device[], ownRegistrationId: string | null): Device[] {
-  return devices.filter((d) => d.online && d.registrationId !== ownRegistrationId);
+  return devices.filter((d) => d.online && !d.current && d.registrationId !== ownRegistrationId);
 }
 
 /** What to report to the PBX about this computer during a call here. */

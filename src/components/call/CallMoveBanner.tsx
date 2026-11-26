@@ -75,7 +75,10 @@ export function CallMoveBanner() {
   }
 
   if (hasLive) return null;
-  const elsewhere = callsElsewhere(calls, liveSipIds, current);
+  const ownRemotes = activeCalls
+    .filter((c) => c.state !== "ended")
+    .map((c) => c.remoteUri.replace(/^sips?:/i, "").split(/[@;>]/)[0] ?? "");
+  const elsewhere = callsElsewhere(calls, liveSipIds, current, ownRemotes);
   const call = elsewhere[0];
   if (!call) return null;
   const who = remoteLabel(call);

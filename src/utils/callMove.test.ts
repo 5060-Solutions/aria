@@ -33,7 +33,21 @@ const wire = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+describe("calls elsewhere", () => {
+  it("drops a call with no registration when this app has a call to the same number", () => {
+    const [unnamed] = parseActiveCalls([wire({ device: { registration_id: null, label: "x" }, sip_call_id: "other-leg" })]);
+    expect(callsElsewhere([unnamed], ["mine"], null, ["13035550100"])).toEqual([]);
+    expect(callsElsewhere([unnamed], ["mine"], null, ["+14045550111"])).toEqual([unnamed]);
+    expect(callsElsewhere([unnamed], ["mine"], null, [])).toEqual([unnamed]);
+  });
+});
+
 describe("active calls", () => {
+  it("keeps a call on a device the PBX could not name, so the banner still shows", () => {
+    const [c] = parseActiveCalls([wire({ device: { registration_id: null, label: "Aria for Android" } })]);
+    expect(c).toMatchObject({ id: "c1", device: { registrationId: "", label: "Aria for Android" } });
+  });
+
   it("parses the PBX's objects and drops malformed ones", () => {
     const calls = parseActiveCalls([wire(), { id: "x" }, null, wire({ id: "c2", state: "held", remote: { number: "101", name: "Ann" } })]);
     expect(calls.map((c) => c.id)).toEqual(["c1", "c2"]);

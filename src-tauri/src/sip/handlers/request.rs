@@ -527,7 +527,7 @@ pub fn build_ringing_response(request: &str, to_tag: &str) -> Option<String> {
          CSeq: {cseq}\r\n\
          User-Agent: {ua}\r\n\
          Content-Length: 0\r\n\r\n",
-        ua = builder::USER_AGENT,
+        ua = builder::user_agent(),
     ))
 }
 
@@ -555,7 +555,7 @@ pub fn build_simple_response(request: &str, code: u16, reason: &str) -> Option<S
         to,
         call_id,
         cseq,
-        ua = builder::USER_AGENT,
+        ua = builder::user_agent(),
     ))
 }
 
