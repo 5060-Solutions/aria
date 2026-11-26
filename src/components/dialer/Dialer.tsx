@@ -492,14 +492,6 @@ export function Dialer() {
               >
                 {formattedNumber || t("dialer.enterNumber")}
               </Box>
-              {hint && (
-                <Box
-                  data-testid="dial-hint"
-                  sx={{ mt: 0.25, fontSize: "0.8rem", color: "text.secondary", opacity: 0.8, letterSpacing: "0.02em" }}
-                >
-                  {hint}
-                </Box>
-              )}
           </Box>
           {matches.length > 0 && (
             <Box
@@ -611,6 +603,17 @@ export function Dialer() {
           {/* Mirrors the slot so the number stays centred. */}
           <Box sx={{ width: 32, flexShrink: 0, order: -1 }} />
         </Box>
+        {/* Under the row, not inside the number's column: with it inside, the
+            clear button was centred on number plus hint and sat below the
+            number's own centre line. */}
+        {hint && (
+          <Box
+            data-testid="dial-hint"
+            sx={{ mt: 0.25, fontSize: "0.8rem", color: "text.secondary", opacity: 0.8, letterSpacing: "0.02em", textAlign: "center" }}
+          >
+            {hint}
+          </Box>
+        )}
       </Box>
 
       {/* Keypad grid */}
