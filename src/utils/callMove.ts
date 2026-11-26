@@ -171,41 +171,52 @@ export function contextToReport(
   return null;
 }
 
-/** What `/me/call-handoff` holds. */
+/** What `/me/call-handoff` holds (`auto_move_on_leave` is the phones' and is left as the server has it). */
 export interface HandoffSettings {
   suggestNearby: boolean;
+  /** `auto_move_on_desktop_lock`. */
   autoMoveOnLock: boolean;
-  bleEnabled: boolean;
+  /** `ble_opt_in`. */
+  bleOptIn: boolean;
 }
 
-export const DEFAULT_HANDOFF: HandoffSettings = { suggestNearby: false, autoMoveOnLock: false, bleEnabled: false };
+export const DEFAULT_HANDOFF: HandoffSettings = { suggestNearby: true, autoMoveOnLock: false, bleOptIn: false };
 
 export function parseHandoff(raw: unknown): HandoffSettings {
   const o = rec(raw);
   return {
-    suggestNearby: o.suggest_nearby === true,
-    autoMoveOnLock: o.auto_move_on_lock === true,
-    bleEnabled: o.ble_enabled === true,
+    // suggest_nearby defaults to true on the server; the rest to false.
+    suggestNearby: o.suggest_nearby !== false,
+    autoMoveOnLock: o.auto_move_on_desktop_lock === true,
+    bleOptIn: o.ble_opt_in === true,
   };
 }
 
 export function handoffBody(s: HandoffSettings) {
-  return { suggest_nearby: s.suggestNearby, auto_move_on_lock: s.autoMoveOnLock, ble_enabled: s.bleEnabled };
+  return { suggest_nearby: s.suggestNearby, auto_move_on_desktop_lock: s.autoMoveOnLock, ble_opt_in: s.bleOptIn };
 }
 
 /** "Continue on <device>" from a `handoff_suggested` event. */
 export interface HandoffSuggestion {
   callId: string;
   device: Device;
+  reason: "nearby" | "left_network" | "desktop_locked" | "";
 }
 
+/** `{"type":"handoff_suggested","call_id","to_registration_id","reason"}`. */
 export function parseSuggestion(raw: Record<string, unknown>, devices: Device[]): HandoffSuggestion | null {
-  const target = rec(raw.target ?? raw.device);
-  const registrationId = str(target.registration_id) || str(raw.to_registration_id);
-  const callId = str(raw.call_id) || str(rec(raw.call).id);
+  const registrationId = str(raw.to_registration_id);
+  const callId = str(raw.call_id);
   if (!registrationId || !callId) return null;
-  const label = str(target.label) || devices.find((d) => d.registrationId === registrationId)?.label || "";
-  return { callId, device: { registrationId, label, online: true } };
+  const label = devices.find((d) => d.registrationId === registrationId)?.label ?? "";
+  const r = str(raw.reason);
+  const reason = r === "nearby" || r === "left_network" || r === "desktop_locked" ? r : "";
+  return { callId, device: { registrationId, label, online: true }, reason };
+}
+
+/** `?sip_instance=<urn>`: every `devices/current/*` route names the device this way. */
+export function withSipInstance(path: string, sipInstance: string): string {
+  return `${path}?sip_instance=${encodeURIComponent(sipInstance)}`;
 }
 
 /** Body of `POST /me/devices/current/proximity`: a hash, never raw network details. */
@@ -216,6 +227,19 @@ export function proximityBody(networkHash: string) {
 /** Body of `POST /me/devices/current/context`. */
 export function contextBody(kind: ContextKind) {
   return { event: kind };
+}
+
+/** The answer to a context report. */
+export interface ContextResult {
+  action: "moved" | "suggested" | "none";
+  callId: string | null;
+  moveId: string | null;
+}
+
+export function parseContextResult(raw: unknown): ContextResult {
+  const o = rec(raw);
+  const action = o.action === "moved" || o.action === "suggested" ? o.action : "none";
+  return { action, callId: str(o.call_id) || null, moveId: str(o.move_id) || null };
 }
 
 /** A call_moved from this device counts for a BYE this soon after it, or before it. */

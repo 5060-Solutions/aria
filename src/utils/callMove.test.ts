@@ -13,7 +13,10 @@ import {
   parseHandoff,
   parseSuggestion,
   pendingActive,
+  handoffBody,
+  parseContextResult,
   proximityBody,
+  withSipInstance,
   startedAtMs,
   type ActiveElsewhereCall,
   type ContextKind,
@@ -128,19 +131,36 @@ describe("context", () => {
 });
 
 describe("handoff", () => {
-  it("reads settings, defaulting to off", () => {
-    expect(parseHandoff({ suggest_nearby: true, ble_enabled: true })).toEqual({ suggestNearby: true, autoMoveOnLock: false, bleEnabled: true });
-    expect(parseHandoff(null)).toEqual({ suggestNearby: false, autoMoveOnLock: false, bleEnabled: false });
+  it("reads settings with the server's names and defaults", () => {
+    expect(parseHandoff({ suggest_nearby: false, auto_move_on_desktop_lock: true, ble_opt_in: true })).toEqual({
+      suggestNearby: false,
+      autoMoveOnLock: true,
+      bleOptIn: true,
+    });
+    expect(parseHandoff({})).toEqual({ suggestNearby: true, autoMoveOnLock: false, bleOptIn: false });
+    expect(handoffBody({ suggestNearby: true, autoMoveOnLock: true, bleOptIn: false })).toEqual({
+      suggest_nearby: true,
+      auto_move_on_desktop_lock: true,
+      ble_opt_in: false,
+    });
   });
 
-  it("reads a suggestion's target and names it from the device list", () => {
+  it("reads a handoff_suggested event and names the device from the list", () => {
     const devices = parseDevices([{ registration_id: "a", label: "Aria iOS", online: true }]);
-    expect(parseSuggestion({ call_id: "c1", target: { registration_id: "a" } }, devices)?.device.label).toBe("Aria iOS");
-    expect(parseSuggestion({ call: { id: "c1" }, to_registration_id: "a" }, devices)?.callId).toBe("c1");
+    const s = parseSuggestion({ type: "handoff_suggested", call_id: "c1", to_registration_id: "a", reason: "nearby" }, devices);
+    expect(s?.device.label).toBe("Aria iOS");
+    expect(s?.callId).toBe("c1");
+    expect(s?.reason).toBe("nearby");
     expect(parseSuggestion({ call_id: "c1" }, devices)).toBeNull();
   });
 
-  it("sends the proximity as a hash only", () => {
+  it("names the device in the query and sends the proximity as a hash only", () => {
+    expect(withSipInstance("/me/devices/current/proximity", "urn:uuid:a")).toBe("/me/devices/current/proximity?sip_instance=urn%3Auuid%3Aa");
     expect(proximityBody("ab".repeat(32))).toEqual({ network_hash: "ab".repeat(32) });
+  });
+
+  it("reads the context answer", () => {
+    expect(parseContextResult({ action: "moved", call_id: "c", move_id: "m" })).toEqual({ action: "moved", callId: "c", moveId: "m" });
+    expect(parseContextResult({ action: "none", call_id: null, move_id: null })).toEqual({ action: "none", callId: null, moveId: null });
   });
 });

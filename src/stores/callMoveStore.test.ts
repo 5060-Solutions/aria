@@ -124,6 +124,20 @@ describe("callMoveStore", () => {
     expect(useToastStore.getState().current).toBeNull();
   });
 
+  it("registers a move the context report started here as pending", async () => {
+    const path = "/me/devices/current/context?sip_instance=urn%3Auuid%3Aabc";
+    pbx({ [`POST ${path}`]: { action: "moved", call_id: "c1", move_id: "M-2" } });
+    const res = await store().reportContext(mailbox, "desktop_locked");
+    expect(res.action).toBe("moved");
+    expect(invoke).toHaveBeenCalledWith("pbx_me_request", { mailbox, method: "POST", path, body: { event: "desktop_locked" } });
+    expect(invoke).toHaveBeenCalledWith("callmove_expect", { moveId: "M-2" });
+    expect(store().pendingFor("m-2")?.callId).toBe("c1");
+    pbx({ [`POST ${path}`]: { action: "suggested", call_id: "c1", move_id: null } });
+    store().clearPending();
+    await store().reportContext(mailbox, "desktop_idle");
+    expect(store().pending).toBeNull();
+  });
+
   it("ignores a move between two other devices", () => {
     useCallMoveStore.setState({ current: "r-mac" });
     store().applyEvent({ type: "call_moved", callId: "c", fromRegistrationId: "r-a", toRegistrationId: "r-b" }, null);
@@ -132,17 +146,17 @@ describe("callMoveStore", () => {
 
   it("keeps the saved settings and rolls back on a refusal", async () => {
     pbx({ "PUT /me/call-handoff": null });
-    await store().saveHandoff(mailbox, { suggestNearby: true, autoMoveOnLock: false, bleEnabled: false });
+    await store().saveHandoff(mailbox, { suggestNearby: true, autoMoveOnLock: false, bleOptIn: false });
     expect(store().handoff.suggestNearby).toBe(true);
     pbx({ "PUT /me/call-handoff": new Error("down") });
-    await store().saveHandoff(mailbox, { suggestNearby: false, autoMoveOnLock: true, bleEnabled: false });
+    await store().saveHandoff(mailbox, { suggestNearby: false, autoMoveOnLock: true, bleOptIn: false });
     expect(store().handoff.suggestNearby).toBe(true);
     expect(store().handoff.autoMoveOnLock).toBe(false);
   });
 
   it("shows a suggestion from handoff_suggested", () => {
     useCallMoveStore.setState({ devices: [{ registrationId: "r-ios", label: "Aria iOS", online: true }] });
-    store().applyEvent({ type: "handoff_suggested", raw: { call_id: "c1", target: { registration_id: "r-ios" } } }, null);
+    store().applyEvent({ type: "handoff_suggested", raw: { call_id: "c1", to_registration_id: "r-ios", reason: "nearby" } }, null);
     expect(store().suggestion?.device.label).toBe("Aria iOS");
   });
 });

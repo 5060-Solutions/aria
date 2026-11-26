@@ -10,7 +10,11 @@ import {
   DEFAULT_HANDOFF,
   PENDING_MOVE_MS,
   applyToCalls,
+  contextBody,
+  parseContextResult,
   handoffBody,
+  type ContextKind,
+  type ContextResult,
   moveFailureKey,
   parseActiveCalls,
   parseDevices,
@@ -24,6 +28,7 @@ import {
   type HandoffSettings,
   type HandoffSuggestion,
   type PendingMove,
+  withSipInstance,
 } from "../utils/callMove";
 
 /** One `/api/v1/me/...` route through the backend, which holds the session. */
@@ -57,6 +62,10 @@ interface CallMoveState {
   /** Ask the PBX to move `callId` to the device `toRegistrationId`. */
   move: (mailbox: Mailbox, call: ActiveElsewhereCall, toRegistrationId: string) => Promise<boolean>;
   moveHere: (mailbox: Mailbox, call: ActiveElsewhereCall) => Promise<boolean>;
+  /** Register a move this app started, so its INVITE is answered without ringing. */
+  expectMove: (callId: string, moveId: string, startedAt?: number | null) => Promise<void>;
+  /** Report a context event (`devices/current/context`); a `moved` answer is registered as started here. */
+  reportContext: (mailbox: Mailbox, kind: ContextKind) => Promise<ContextResult>;
   /** The pending move an incoming `X-Aria-Move` belongs to, if still live. */
   pendingFor: (moveId: string, now?: number) => PendingMove | null;
   clearPending: () => void;
@@ -88,7 +97,8 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
 
   loadDevices: async (mailbox) => {
     try {
-      set({ devices: parseDevices(await meRequest<unknown>(mailbox, "GET", "/me/devices")) });
+      const urn = await invoke<string>("sip_instance_urn");
+      set({ devices: parseDevices(await meRequest<unknown>(mailbox, "GET", withSipInstance("/me/devices", urn))) });
     } catch (e) {
       log.warn("[callMove] devices not loaded:", e);
     }
@@ -101,7 +111,7 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
       const raw = await meRequest<{ registration_id?: string }>(
         mailbox,
         "GET",
-        `/me/devices/current?sip_instance=${encodeURIComponent(urn)}`,
+        withSipInstance("/me/devices/current", urn),
       );
       const id = typeof raw?.registration_id === "string" && raw.registration_id ? raw.registration_id : null;
       set({ current: id });
@@ -120,12 +130,7 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
       const moveId = res?.move_id;
       if (!moveId) throw new Error("no move_id");
       // Only a move to this device is answered here without ringing.
-      if (toRegistrationId === get().current) {
-        await invoke("callmove_expect", { moveId });
-        set({
-          pending: { moveId: moveId.toLowerCase(), callId: call.id, startedAt: startedAtMs(call), expiresAt: Date.now() + PENDING_MOVE_MS },
-        });
-      }
+      if (toRegistrationId === get().current) await get().expectMove(call.id, moveId, startedAtMs(call));
       return true;
     } catch (e) {
       log.warn("[callMove] move refused:", e);
@@ -141,6 +146,23 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
       return false;
     }
     return get().move(mailbox, call, own);
+  },
+
+  expectMove: async (callId, moveId, startedAt) => {
+    await invoke("callmove_expect", { moveId });
+    const call = get().calls.find((c) => c.id === callId);
+    set({
+      pending: { moveId: moveId.toLowerCase(), callId, startedAt: startedAt ?? (call ? startedAtMs(call) : null), expiresAt: Date.now() + PENDING_MOVE_MS },
+    });
+  },
+
+  reportContext: async (mailbox, kind) => {
+    const urn = await invoke<string>("sip_instance_urn");
+    const res = parseContextResult(
+      await meRequest<unknown>(mailbox, "POST", withSipInstance("/me/devices/current/context", urn), contextBody(kind)),
+    );
+    if (res.action === "moved" && res.callId && res.moveId) await get().expectMove(res.callId, res.moveId);
+    return res;
   },
 
   pendingFor: (moveId, now = Date.now()) => {

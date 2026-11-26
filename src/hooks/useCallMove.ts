@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../stores/appStore";
 import { meRequest, useCallMoveStore } from "../stores/callMoveStore";
 import { messagingMailboxFor } from "../utils/messaging";
-import { POLL_MS, contextBody, contextToReport, parseCallEvent, proximityBody, type ContextKind } from "../utils/callMove";
+import { POLL_MS, contextToReport, parseCallEvent, proximityBody, withSipInstance, type ContextKind } from "../utils/callMove";
 import { log } from "../utils/log";
 import type { Mailbox } from "../utils/voicemail";
 
@@ -23,7 +23,8 @@ export function useMoveMailbox(): Mailbox | null {
 export async function reportProximity(mailbox: Mailbox): Promise<void> {
   const hash = await invoke<string | null>("network_fingerprint");
   if (!hash) return;
-  await meRequest(mailbox, "POST", "/me/devices/current/proximity", proximityBody(hash));
+  const urn = await invoke<string>("sip_instance_urn");
+  await meRequest(mailbox, "POST", withSipInstance("/me/devices/current/proximity", urn), proximityBody(hash));
 }
 
 /**
@@ -94,7 +95,7 @@ export function useCallMove(): void {
         const kind = contextToReport(ctx, sent);
         if (stopped || !kind) return;
         sent.add(kind);
-        await meRequest(mailbox, "POST", "/me/devices/current/context", contextBody(kind));
+        await useCallMoveStore.getState().reportContext(mailbox, kind);
       } catch (e) {
         log.warn("[callMove] context not reported:", e);
       }

@@ -41,6 +41,7 @@ pub fn check(method: &str, path: &str) -> Result<MeRoute, MessagingError> {
         ("GET", ["me", "devices"]) => true,
         ("GET", ["me", "devices", "current"]) => true,
         ("POST", ["me", "devices", "current", "proximity" | "context"]) => true,
+        ("GET", ["me", "devices", "current", "ble-token"]) => true,
         ("GET" | "PUT", ["me", "call-handoff"]) => true,
         ("POST", ["me", "calls", id, "move"]) => is_uuid(id),
         _ => false,
@@ -52,7 +53,8 @@ pub fn check(method: &str, path: &str) -> Result<MeRoute, MessagingError> {
         None => None,
         Some(q) => {
             let (k, v) = q.split_once('=').ok_or_else(refuse)?;
-            if k != "sip_instance" || parts != ["me", "devices", "current"] {
+            let names_device = parts == ["me", "devices"] || parts.starts_with(&["me", "devices", "current"]);
+            if k != "sip_instance" || !names_device {
                 return Err(refuse());
             }
             let v = reqwest::Url::parse(&format!("http://x/?{k}={v}"))
@@ -132,7 +134,10 @@ mod tests {
     fn only_the_current_device_takes_a_sip_instance() {
         let r = check("GET", "/me/devices/current?sip_instance=urn:uuid:6f1c%3Aa").unwrap();
         assert_eq!(r.query, Some(("sip_instance".into(), "urn:uuid:6f1c:a".into())));
-        assert!(check("GET", "/me/devices?sip_instance=urn:uuid:x").is_err());
+        assert!(check("GET", "/me/devices?sip_instance=urn:uuid:x").is_ok());
+        let r = check("POST", "/me/devices/current/context?sip_instance=urn:uuid:x").unwrap();
+        assert_eq!(r.query, Some(("sip_instance".into(), "urn:uuid:x".into())));
+        assert!(check("GET", "/me/call-handoff?sip_instance=urn:uuid:x").is_err());
         assert!(check("GET", "/me/devices/current?other=1").is_err());
     }
 }
