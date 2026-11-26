@@ -68,10 +68,32 @@ export function parseDevices(raw: unknown): Device[] {
     .filter((d) => d.registrationId);
 }
 
-/** The calls to offer "Move here" for: not this app's own dialog. */
-export function callsElsewhere(calls: ActiveElsewhereCall[], ownSipCallIds: string[], ownRegistrationId: string | null): ActiveElsewhereCall[] {
+/** The digits of a number that identify it across spellings (`+1 303…`, `303…`). */
+function tail(n: string): string {
+  const d = n.replace(/\D/g, "");
+  return d.length > 10 ? d.slice(-10) : d;
+}
+
+/**
+ * The calls to offer "Move here" for: not this app's own dialog. A call the
+ * PBX could not tie to a registration (empty `registrationId`) cannot be told
+ * from this computer's by Call-ID alone while a dialog is ringing or changing,
+ * so it is dropped when this app has any live call to the same remote number.
+ */
+export function callsElsewhere(
+  calls: ActiveElsewhereCall[],
+  ownSipCallIds: string[],
+  ownRegistrationId: string | null,
+  ownRemoteNumbers: string[] = [],
+): ActiveElsewhereCall[] {
   const own = new Set(ownSipCallIds.filter(Boolean));
-  return calls.filter((c) => !(c.sipCallId && own.has(c.sipCallId)) && c.device.registrationId !== ownRegistrationId);
+  const remotes = new Set(ownRemoteNumbers.map(tail).filter(Boolean));
+  return calls.filter((c) => {
+    if (c.sipCallId && own.has(c.sipCallId)) return false;
+    if (c.device.registrationId === ownRegistrationId) return false;
+    if (!c.device.registrationId && remotes.has(tail(c.remote.number))) return false;
+    return true;
+  });
 }
 
 /** The name to show for the far party. */
