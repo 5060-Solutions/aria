@@ -253,7 +253,7 @@ async fn harness_managers_ask_only_the_local_stun_stub() {
     assert_eq!(&*servers, &[local_stun_server().to_string()]);
 
     let started = tokio::time::Instant::now();
-    let (_port, public_ip, public_port) = super::media::allocate_port_with_stun(&servers)
+    let (_sockets, public_ip, public_port) = super::media::allocate_port_with_stun(&servers)
         .await
         .unwrap();
     assert!(

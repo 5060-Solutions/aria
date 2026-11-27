@@ -195,14 +195,16 @@ pub async fn handle_incoming_refer(
         let new_call_id = builder::generate_call_id();
         let new_from_tag = builder::generate_tag();
         // Allocate RTP port and discover public IP via STUN for NAT traversal
-        let (rtp_port, stun_public_ip) =
+        let (rtp_sockets, stun_public_ip) =
             match super::media::allocate_port_with_stun(&stun_servers).await {
-                Ok((port, ip, _)) => (port, ip),
+                Ok((sockets, ip, _)) => (sockets, ip),
                 Err(e) => {
                     log::error!("Failed to allocate RTP port with STUN: {}", e);
                     return;
                 }
             };
+
+        let rtp_port = rtp_sockets.port();
 
         // Use STUN-discovered public IP for SDP, fallback to registration-discovered public IP
         let sdp_ip = super::media::sdp_address(
@@ -236,6 +238,7 @@ pub async fn handle_incoming_refer(
         );
         new_call.local_srtp_key = local_srtp_key;
         new_call.sdp_public_ip = Some(sdp_ip);
+        new_call.reserved_rtp = Some(rtp_sockets);
         let new_id = new_call.id.clone();
 
         // The call is in the list before its INVITE goes out, so a fast
@@ -488,9 +491,10 @@ pub async fn handle_invite_with_replaces(
     let from_tag = extract_from_tag(text).unwrap_or_default();
     let to_tag = builder::generate_tag();
 
-    // Allocate RTP port dynamically - let OS pick an available port
-    let rtp_port = match super::media::MediaSession::allocate_port().await {
-        Ok(port) => port,
+    // Held from here until the session starts on them, so the port the 200
+    // OK names cannot be taken in between (#93).
+    let rtp_sockets = match super::media::allocate_rtp_sockets().await {
+        Ok(sockets) => sockets,
         Err(e) => {
             log::error!(
                 "Failed to allocate RTP port for INVITE with Replaces: {}",
@@ -517,6 +521,7 @@ pub async fn handle_invite_with_replaces(
         }
     };
 
+    let rtp_port = rtp_sockets.port();
     let call = CallFSM::new_inbound(InboundCallParams {
         account_id: account_id.to_string(),
         remote_uri: remote_uri.clone(),
@@ -573,11 +578,13 @@ pub async fn handle_invite_with_replaces(
                 )
             };
             let codec = negotiated.map_or(media::CodecType::Pcmu, |n| n.codec);
-            match media::MediaSession::start_with_devices(
-                rtp_port, remote_rtp, codec, input_dev, output_dev,
-            )
-            .await
-            {
+            match media::MediaSession::start_on_sockets_with_devices(
+                rtp_sockets,
+                remote_rtp,
+                codec,
+                input_dev,
+                output_dev,
+            ) {
                 Ok(session) => {
                     if let Some(audio) = negotiated {
                         media::apply_negotiated_payload_types(&session, audio, sdp);

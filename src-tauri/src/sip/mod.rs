@@ -1887,10 +1887,11 @@ impl SipManager {
 
         // Allocate RTP port and discover public IP via STUN for NAT traversal
         let stun_servers = self.state.read().await.stun_servers.clone();
-        let (rtp_port, stun_public_ip, _stun_public_port) =
+        let (rtp_sockets, stun_public_ip, _stun_public_port) =
             media::allocate_port_with_stun(&stun_servers)
                 .await
                 .map_err(|e| format!("Failed to allocate RTP port: {}", e))?;
+        let rtp_port = rtp_sockets.port();
 
         // STUN first, then what the registrar reported; for a server on a
         // private network, neither (see `media::sdp_address`). This was
@@ -1922,6 +1923,8 @@ impl SipManager {
         call.local_srtp_key = local_srtp_key;
         // The address this offer carries; the authenticated retry reuses it.
         call.sdp_public_ip = Some(sdp_ip);
+        // Held until the answer's media starts on them (#93).
+        call.reserved_rtp = Some(rtp_sockets);
         if let Some(id) = call_id_override {
             call.id = id;
         }
@@ -2324,7 +2327,15 @@ impl SipManager {
             input_device: input_dev,
             output_device: output_dev,
         };
-        let (media, srtp_active) = match media::start_call_media(&plan, sdp).await {
+        // The ports held since the INVITE arrived (#93): the session starts
+        // on them rather than binding the port again.
+        let sockets = self
+            .state
+            .write()
+            .await
+            .find_call_mut(call_id)
+            .and_then(|(_, call)| call.take_reserved_rtp());
+        let (media, srtp_active) = match media::start_call_media(&plan, sockets, sdp).await {
             Ok(started) => (started.session, started.srtp_active),
             Err(e) => {
                 log::error!("Could not start audio for incoming call {}: {}", call_id, e);
