@@ -51,12 +51,14 @@ function statusOf(e: unknown): number | undefined {
     : undefined;
 }
 
-let moveTimers: { poll: ReturnType<typeof setInterval>; limit: ReturnType<typeof setTimeout> } | null = null;
+/** The pending move's timers: the hard limit, and the next status read (chained, never stacked). */
+let moveTimers: { limit: ReturnType<typeof setTimeout>; next: ReturnType<typeof setTimeout> | null; stopped: boolean } | null = null;
 
 function stopMoveTimers() {
   if (!moveTimers) return;
-  clearInterval(moveTimers.poll);
+  moveTimers.stopped = true;
   clearTimeout(moveTimers.limit);
+  if (moveTimers.next) clearTimeout(moveTimers.next);
   moveTimers = null;
 }
 
@@ -90,6 +92,8 @@ interface CallMoveState {
   moveHere: (mailbox: Mailbox, call: ActiveElsewhereCall) => Promise<boolean>;
   /** Watch a move to another device: polled and timed out like any pending move. */
   trackMove: (mailbox: Mailbox, callId: string, moveId: string, toThisDevice?: boolean, startedAt?: number | null) => void;
+  beginPending: (callId: string, moveId: string, toThisDevice: boolean, startedAt: number | null) => void;
+  watchPending: (mailbox: Mailbox) => void;
   /** Feed a signal to the pending move; it ends (with a message when it failed) as the rule says. */
   settle: (signal: MoveSignal) => void;
   /** Read the pending move's status from the PBX once. */
@@ -217,30 +221,57 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
     // releases the held INVITE at once, and its "incoming" event reads the
     // pending move for the call's original start.
     const call = get().calls.find((c) => c.id === callId);
-    get().trackMove(mailbox, callId, moveId, true, startedAt ?? (call ? startedAtMs(call) : null));
+    get().beginPending(callId, moveId, true, startedAt ?? (call ? startedAtMs(call) : null));
+    const id = moveId.toLowerCase();
     try {
       await invoke("callmove_expect", { accountId: mailbox.accountId, moveId });
     } catch (e) {
-      get().clearPending();
+      if (get().pending?.moveId === id) get().clearPending();
       throw e;
     }
+    // The limit and the polling start only now, once the backend holds the id.
+    if (get().pending?.moveId === id) get().watchPending(mailbox);
   },
 
   trackMove: (mailbox, callId, moveId, toThisDevice = false, startedAt = null) => {
+    get().beginPending(callId, moveId, toThisDevice, startedAt);
+    get().watchPending(mailbox);
+  },
+
+  beginPending: (callId, moveId, toThisDevice, startedAt) => {
+    // A second move replaces the first: the first is revoked, never answered.
+    get().clearPending();
+    set({ pending: { moveId: moveId.toLowerCase(), callId, startedAt, expiresAt: Date.now() + PENDING_MOVE_MS, toThisDevice } });
+  },
+
+  watchPending: (mailbox) => {
+    const p = get().pending;
+    if (!p) return;
     stopMoveTimers();
-    const id = moveId.toLowerCase();
-    set({ pending: { moveId: id, callId, startedAt, expiresAt: Date.now() + PENDING_MOVE_MS, toThisDevice } });
-    moveTimers = {
-      poll: setInterval(() => void get().pollPending(mailbox), MOVE_STATUS_POLL_MS),
-      limit: setTimeout(() => get().settle({ kind: "tick" }), PENDING_MOVE_MS),
+    // The limit counts from here: for a move to this device, from when the
+    // backend took the id, so it always ends before the backend's own expiry.
+    set({ pending: { ...p, expiresAt: Date.now() + PENDING_MOVE_MS } });
+    const timers = {
+      stopped: false,
+      next: null as ReturnType<typeof setTimeout> | null,
+      limit: setTimeout(() => {
+        if (!timers.stopped) get().settle({ kind: "timeout" });
+      }, PENDING_MOVE_MS),
     };
+    moveTimers = timers;
+    const schedule = () => {
+      timers.next = setTimeout(async () => {
+        await get().pollPending(mailbox);
+        if (!timers.stopped) schedule();
+      }, MOVE_STATUS_POLL_MS);
+    };
+    schedule();
   },
 
   settle: (signal) => {
     const outcome = settleMove(get().pending, signal, Date.now());
     if (!outcome) return;
-    stopMoveTimers();
-    set({ pending: null });
+    get().clearPending();
     if (outcome.kind === "failed" || outcome.kind === "timeout") {
       const key = outcome.detail ? "callMove.failed" : "callMove.failedNoDetail";
       notifyError(i18n.t(key, { detail: outcome.detail }));
@@ -258,7 +289,6 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
     } catch (e) {
       // Not a signal: the 30 s limit runs on regardless.
       log.warn("[callMove] move status not read:", e);
-      get().settle({ kind: "tick" });
     }
   },
 
@@ -284,7 +314,13 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
 
   clearPending: () => {
     stopMoveTimers();
+    const p = get().pending;
+    if (!p) return;
     set({ pending: null });
+    // Revoked in the backend too: a late INVITE for it rings, never auto-answers.
+    // A move that was answered has used its id up already.
+    const accountId = get().accountId;
+    if (accountId) void invoke("callmove_forget", { accountId, moveId: p.moveId }).catch(() => {});
   },
 
   applyEvent: (event, mailbox) => {

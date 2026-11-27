@@ -38,6 +38,7 @@ pub fn check(method: &str, path: &str) -> Result<MeRoute, MessagingError> {
     let parts: Vec<&str> = path_only.trim_matches('/').split('/').collect();
     let ok = match (method, parts.as_slice()) {
         ("GET", ["me", "calls", "active"]) => true,
+        ("GET", ["me", "moves", id]) => is_uuid(id),
         ("GET", ["me", "devices"]) => true,
         ("GET", ["me", "devices", "current"]) => true,
         ("POST", ["me", "devices", "current", "proximity" | "context"]) => true,
@@ -158,6 +159,7 @@ mod tests {
             assert!(check(m, p).is_ok(), "{m} {p}");
         }
         assert!(check("POST", &format!("/me/calls/{ID}/move")).is_ok());
+        assert!(check("GET", &format!("/me/moves/{ID}")).is_ok());
     }
 
     #[test]
@@ -165,6 +167,9 @@ mod tests {
         assert!(check("GET", "/me/calls/active/../../auth").is_err());
         assert!(check("DELETE", "/me/devices").is_err());
         assert!(check("POST", "/me/calls/not-a-uuid/move").is_err());
+        assert!(check("GET", "/me/moves/not-a-uuid").is_err());
+        assert!(check("POST", &format!("/me/moves/{ID}")).is_err());
+        assert!(check("GET", &format!("/me/moves/{ID}/x")).is_err());
         assert!(check("POST", &format!("/me/calls/{ID}/../x/move")).is_err());
         assert!(check("GET", "/tenants/t/extensions").is_err());
         assert!(check("GET", "/me/devices?x=1").is_err());

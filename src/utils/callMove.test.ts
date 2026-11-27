@@ -206,6 +206,16 @@ describe("settleMove", () => {
     expect(settleMove(p, { kind: "call_ended", callId: "c2" }, 1)).toBeNull();
     expect(settleMove(p, { kind: "moved_event", callId: "c1" }, 1)).toEqual({ kind: "moved" });
   });
+  it("answered settles only the matching move", () => {
+    expect(settleMove(p, { kind: "answered", moveId: "M1" }, 1)).toEqual({ kind: "moved" });
+    expect(settleMove(p, { kind: "answered", moveId: "other" }, 1)).toBeNull();
+  });
+  it("a failure without a move id matches nothing", () => {
+    expect(settleMove(p, { kind: "failed_event", moveId: "", callId: "c1", detail: "d" }, 1)).toBeNull();
+  });
+  it("the timeout signal forces the end before expiresAt", () => {
+    expect(settleMove(p, { kind: "timeout" }, 1)).toEqual({ kind: "timeout", detail: "" });
+  });
   it("times out at the limit on any signal; nothing pending is nothing", () => {
     expect(settleMove(p, { kind: "tick" }, 29_999)).toBeNull();
     expect(settleMove(p, { kind: "tick" }, 30_000)).toEqual({ kind: "timeout", detail: "" });

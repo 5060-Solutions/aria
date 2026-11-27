@@ -171,8 +171,11 @@ export type MoveSignal =
   | { kind: "failed_event"; moveId: string; callId: string; detail: string }
   | { kind: "moved_event"; callId: string }
   | { kind: "call_ended"; callId: string }
-  /** This app answered the move's INVITE. */
-  | { kind: "answered" }
+  /** This app answered the INVITE of move `moveId`. */
+  | { kind: "answered"; moveId: string }
+  /** The hard limit fired. */
+  | { kind: "timeout" }
+  /** Any moment: the limit is checked against `now`. */
   | { kind: "tick" };
 
 /** How a pending move ended; `detail` is the PBX's reason for a failure. */
@@ -197,7 +200,7 @@ export function settleMove(p: PendingMove | null, signal: MoveSignal, now: numbe
       if (signal.status === "failed") return { kind: "failed", detail: signal.detail };
       break;
     case "failed_event":
-      if (signal.moveId.toLowerCase() === p.moveId || (!signal.moveId && signal.callId === p.callId)) {
+      if (signal.moveId.toLowerCase() === p.moveId) {
         return { kind: "failed", detail: signal.detail };
       }
       break;
@@ -208,7 +211,10 @@ export function settleMove(p: PendingMove | null, signal: MoveSignal, now: numbe
       if (signal.callId === p.callId) return { kind: "ended" };
       break;
     case "answered":
-      return { kind: "moved" };
+      if (signal.moveId.trim().toLowerCase() === p.moveId) return { kind: "moved" };
+      break;
+    case "timeout":
+      return { kind: "timeout", detail: "" };
     case "tick":
       break;
   }

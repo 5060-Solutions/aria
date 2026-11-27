@@ -2150,7 +2150,7 @@ pub async fn pbx_me_request(
 }
 
 /// Remember a move this app asked the PBX for, so the INVITE that carries its
-/// `X-Aria-Move` is answered without ringing. Expires after 30 seconds.
+/// `X-Aria-Move` is answered without ringing. Revoked by `callmove_forget`; expires after 35 seconds.
 #[tauri::command]
 pub fn callmove_expect(account_id: String, move_id: String) -> Result<(), String> {
     if crate::sip::call_move::pending().register(&account_id, &move_id, std::time::Instant::now()) {
@@ -2158,6 +2158,13 @@ pub fn callmove_expect(account_id: String, move_id: String) -> Result<(), String
     } else {
         Err("not a move id".into())
     }
+}
+
+/// Revoke a move registered with `callmove_expect` (it failed or timed out in
+/// the UI): its INVITE, if it still comes, rings rather than being answered.
+#[tauri::command]
+pub fn callmove_forget(account_id: String, move_id: String) {
+    crate::sip::call_move::pending().forget(&account_id, &move_id);
 }
 
 /// A move request is about to be posted: an INVITE with `X-Aria-Move` that

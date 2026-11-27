@@ -11,8 +11,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 pub const HEADER: &str = "X-Aria-Move";
-/// How long a requested move waits for its INVITE.
-pub const PENDING_TTL: Duration = Duration::from_secs(30);
+/// How long a requested move waits for its INVITE. The frontend gives up
+/// after 30 s counted from when this was registered, so this is longer: its
+/// window always ends first, and it revokes the id (`callmove_forget`).
+pub const PENDING_TTL: Duration = Duration::from_secs(35);
 /// How long an INVITE carrying `X-Aria-Move` waits for the 202 of a move
 /// request still in flight: the PBX may send the INVITE before the API's
 /// answer reaches this app.
@@ -62,6 +64,20 @@ impl PendingMoves {
         drop(w);
         self.changed.notify_waiters();
         true
+    }
+
+    /// Revoke a registered move (it failed, timed out or was abandoned): a
+    /// late INVITE for it then rings instead of being answered. True when it
+    /// was still registered.
+    pub fn forget(&self, account_id: &str, move_id: &str) -> bool {
+        let Some(id) = clean(move_id) else {
+            return false;
+        };
+        self.waiting
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&(account_id.to_string(), id))
+            .is_some()
     }
 
     /// A move request is about to be posted.
@@ -316,5 +332,25 @@ mod tests {
             p.classify(A, Some(&format!(" {ID} ")), t),
             MoveInvite::AutoAnswer(_)
         ));
+    }
+
+    #[test]
+    fn a_forgotten_move_rings_instead_of_being_answered() {
+        let p = PendingMoves::default();
+        let now = Instant::now();
+        assert!(p.register(A, ID, now));
+        assert!(p.forget(A, ID));
+        assert!(!p.forget(A, ID));
+        assert_eq!(
+            p.classify(A, Some(ID), now),
+            MoveInvite::Ring(ID.to_string())
+        );
+        // Another account's id is not touched.
+        assert!(p.register(A, ID, now));
+        assert!(!p.forget("acct-b", ID));
+        assert_eq!(
+            p.classify(A, Some(ID), now),
+            MoveInvite::AutoAnswer(ID.to_string())
+        );
     }
 }
