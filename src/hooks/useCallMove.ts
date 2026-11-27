@@ -88,14 +88,6 @@ export function useCallMove(): void {
     };
   }, [mailbox]);
 
-  // A move that is not answered in time is forgotten.
-  const pending = useCallMoveStore((s) => s.pending);
-  useEffect(() => {
-    if (!pending) return;
-    const timer = setTimeout(() => useCallMoveStore.getState().clearPending(), Math.max(0, pending.expiresAt - Date.now()));
-    return () => clearTimeout(timer);
-  }, [pending]);
-
   // A suggestion is about the call held here: once no call is, it is stale.
   const hasLive = useAppStore((s) => s.activeCalls.some((c) => c.state !== "ended"));
   useEffect(() => {

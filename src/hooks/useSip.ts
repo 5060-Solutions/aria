@@ -364,7 +364,7 @@ function incomingMove(p: CallPayload): { moveId?: string; auto: boolean; startTi
   const moves = useCallMoveStore.getState();
   if (p.moveAutoAnswer) {
     const pending = moves.pendingFor(p.moveId);
-    moves.clearPending();
+    moves.settle({ kind: "answered" });
     return { moveId: p.moveId, auto: true, startTime: pending?.startedAt ?? undefined };
   }
   const remote = p.remoteUri;

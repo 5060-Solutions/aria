@@ -613,6 +613,8 @@
     "moveHere": "Hierher holen",
     "moveHereLabel": "Anruf mit {{who}} von {{device}} auf diesen Computer holen",
     "moving": "Anruf wird verschoben...",
+    "failed": "Der Anruf konnte nicht verschoben werden: {{detail}}",
+    "failedNoDetail": "Der Anruf konnte nicht verschoben werden",
     "movingFrom": "Anruf wird von {{device}} verschoben",
     "movedTo": "Verschoben auf {{device}}",
     "anotherDevice": "einem anderen Gerät",

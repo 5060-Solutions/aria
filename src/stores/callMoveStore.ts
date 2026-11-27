@@ -8,7 +8,11 @@ import { useAppStore } from "./appStore";
 import type { Mailbox } from "../utils/voicemail";
 import {
   DEFAULT_HANDOFF,
+  MOVE_STATUS_POLL_MS,
   PENDING_MOVE_MS,
+  parseMoveStatus,
+  settleMove,
+  type MoveSignal,
   applyToCalls,
   contextBody,
   parseContextResult,
@@ -47,6 +51,15 @@ function statusOf(e: unknown): number | undefined {
     : undefined;
 }
 
+let moveTimers: { poll: ReturnType<typeof setInterval>; limit: ReturnType<typeof setTimeout> } | null = null;
+
+function stopMoveTimers() {
+  if (!moveTimers) return;
+  clearInterval(moveTimers.poll);
+  clearTimeout(moveTimers.limit);
+  moveTimers = null;
+}
+
 interface CallMoveState {
   /** The account everything below belongs to; another account starts empty. */
   accountId: string | null;
@@ -75,6 +88,12 @@ interface CallMoveState {
   /** Ask the PBX to move `callId` to the device `toRegistrationId`. */
   move: (mailbox: Mailbox, call: ActiveElsewhereCall, toRegistrationId: string) => Promise<boolean>;
   moveHere: (mailbox: Mailbox, call: ActiveElsewhereCall) => Promise<boolean>;
+  /** Watch a move to another device: polled and timed out like any pending move. */
+  trackMove: (mailbox: Mailbox, callId: string, moveId: string, toThisDevice?: boolean, startedAt?: number | null) => void;
+  /** Feed a signal to the pending move; it ends (with a message when it failed) as the rule says. */
+  settle: (signal: MoveSignal) => void;
+  /** Read the pending move's status from the PBX once. */
+  pollPending: (mailbox: Mailbox) => Promise<void>;
   /** Register a move this app started, so its INVITE is answered without ringing. */
   expectMove: (mailbox: Mailbox, callId: string, moveId: string, startedAt?: number | null) => Promise<void>;
   /** Report a context event (`devices/current/context`); a `moved` answer is registered as started here. */
@@ -108,6 +127,7 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
 
   forAccount: (accountId) => {
     if (get().accountId === accountId) return;
+    stopMoveTimers();
     set({ ...EMPTY, accountId });
   },
 
@@ -170,6 +190,7 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
       if (!moveId) throw new Error("no move_id");
       // Only a move to this device is answered here without ringing.
       if (toThisDevice) await get().expectMove(mailbox, call.id, moveId, startedAtMs(call));
+      else get().trackMove(mailbox, call.id, moveId);
       return true;
     } catch (e) {
       log.warn("[callMove] move refused:", e);
@@ -196,14 +217,48 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
     // releases the held INVITE at once, and its "incoming" event reads the
     // pending move for the call's original start.
     const call = get().calls.find((c) => c.id === callId);
-    set({
-      pending: { moveId: moveId.toLowerCase(), callId, startedAt: startedAt ?? (call ? startedAtMs(call) : null), expiresAt: Date.now() + PENDING_MOVE_MS },
-    });
+    get().trackMove(mailbox, callId, moveId, true, startedAt ?? (call ? startedAtMs(call) : null));
     try {
       await invoke("callmove_expect", { accountId: mailbox.accountId, moveId });
     } catch (e) {
-      set({ pending: null });
+      get().clearPending();
       throw e;
+    }
+  },
+
+  trackMove: (mailbox, callId, moveId, toThisDevice = false, startedAt = null) => {
+    stopMoveTimers();
+    const id = moveId.toLowerCase();
+    set({ pending: { moveId: id, callId, startedAt, expiresAt: Date.now() + PENDING_MOVE_MS, toThisDevice } });
+    moveTimers = {
+      poll: setInterval(() => void get().pollPending(mailbox), MOVE_STATUS_POLL_MS),
+      limit: setTimeout(() => get().settle({ kind: "tick" }), PENDING_MOVE_MS),
+    };
+  },
+
+  settle: (signal) => {
+    const outcome = settleMove(get().pending, signal, Date.now());
+    if (!outcome) return;
+    stopMoveTimers();
+    set({ pending: null });
+    if (outcome.kind === "failed" || outcome.kind === "timeout") {
+      const key = outcome.detail ? "callMove.failed" : "callMove.failedNoDetail";
+      notifyError(i18n.t(key, { detail: outcome.detail }));
+    }
+  },
+
+  pollPending: async (mailbox) => {
+    const p = get().pending;
+    if (!p) return;
+    try {
+      const raw = await meRequest<unknown>(mailbox, "GET", `/me/moves/${encodeURIComponent(p.moveId)}`);
+      // A reply for a move that is no longer the pending one says nothing.
+      if (get().pending?.moveId !== p.moveId) return;
+      get().settle({ kind: "poll", ...parseMoveStatus(raw) });
+    } catch (e) {
+      // Not a signal: the 30 s limit runs on regardless.
+      log.warn("[callMove] move status not read:", e);
+      get().settle({ kind: "tick" });
     }
   },
 
@@ -227,7 +282,10 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
     return p && p.moveId === moveId.trim().toLowerCase() ? p : null;
   },
 
-  clearPending: () => set({ pending: null }),
+  clearPending: () => {
+    stopMoveTimers();
+    set({ pending: null });
+  },
 
   applyEvent: (event, mailbox) => {
     if (event.type === "handoff_suggested") {
@@ -235,6 +293,12 @@ export const useCallMoveStore = create<CallMoveState>((set, get) => ({
       if (s) set({ suggestion: s });
       return;
     }
+    if (event.type === "call_move_failed") {
+      get().settle({ kind: "failed_event", moveId: event.moveId, callId: event.callId, detail: event.detail });
+      return;
+    }
+    if (event.type === "call_ended") get().settle({ kind: "call_ended", callId: event.callId });
+    if (event.type === "call_moved") get().settle({ kind: "moved_event", callId: event.callId });
     // A suggestion is for one call: gone with it.
     const suggestion = get().suggestion;
     if ((event.type === "call_ended" || event.type === "call_moved") && suggestion?.callId === event.callId) {
