@@ -139,30 +139,37 @@ pub async fn handle_invite_response(
             // Extract data needed for early media before taking write lock.
             // The 183's SDP is the answer to our offer: the codec is its first
             // one we carry, the same pick a 200 would get.
+            // The plan comes with the ports the call has held since it
+            // offered them (#93), for the session to start on.
             let early_media_plan = if has_sdp {
-                let s = state.read().await;
-                s.find_call_by_header(&call_id_header)
+                let mut s = state.write().await;
+                let (input_device, output_device) = (
+                    s.preferred_input_device.clone(),
+                    s.preferred_output_device.clone(),
+                );
+                s.find_call_by_header_mut(&call_id_header)
                     .and_then(|(_, call)| {
                         if call.has_early_media() {
                             return None; // Already have early media
                         }
                         let remote = media::remote_media(sdp, None)?;
-                        Some(media::MediaPlan {
+                        let plan = media::MediaPlan {
                             local_port: call.local_rtp_port,
                             remote,
                             local_srtp_key: call.local_srtp_key.clone(),
-                            input_device: s.preferred_input_device.clone(),
-                            output_device: s.preferred_output_device.clone(),
-                        })
+                            input_device,
+                            output_device,
+                        };
+                        Some((plan, call.take_reserved_rtp()))
                     })
             } else {
                 None
             };
 
             // Start early media session if we have the data
-            let early_session = if let Some(plan) = early_media_plan {
+            let early_session = if let Some((plan, sockets)) = early_media_plan {
                 log::info!("Starting early media session for {} response", status);
-                match media::start_call_media(&plan, sdp).await {
+                match media::start_call_media(&plan, sockets, sdp).await {
                     Ok(started) => {
                         log::info!("Early media session started successfully");
                         Some((started, plan.remote))
@@ -510,7 +517,13 @@ pub async fn handle_invite_response(
                     input_device: input_dev,
                     output_device: output_dev,
                 };
-                match media::start_call_media(&plan, sdp).await {
+                // The ports the call has held since our offer named them.
+                let sockets = state
+                    .write()
+                    .await
+                    .find_call_mut(&call_internal_id)
+                    .and_then(|(_, call)| call.take_reserved_rtp());
+                match media::start_call_media(&plan, sockets, sdp).await {
                     Ok(started) => {
                         let mut s = state.write().await;
                         if let Some((_, call)) = s.find_call_mut(&call_internal_id) {

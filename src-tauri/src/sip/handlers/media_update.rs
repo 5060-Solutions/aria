@@ -45,7 +45,10 @@ pub(crate) async fn restart_media_on_offer_port(
         if !alive {
             return;
         }
-        match media::start_call_media(&plan, &sdp).await {
+        // The port the stopped session held, bound by port number: the
+        // early session took the call's held sockets, and its RTCP task
+        // releases them only on its next tick.
+        match media::start_call_media(&plan, None, &sdp).await {
             Ok(started) => break started,
             Err(e) if tokio::time::Instant::now() < deadline => {
                 log::debug!(
@@ -223,8 +226,12 @@ pub(crate) async fn answer_reinvite(
             next.audio.codec,
             next.audio.pt
         );
-        let started = match media::allocate_free_rtp_port().await {
-            Ok(port) => {
+        // A new port, off the one the current session holds (its RTCP task
+        // keeps that bound for up to five seconds after it stops), and held
+        // until the new session starts on it.
+        let started = match media::allocate_rtp_sockets().await {
+            Ok(sockets) => {
+                let port = sockets.port();
                 let plan = MediaPlan {
                     local_port: port,
                     remote: next.clone(),
@@ -232,7 +239,7 @@ pub(crate) async fn answer_reinvite(
                     input_device: ctx.input_device.clone(),
                     output_device: ctx.output_device.clone(),
                 };
-                media::start_call_media(&plan, offer)
+                media::start_call_media(&plan, Some(sockets), offer)
                     .await
                     .map(|s| (port, s))
             }

@@ -140,9 +140,10 @@ pub async fn handle_incoming_request(
 
                 let to_tag = builder::generate_tag();
 
-                // Allocate RTP port dynamically - let OS pick an available port
-                let rtp_port = match crate::sip::media::MediaSession::allocate_port().await {
-                    Ok(port) => port,
+                // The call's RTP and RTCP ports, held while it rings so the
+                // answer can start media on them (#93).
+                let rtp_sockets = match crate::sip::media::allocate_rtp_sockets().await {
+                    Ok(sockets) => sockets,
                     Err(e) => {
                         log::error!("Failed to allocate RTP port for incoming call: {}", e);
                         return;
@@ -172,10 +173,11 @@ pub async fn handle_incoming_request(
                     call_id,
                     from_tag,
                     to_tag: to_tag.clone(),
-                    local_rtp_port: rtp_port,
+                    local_rtp_port: rtp_sockets.port(),
                     raw_invite: text.to_string(),
                     local_uri,
                 });
+                call.reserved_rtp = Some(rtp_sockets);
                 call.remote_contact =
                     extract_header(text, "Contact").map(|c| builder::contact_uri(&c));
 

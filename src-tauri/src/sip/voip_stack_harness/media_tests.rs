@@ -306,6 +306,55 @@ async fn mute_survives_hold_and_applies_to_media_that_starts_later() {
     );
 }
 
+/// #93: an incoming call's RTP and RTCP ports stay bound from the INVITE
+/// to the answer. They used to be chosen, released, and bound again when the
+/// call was answered; on Windows, which hands a freed ephemeral port straight
+/// back, a socket bound in parallel took one in between and the answer failed
+/// with "address in use" (os error 10048). The test takes that socket's part
+/// itself: while the call rings, nothing else can bind either port, and the
+/// answer starts media on them.
+#[tokio::test]
+async fn an_incoming_calls_media_ports_stay_bound_until_it_is_answered() {
+    let (mgr, mut rx, seen, sock, pbx, client) =
+        client(SrtpMode::Disabled, InviteReply::Busy).await;
+    let offer = pbx_sdp(40000, "RTP/AVP", "0", "");
+    sock.send_to(
+        invite(pbx, client, "media-held-port@pbx", 1, None, &offer).as_bytes(),
+        client,
+    )
+    .await
+    .unwrap();
+    let call_id = wait_for_call_state(&mut rx, "incoming").await;
+    let port = mgr
+        .state
+        .read()
+        .await
+        .find_call(&call_id)
+        .map(|(_, c)| c.local_rtp_port)
+        .expect("the ringing call");
+
+    let rtp_thief = std::net::UdpSocket::bind(("0.0.0.0", port));
+    let rtcp_thief = std::net::UdpSocket::bind(("0.0.0.0", port + 1));
+    assert!(
+        rtp_thief.is_err(),
+        "the ringing call's RTP port {port} was free for anything to take"
+    );
+    assert!(
+        rtcp_thief.is_err(),
+        "the ringing call's RTCP port {} was free for anything to take",
+        port + 1
+    );
+
+    mgr.answer(&call_id).await.expect("answered");
+    let ok = final_response(&seen, 1).await;
+    assert!(ok.starts_with("SIP/2.0 200"), "{ok}");
+    assert!(
+        ok.contains(&format!("m=audio {port} ")),
+        "the answer names the port the call held: {ok}"
+    );
+    assert!(session(&mgr, &call_id).await.is_some(), "no media session");
+}
+
 /// S3/M5: a re-INVITE that moves media gets a new session pointed at the
 /// new address, on a new local port that the 200 OK names. A refresh with the
 /// same SDP keeps the running session and the same answer, and the `o=` id
@@ -714,6 +763,48 @@ async fn connected_srtp(
             }
         }
     }
+}
+
+/// #93, the dialling side: the RTP and RTCP ports our INVITE offers stay
+/// bound while the call rings, and the 200 OK's media starts on them. They
+/// used to be released after the STUN probe and bound again on the answer.
+#[tokio::test]
+async fn an_outbound_calls_offered_ports_stay_bound_until_it_is_answered() {
+    let (mgr, mut rx, seen, sock, pbx, client) =
+        client(SrtpMode::Disabled, InviteReply::AnswerOnCancel).await;
+    let (call_id, inv) = ringing_outbound(&mgr, &mut rx, &seen).await;
+    let port = mgr
+        .state
+        .read()
+        .await
+        .find_call(&call_id)
+        .map(|(_, c)| c.local_rtp_port)
+        .expect("the ringing call");
+    assert!(
+        body(&inv).contains(&format!("m=audio {port} ")),
+        "the INVITE offers the call's port: {inv}"
+    );
+    assert!(
+        std::net::UdpSocket::bind(("0.0.0.0", port)).is_err(),
+        "the offered RTP port {port} was free while the call rang"
+    );
+    assert!(
+        std::net::UdpSocket::bind(("0.0.0.0", port + 1)).is_err(),
+        "the offered RTCP port {} was free while the call rang",
+        port + 1
+    );
+
+    let contact = format!("Contact: <sip:11@{pbx}>");
+    let sdp = pbx_sdp(40300, "RTP/AVP", "0", "");
+    sock.send_to(
+        respond_sdp(&inv, 200, "OK", &contact, &sdp).as_bytes(),
+        client,
+    )
+    .await
+    .unwrap();
+    assert_eq!(connected_srtp(&mut rx, &call_id).await, Some(false));
+    assert!(session(&mgr, &call_id).await.is_some(), "no media session");
+    mgr.hangup(&call_id).await.unwrap();
 }
 
 /// M6/M7: an SRTP call that rings with early media (183 with SDP) and is

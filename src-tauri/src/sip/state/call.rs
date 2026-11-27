@@ -216,6 +216,14 @@ pub struct CallFSM {
     pub cseq: u32,
     /// Local RTP port
     pub local_rtp_port: u16,
+    /// The RTP and RTCP sockets on `local_rtp_port`, bound since the port was
+    /// chosen and held until the call's first media session takes them
+    /// (`take_reserved_rtp`). Our SDP names the port before media starts —
+    /// in the INVITE we send, or in the answer to one that rings first — and
+    /// a released port can be handed to another socket in between, which
+    /// failed the call's media with "address in use" on Windows (#93).
+    /// Dropped when the call ends.
+    pub reserved_rtp: Option<crate::sip::media::RtpSockets>,
     /// The connection address (`c=`) our SDP for this call carries.
     ///
     /// Decided once, when the first offer or answer is built — from a per-call
@@ -336,6 +344,7 @@ impl CallFSM {
             to_tag: None,
             cseq: 1,
             local_rtp_port,
+            reserved_rtp: None,
             sdp_public_ip: None,
             remote_rtp_addr: None,
             last_invite_branch: Some(invite_branch.clone()),
@@ -376,6 +385,7 @@ impl CallFSM {
             to_tag: Some(params.to_tag),
             cseq: 1,
             local_rtp_port: params.local_rtp_port,
+            reserved_rtp: None,
             sdp_public_ip: None,
             remote_rtp_addr: None,
             last_invite_branch: None,
@@ -672,6 +682,8 @@ impl CallFSM {
             self.state = state;
             if self.state.is_ended() {
                 self.ended_at = Some(Instant::now());
+                // The record lingers for retransmissions; the ports need not.
+                self.reserved_rtp = None;
             }
         }
         result
@@ -962,6 +974,16 @@ impl CallFSM {
         self.pending_2xx = None;
         self.state = CallState::Ended { reason };
         self.ended_at = Some(Instant::now());
+        self.reserved_rtp = None;
+    }
+
+    /// The call's held RTP and RTCP sockets, for the media session about to
+    /// start on `local_rtp_port`. `None` once a session has taken them, or if
+    /// the port was never held, and the session then binds the port itself.
+    pub fn take_reserved_rtp(&mut self) -> Option<crate::sip::media::RtpSockets> {
+        self.reserved_rtp
+            .take()
+            .filter(|sockets| sockets.port() == self.local_rtp_port)
     }
 
     /// The dialog's tags as (ours, theirs).
@@ -1411,15 +1433,14 @@ mod tests {
 
     /// A real session to loopback; no device needs to open for the mute flag.
     async fn session() -> MediaSession {
-        let port = crate::sip::media::allocate_free_rtp_port()
+        let sockets = crate::sip::media::allocate_rtp_sockets()
             .await
             .expect("a port");
-        MediaSession::start(
-            port,
+        MediaSession::start_on_sockets(
+            sockets,
             "127.0.0.1:9".parse().unwrap(),
             rtp_engine::CodecType::Pcmu,
         )
-        .await
         .expect("a session")
     }
 
