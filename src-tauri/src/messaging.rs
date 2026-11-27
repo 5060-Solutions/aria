@@ -273,13 +273,17 @@ pub fn parse_sms_event(account_id: &str, frame: &str) -> Option<SmsArrived> {
 }
 
 /// The call-move events on the same stream (`call_active_elsewhere`,
-/// `call_moved`, `call_ended`) and the handoff suggestion, passed on as the
+/// `call_moved`, `call_ended`, `call_move_failed`) and the handoff suggestion, passed on as the
 /// PBX sent them. Anything else is `None`.
 pub fn parse_call_event(frame: &str) -> Option<Value> {
     let v: Value = serde_json::from_str(frame).ok()?;
     matches!(
         v.get("type")?.as_str()?,
-        "call_active_elsewhere" | "call_moved" | "call_ended" | "handoff_suggested"
+        "call_active_elsewhere"
+            | "call_moved"
+            | "call_ended"
+            | "call_move_failed"
+            | "handoff_suggested"
     )
     .then_some(v)
 }
@@ -503,6 +507,7 @@ mod tests {
             "call_active_elsewhere",
             "call_moved",
             "call_ended",
+            "call_move_failed",
             "handoff_suggested",
         ] {
             let frame = format!(r#"{{"type":"{t}","call_id":"c"}}"#);

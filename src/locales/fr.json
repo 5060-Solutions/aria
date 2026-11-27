@@ -613,6 +613,8 @@
     "moveHere": "Déplacer ici",
     "moveHereLabel": "Déplacer ici l'appel avec {{who}} sur {{device}}",
     "moving": "Transfert de l'appel...",
+    "failed": "Impossible de transférer l'appel : {{detail}}",
+    "failedNoDetail": "Impossible de transférer l'appel",
     "movingFrom": "Appel déplacé depuis {{device}}",
     "movedTo": "Déplacé vers {{device}}",
     "anotherDevice": "un autre appareil",

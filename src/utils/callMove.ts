@@ -111,6 +111,7 @@ export type CallEvent =
   | { type: "call_active_elsewhere"; call: ActiveElsewhereCall }
   | { type: "call_moved"; callId: string; fromRegistrationId: string; toRegistrationId: string }
   | { type: "call_ended"; callId: string }
+  | { type: "call_move_failed"; callId: string; moveId: string; detail: string }
   | { type: "handoff_suggested"; raw: Record<string, unknown> };
 
 /** A WebSocket event as the PBX sent it; null for anything else. */
@@ -125,6 +126,8 @@ export function parseCallEvent(raw: unknown): CallEvent | null {
       return { type: "call_moved", callId: str(o.call_id), fromRegistrationId: str(o.from_registration_id), toRegistrationId: str(o.to_registration_id) };
     case "call_ended":
       return { type: "call_ended", callId: str(o.call_id) };
+    case "call_move_failed":
+      return { type: "call_move_failed", callId: str(o.call_id), moveId: str(o.move_id), detail: str(o.detail) };
     case "handoff_suggested":
       return { type: "handoff_suggested", raw: o };
     default:
@@ -155,6 +158,67 @@ export interface PendingMove {
   /** The original call's start, so the timer carries over. */
   startedAt: number | null;
   expiresAt: number;
+  /** True when the move is to this computer (its INVITE is auto-answered). */
+  toThisDevice: boolean;
+}
+
+/** How often a pending move's status is read from the PBX. */
+export const MOVE_STATUS_POLL_MS = 2_000;
+
+/** What `GET /me/moves/{id}` and the WebSocket tell about a pending move. */
+export type MoveSignal =
+  | { kind: "poll"; status: string; detail: string }
+  | { kind: "failed_event"; moveId: string; callId: string; detail: string }
+  | { kind: "moved_event"; callId: string }
+  | { kind: "call_ended"; callId: string }
+  /** This app answered the INVITE of move `moveId`. */
+  | { kind: "answered"; moveId: string }
+  /** The hard limit fired. */
+  | { kind: "timeout" }
+  /** Any moment: the limit is checked against `now`. */
+  | { kind: "tick" };
+
+/** How a pending move ended; `detail` is the PBX's reason for a failure. */
+export type MoveOutcome = { kind: "moved" | "ended" } | { kind: "failed" | "timeout"; detail: string };
+
+/** `GET /me/moves/{id}` body: `status` is pending|ringing|moved|failed. */
+export function parseMoveStatus(raw: unknown): { status: string; detail: string } {
+  const o = rec(raw);
+  return { status: str(o.status), detail: str(o.detail) };
+}
+
+/**
+ * The pure rule for a pending move: given a signal, how (if at all) it ended.
+ * Null means keep waiting. A network error on the poll is no signal at all,
+ * so it never extends the 30 s limit (`expiresAt`, set at the 202).
+ */
+export function settleMove(p: PendingMove | null, signal: MoveSignal, now: number): MoveOutcome | null {
+  if (!p) return null;
+  switch (signal.kind) {
+    case "poll":
+      if (signal.status === "moved") return { kind: "moved" };
+      if (signal.status === "failed") return { kind: "failed", detail: signal.detail };
+      break;
+    case "failed_event":
+      if (signal.moveId.toLowerCase() === p.moveId) {
+        return { kind: "failed", detail: signal.detail };
+      }
+      break;
+    case "moved_event":
+      if (signal.callId === p.callId) return { kind: "moved" };
+      break;
+    case "call_ended":
+      if (signal.callId === p.callId) return { kind: "ended" };
+      break;
+    case "answered":
+      if (signal.moveId.trim().toLowerCase() === p.moveId) return { kind: "moved" };
+      break;
+    case "timeout":
+      return { kind: "timeout", detail: "" };
+    case "tick":
+      break;
+  }
+  return now >= p.expiresAt ? { kind: "timeout", detail: "" } : null;
 }
 
 export function pendingActive(p: PendingMove | null, now: number): PendingMove | null {

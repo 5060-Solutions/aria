@@ -613,6 +613,8 @@
     "moveHere": "Move here",
     "moveHereLabel": "Move the call with {{who}} on {{device}} to this computer",
     "moving": "Moving call...",
+    "failed": "Couldn't move the call: {{detail}}",
+    "failedNoDetail": "Couldn't move the call",
     "movingFrom": "Moving call from {{device}}",
     "movedTo": "Moved to {{device}}",
     "anotherDevice": "another device",

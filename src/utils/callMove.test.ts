@@ -13,6 +13,8 @@ import {
   parseHandoff,
   parseSuggestion,
   pendingActive,
+  settleMove,
+  type PendingMove,
   handoffBody,
   parseContextResult,
   proximityBody,
@@ -102,7 +104,7 @@ describe("events", () => {
 
 describe("moving", () => {
   it("expires a pending move after 30 seconds", () => {
-    const p = { moveId: "m", callId: "c", startedAt: 1, expiresAt: 1000 + PENDING_MOVE_MS };
+    const p = { moveId: "m", callId: "c", startedAt: 1, expiresAt: 1000 + PENDING_MOVE_MS, toThisDevice: true };
     expect(pendingActive(p, 1000 + PENDING_MOVE_MS - 1)).toBe(p);
     expect(pendingActive(p, 1000 + PENDING_MOVE_MS)).toBeNull();
     expect(pendingActive(null, 0)).toBeNull();
@@ -184,5 +186,42 @@ describe("handoff", () => {
     expect(movedAway({ label: "Aria iOS", at, sipCallId: "leg-1" }, at + 100, "leg-2")).toBeNull();
     expect(movedAway({ label: "Aria iOS", at, sipCallId: null }, at + 100, "leg-2")).toBe("Aria iOS");
     expect(movedAway({ label: "Aria iOS", at, sipCallId: "leg-1" }, at + 20_000, "leg-1")).toBeNull();
+  });
+});
+
+describe("settleMove", () => {
+  const p: PendingMove = { moveId: "m1", callId: "c1", startedAt: null, expiresAt: 30_000, toThisDevice: true };
+  it("poll: moved and failed end it, pending and ringing do not", () => {
+    expect(settleMove(p, { kind: "poll", status: "moved", detail: "" }, 1)).toEqual({ kind: "moved" });
+    expect(settleMove(p, { kind: "poll", status: "failed", detail: "busy" }, 1)).toEqual({ kind: "failed", detail: "busy" });
+    expect(settleMove(p, { kind: "poll", status: "pending", detail: "" }, 1)).toBeNull();
+    expect(settleMove(p, { kind: "poll", status: "ringing", detail: "" }, 1)).toBeNull();
+  });
+  it("WS failure matches its move id only", () => {
+    expect(settleMove(p, { kind: "failed_event", moveId: "M1", callId: "c1", detail: "d" }, 1)).toEqual({ kind: "failed", detail: "d" });
+    expect(settleMove(p, { kind: "failed_event", moveId: "m2", callId: "c1", detail: "d" }, 1)).toBeNull();
+  });
+  it("call_ended and call_moved match the call", () => {
+    expect(settleMove(p, { kind: "call_ended", callId: "c1" }, 1)).toEqual({ kind: "ended" });
+    expect(settleMove(p, { kind: "call_ended", callId: "c2" }, 1)).toBeNull();
+    expect(settleMove(p, { kind: "moved_event", callId: "c1" }, 1)).toEqual({ kind: "moved" });
+  });
+  it("answered settles only the matching move", () => {
+    expect(settleMove(p, { kind: "answered", moveId: "M1" }, 1)).toEqual({ kind: "moved" });
+    expect(settleMove(p, { kind: "answered", moveId: "other" }, 1)).toBeNull();
+  });
+  it("a failure without a move id matches nothing", () => {
+    expect(settleMove(p, { kind: "failed_event", moveId: "", callId: "c1", detail: "d" }, 1)).toBeNull();
+  });
+  it("the timeout signal forces the end before expiresAt", () => {
+    expect(settleMove(p, { kind: "timeout" }, 1)).toEqual({ kind: "timeout", detail: "" });
+  });
+  it("times out at the limit on any signal; nothing pending is nothing", () => {
+    expect(settleMove(p, { kind: "tick" }, 29_999)).toBeNull();
+    expect(settleMove(p, { kind: "tick" }, 30_000)).toEqual({ kind: "timeout", detail: "" });
+    expect(settleMove(null, { kind: "tick" }, 99_999)).toBeNull();
+  });
+  it("parses call_move_failed", () => {
+    expect(parseCallEvent({ type: "call_move_failed", call_id: "c", move_id: "m", detail: "x" })).toEqual({ type: "call_move_failed", callId: "c", moveId: "m", detail: "x" });
   });
 });

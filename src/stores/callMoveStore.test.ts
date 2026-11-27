@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -30,7 +30,7 @@ const wire = {
 function pbx(routes: Record<string, unknown | Error>) {
   invoke.mockImplementation(async (cmd: string, args?: { method?: string; path?: string }) => {
     if (cmd === "sip_instance_urn") return "urn:uuid:abc";
-    if (cmd === "callmove_expect" || cmd === "callmove_request_started" || cmd === "callmove_request_finished") return undefined;
+    if (cmd === "callmove_expect" || cmd === "callmove_request_started" || cmd === "callmove_request_finished" || cmd === "callmove_forget") return undefined;
     if (cmd !== "pbx_me_request") throw new Error(`unexpected ${cmd}`);
     const hit = routes[`${args?.method} ${args?.path}`];
     if (hit === undefined) throw new Error(`unrouted ${args?.method} ${args?.path}`);
@@ -47,6 +47,11 @@ describe("callMoveStore", () => {
     useCallMoveStore.setState({ accountId: "acct", calls: [], devices: [], current: null, currentAt: 0, requesting: false, pending: null, movedTo: null, suggestion: null });
     useToastStore.setState({ current: null, queue: [] });
     useAppStore.setState({ activeCalls: [] });
+  });
+
+  afterEach(() => {
+    store().clearPending();
+    vi.useRealTimers();
   });
 
   it("polls the active calls", async () => {
@@ -83,7 +88,7 @@ describe("callMoveStore", () => {
     const [call] = parseActiveCalls([wire]);
     await store().ensureCurrent(mailbox);
     expect(await store().move(mailbox, call, "r-ios")).toBe(true);
-    expect(store().pending).toBeNull();
+    expect(store().pending).toMatchObject({ moveId: "m-2", toThisDevice: false });
     expect(invoke).not.toHaveBeenCalledWith("callmove_expect", expect.anything());
   });
 
@@ -193,7 +198,7 @@ describe("callMoveStore", () => {
   });
 
   it("forgets one account's state when another becomes active", () => {
-    useCallMoveStore.setState({ accountId: "acct", calls: parseActiveCalls([wire]), current: "r-mac", pending: { moveId: "m", callId: "c", startedAt: null, expiresAt: Date.now() + 1000 } });
+    useCallMoveStore.setState({ accountId: "acct", calls: parseActiveCalls([wire]), current: "r-mac", pending: { moveId: "m", callId: "c", startedAt: null, expiresAt: Date.now() + 1000, toThisDevice: true } });
     store().forAccount("acct");
     expect(store().current).toBe("r-mac");
     store().forAccount("acct-2");
@@ -281,5 +286,179 @@ describe("callMoveStore", () => {
     store().applyEvent({ type: "handoff_suggested", raw: { call_id: "c2", to_registration_id: "r-ios", reason: "nearby" } }, null);
     store().applyEvent({ type: "call_moved", callId: "c2", fromRegistrationId: "r-a", toRegistrationId: "r-b" }, null);
     expect(store().suggestion).toBeNull();
+  });
+
+  describe("a pending move never hangs", () => {
+    const callId = "11111111-1111-4111-8111-111111111111";
+    const movePath = `POST /me/calls/${callId}/move`;
+    const cur = "GET /me/devices/current?sip_instance=urn%3Auuid%3Aabc";
+    const statusPath = "GET /me/moves/m-9";
+
+    async function start(extra: Record<string, unknown | Error> = {}) {
+      pbx({ [cur]: { registration_id: "r-mac" }, [movePath]: { move_id: "M-9" }, ...extra });
+      const [call] = parseActiveCalls([wire]);
+      expect(await store().moveHere(mailbox, call)).toBe(true);
+      expect(store().pending?.moveId).toBe("m-9");
+    }
+    const msg = () => useToastStore.getState().current?.message;
+
+    it.each([
+      [404, "callMove.errNotFound"],
+      [409, "callMove.errBusy"],
+      [422, "callMove.errDevice"],
+    ])("a %i from the POST shows its message and is never pending", async (status, key) => {
+      pbx({ [cur]: { registration_id: "r-mac" }, [movePath]: Object.assign(new Error("x"), { status }) });
+      const [call] = parseActiveCalls([wire]);
+      expect(await store().moveHere(mailbox, call)).toBe(false);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBe(key);
+      expect(invoke).not.toHaveBeenCalledWith("callmove_expect", expect.anything());
+    });
+
+    const statusCalls = () => invoke.mock.calls.filter(([c, a]) => c === "pbx_me_request" && (a as { path: string }).path === "/me/moves/m-9");
+    const forgets = () => invoke.mock.calls.filter(([c]) => c === "callmove_forget");
+
+    it("failed via the status poll", async () => {
+      vi.useFakeTimers();
+      await start({ [statusPath]: { status: "failed", detail: "no answer" } });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBe("callMove.failed");
+      // The backend is told to stop expecting it, and nothing polls on.
+      expect(forgets()).toEqual([["callmove_forget", { accountId: "acct", moveId: "m-9" }]]);
+      const n = statusCalls().length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(statusCalls()).toHaveLength(n);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("keeps polling while pending or ringing", async () => {
+      vi.useFakeTimers();
+      await start({ [statusPath]: { status: "ringing" } });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(statusCalls()).toHaveLength(3);
+      expect(store().pending).not.toBeNull();
+      expect(msg()).toBeUndefined();
+      pbx({ [statusPath]: { status: "pending" }, [cur]: { registration_id: "r-mac" } });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(statusCalls()).toHaveLength(4);
+    });
+
+    it("moved via the status poll clears quietly", async () => {
+      vi.useFakeTimers();
+      await start({ [statusPath]: { status: "moved" } });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBeUndefined();
+    });
+
+    it("failed via the WebSocket event", async () => {
+      await start();
+      store().applyEvent({ type: "call_move_failed", callId, moveId: "M-9", detail: "declined" }, null);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBe("callMove.failed");
+    });
+
+    it("ignores a failure for another move", async () => {
+      await start();
+      store().applyEvent({ type: "call_move_failed", callId: "other", moveId: "M-other", detail: "x" }, null);
+      expect(store().pending).not.toBeNull();
+    });
+
+    it("times out after 30 s, and poll errors do not extend it", async () => {
+      vi.useFakeTimers();
+      await start({ [statusPath]: new Error("network") });
+      expect(invoke).toHaveBeenCalledWith("callmove_expect", { accountId: "acct", moveId: "M-9" });
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(store().pending).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBe("callMove.failedNoDetail");
+      expect(forgets()).toHaveLength(1);
+    });
+
+    it("moved via call_moved", async () => {
+      await start();
+      store().applyEvent({ type: "call_moved", callId, fromRegistrationId: "r-ios", toRegistrationId: "r-mac" }, null);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBeUndefined();
+    });
+
+    it("call_ended ends the pending move quietly", async () => {
+      await start();
+      store().applyEvent({ type: "call_ended", callId }, null);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBeUndefined();
+    });
+
+    it("the answered INVITE clears it", async () => {
+      await start();
+      store().settle({ kind: "answered", moveId: "other" });
+      expect(store().pending).not.toBeNull();
+      store().settle({ kind: "answered", moveId: "M-9" });
+      expect(store().pending).toBeNull();
+    });
+
+    it("a second move replaces the first and revokes it", async () => {
+      vi.useFakeTimers();
+      await start({ [statusPath]: { status: "pending" } });
+      invoke.mockClear();
+      pbx({ [cur]: { registration_id: "r-mac" }, [movePath]: { move_id: "M-10" }, "GET /me/moves/m-10": { status: "pending" }, [statusPath]: { status: "pending" } });
+      const [call] = parseActiveCalls([wire]);
+      expect(await store().moveHere(mailbox, call)).toBe(true);
+      expect(store().pending?.moveId).toBe("m-10");
+      expect(forgets()).toContainEqual(["callmove_forget", { accountId: "acct", moveId: "m-9" }]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(statusCalls()).toHaveLength(0);
+    });
+
+    it("a poll reply for the old move is ignored", async () => {
+      vi.useFakeTimers();
+      let release: (v: unknown) => void = () => {};
+      await start();
+      invoke.mockImplementation(async (cmd: string, args?: { path?: string; method?: string }) => {
+        if (cmd === "pbx_me_request" && args?.path === "/me/moves/m-9") return new Promise((r) => (release = r));
+        return undefined;
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      // The poll is in flight; a new move takes over before it answers.
+      store().trackMove(mailbox, "c2", "M-11");
+      release({ status: "failed", detail: "old" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(store().pending?.moveId).toBe("m-11");
+      expect(msg()).toBeUndefined();
+    });
+
+    it("polls do not stack while one request is slow", async () => {
+      vi.useFakeTimers();
+      await start();
+      let calls = 0;
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === "pbx_me_request") {
+          calls++;
+          return new Promise(() => {});
+        }
+        return undefined;
+      });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(calls).toBe(1);
+    });
+
+    it("a failed Move to... on another device is reported too", async () => {
+      vi.useFakeTimers();
+      pbx({
+        [cur]: { registration_id: "r-mac" },
+        [movePath]: { move_id: "M-9" },
+        [statusPath]: { status: "failed", detail: "device offline" },
+      });
+      const [call] = parseActiveCalls([wire]);
+      await store().ensureCurrent(mailbox);
+      expect(await store().move(mailbox, call, "r-ios")).toBe(true);
+      expect(store().pending).toMatchObject({ moveId: "m-9", toThisDevice: false });
+      expect(invoke).not.toHaveBeenCalledWith("callmove_expect", expect.anything());
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(store().pending).toBeNull();
+      expect(msg()).toBe("callMove.failed");
+    });
   });
 });

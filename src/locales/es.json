@@ -613,6 +613,8 @@
     "moveHere": "Mover aquí",
     "moveHereLabel": "Mover aquí la llamada con {{who}} en {{device}}",
     "moving": "Moviendo la llamada...",
+    "failed": "No se pudo mover la llamada: {{detail}}",
+    "failedNoDetail": "No se pudo mover la llamada",
     "movingFrom": "Moviendo llamada desde {{device}}",
     "movedTo": "Movida a {{device}}",
     "anotherDevice": "otro dispositivo",

@@ -359,12 +359,12 @@ function hasLiveCall(): boolean {
  * 30 s expiry); the store supplies the original call's start, so the timer
  * continues rather than restarting.
  */
-function incomingMove(p: CallPayload): { moveId?: string; auto: boolean; startTime?: number; from?: string } {
+export function incomingMove(p: CallPayload): { moveId?: string; auto: boolean; startTime?: number; from?: string } {
   if (!p.moveId) return { auto: false };
   const moves = useCallMoveStore.getState();
   if (p.moveAutoAnswer) {
     const pending = moves.pendingFor(p.moveId);
-    moves.clearPending();
+    moves.settle({ kind: "answered", moveId: p.moveId });
     return { moveId: p.moveId, auto: true, startTime: pending?.startedAt ?? undefined };
   }
   const remote = p.remoteUri;
