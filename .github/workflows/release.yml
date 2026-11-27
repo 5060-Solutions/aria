@@ -369,3 +369,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+
+      # The website bakes the latest release's version and download links into
+      # its build, so it has to rebuild once this release is published.
+      # aria-website's deploy listens for this event (`release-published`).
+      # GITHUB_TOKEN cannot dispatch to another repository: this takes a
+      # fine-grained token with Contents read and write on aria-website only.
+      # Without it, or if the dispatch fails, the release still stands and the
+      # site picks it up on its daily scheduled build.
+      - name: Rebuild the website
+        env:
+          GH_TOKEN: ${{ secrets.ARIA_WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning title=Website not rebuilt::ARIA_WEBSITE_DISPATCH_TOKEN is not set; aria-website will pick up $GITHUB_REF_NAME on its daily build."
+            exit 0
+          fi
+          gh api repos/5060-Solutions/aria-website/dispatches \
+            -f event_type=release-published \
+            -f "client_payload[tag]=$GITHUB_REF_NAME" \
+            || echo "::warning title=Website not rebuilt::the dispatch to aria-website failed; it will pick up $GITHUB_REF_NAME on its daily build."
